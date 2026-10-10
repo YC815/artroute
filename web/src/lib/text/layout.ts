@@ -16,8 +16,8 @@ export const ALLOWED = /^[A-Za-z0-9♥!?&.\- ]$/;
 export function normalizeText(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
-    .replace(/ /g, " ")
-    .replace(/[︎️​]/g, "");
+    .replace(/\u00A0/g, " ")
+    .replace(/[\uFE0E\uFE0F\u200B]/g, "");
 }
 
 // 控制字元、格式字元（如 U+2060）、空白分隔字元：看不見或長得像空白，錯誤訊息改顯示碼位
