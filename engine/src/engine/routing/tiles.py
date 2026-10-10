@@ -9,6 +9,9 @@ from pathlib import Path
 from valhalla import get_config
 
 
+MAX_SEARCH_RADIUS_M = 150  # spec §4.3 的 trace search_radius 上限（Valhalla 預設只有 100）
+
+
 class TileBuildError(Exception):
     pass
 
@@ -18,6 +21,7 @@ def write_config(tile_dir: Path, config_path: Path) -> dict:
     tile_dir = tile_dir.resolve()  # 設定檔存絕對路徑，Actor 從任何 cwd 載入都讀得到
     tile_dir.mkdir(parents=True, exist_ok=True)
     config = get_config(tile_extract="", tile_dir=tile_dir)
+    config["service_limits"]["trace"]["max_search_radius"] = MAX_SEARCH_RADIUS_M
     config_path.write_text(json.dumps(config))
     return config
 

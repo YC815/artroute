@@ -45,3 +45,8 @@ def test_build_tiles_works_without_venv_bin_on_path(tmp_path: Path, monkeypatch:
     write_grid_pbf(pbf, TEST_MAP)
     config_path = build_tiles(pbf, tmp_path / "build")
     assert any(Path(json.loads(config_path.read_text())["mjolnir"]["tile_dir"]).rglob("*.gph"))
+
+
+def test_config_raises_trace_search_radius_limit_to_150m(grid_config: Path) -> None:
+    config = json.loads(grid_config.read_text())
+    assert config["service_limits"]["trace"]["max_search_radius"] == 150

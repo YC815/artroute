@@ -50,12 +50,17 @@ def test_route_against_oneway_detours(router: Router) -> None:
     assert result.length_km > 0.8  # 必須繞上面那條街
 
 
-def test_trace_against_oneway_never_rides_wrong_way(router: Router) -> None:
-    try:
-        result = router.trace(densify(grid_point(2, 0), grid_point(0, 0)))
-    except RoutingError:
-        return  # 找不到合法匹配時報錯，也算安全
-    assert not rides_westward_on_row(result.points, row=0, col_min=0, col_max=2)
+def test_trace_against_oneway_raises(router: Router) -> None:
+    # map_snap 對逆向段會悄悄退化成 0 km；Router 必須明確報錯，不能把退化結果當成功
+    with pytest.raises(RoutingError):
+        router.trace(densify(grid_point(2, 0), grid_point(0, 0)))
+
+
+def test_trace_with_reverse_middle_section_raises(router: Router) -> None:
+    # 0→2→0→2：中間逆向，map_snap 會丟掉逆向段之後的所有東西（含最後的合法段）
+    legal, reverse = densify(grid_point(0, 0), grid_point(2, 0)), densify(grid_point(2, 0), grid_point(0, 0))
+    with pytest.raises(RoutingError):
+        router.trace(legal + reverse[1:] + legal[1:])
 
 
 def test_contraflow_lets_bicycle_ride_against_oneway(router: Router) -> None:
@@ -81,3 +86,8 @@ def test_edges_report_way_ids_and_heading(router: Router) -> None:
 def test_trace_far_from_roads_raises(router: Router) -> None:
     with pytest.raises(RoutingError):
         router.trace(densify((121.0, 24.0), (121.001, 24.0)))
+
+
+def test_trace_accepts_search_radius_up_to_150m(router: Router) -> None:
+    result = router.trace(densify(grid_point(0, 0), grid_point(2, 0)), search_radius_m=150)
+    assert result.length_km == pytest.approx(0.40, abs=0.05)

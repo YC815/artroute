@@ -17,10 +17,11 @@
 - 順向 trace：通過（0.404 km，全程在 oneway 街上）
 - 逆向 route：繞路，未逆向（0.85 km，繞上面那條街）
 - 逆向 trace 的實際行為：既不是 DETOUR 也不是 ERROR——`map_snap` 靜默退化，回傳 0.0 km、2 個重疊點（都在 (121.504, 25.05)），沒有丟 `RoutingError`
-  - 先順向再逆向的 trace（0→2→0）：逆向那半被靜默丟掉，只回傳 0.404 km 的順向半段
+  - 被截斷時丟掉的是「第一個非法路段之後的所有東西」，不只逆向那半：0→2→0 只回傳 0.404 km（輸入 0.806 km），0→2→0→2 也只回傳 0.404 km（輸入 1.209 km），結尾的合法段一起消失
   - 同樣的逆向 trace 改用 `edge_walk`：丟錯誤（`Exact route match algorithm failed to find path`）
   - 對照組：雙向街逆著騎的 trace 正常（0.404 km）
-  - `search_radius` 上限是 100 m（`service_limits.trace.max_search_radius`），超過會丟 `RoutingError`
+  - Valhalla 預設 `service_limits.trace.max_search_radius` 只有 100 m，超過會丟 `RoutingError`（`Input trace option is out of bounds`）；`tiles.write_config` 產生的設定檔已調到 150 m（spec §4.3 的上限）
 - oneway:bicycle=no：允許逆向（route 0.404 km，直接逆著騎）
 - motorway：避開（route 2.101 km，繞下面那條 row 1 的住宅街）
-- 對 P1 的影響：`trace()` 遇到逆向段不會報錯，只會悄悄縮短或退化成 0 km，所以 P1 的吸附必須比對 `RouteResult.length_km` 與輸入折線長度，比值過低就視為失敗，改用部件端點之間的 `route()` 補段。
+- `Router.trace()` 的處理：`map_snap` 本身不報錯，所以 Router 在回傳前驗證結果，遇到下列情況丟 `RoutingError`：少於 2 個不同的點；匹配長度低於輸入折線長度的 `MIN_LENGTH_RATIO`（0.7，P1 benchmark 會調）；結果的起點或終點離輸入的起點或終點超過 `2 × search_radius_m`。`_route_result` 遇到相鄰 leg 接點相差超過 1 m 也丟 `RoutingError`，不會串出直線補線。
+- 對 P1 的影響：吸附逆向或被截斷的 trace 現在會丟 `RoutingError`，P1 必須接住這個例外，改用部件端點之間的 `route()` 補段；`MIN_LENGTH_RATIO` 要用真實 GPS 軌跡的 benchmark 調整，GPS 抖動讓匹配長度偏離輸入時可能誤殺。
