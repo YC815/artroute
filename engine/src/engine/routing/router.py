@@ -1,5 +1,6 @@
 """包裝 valhalla.Actor：交通方式固定 bicycle，座標一律 (lon, lat)。"""
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,12 +71,21 @@ def _ensure_matched(result: RouteResult, points: list[LonLat], search_radius_m: 
 
 
 class Router:
+    """包裝單一個 valhalla.Actor。
+
+    Actor 不是 thread-safe：binding 會釋放 GIL，多個 thread 同時呼叫同一個 Actor 會 segfault。
+    所以同一個 Router 上的呼叫由鎖序列化，同時間只有一個在跑。
+    要平行就開多個 Router 實例（每個各自載入 Actor）或多個行程。
+    """
+
     def __init__(self, config_path: Path) -> None:
         self._actor = Actor(str(config_path))
+        self._lock = threading.Lock()
 
     def _call(self, method: str, request: dict) -> dict:
         try:
-            return getattr(self._actor, method)(request)
+            with self._lock:
+                return getattr(self._actor, method)(request)
         except RuntimeError as error:
             raise RoutingError(str(error)) from error
 
