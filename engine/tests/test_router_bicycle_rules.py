@@ -104,3 +104,27 @@ def test_trace_accepts_search_radius_150m_for_trace_120m_off_road(router: Router
 def test_trace_with_search_radius_100m_fails_for_trace_120m_off_road(router: Router) -> None:
     with pytest.raises(RoutingError):
         router.trace(parallel_trace_offset_north(120), search_radius_m=100)
+
+
+def test_shortest_route_still_detours_around_a_oneway(router: Router) -> None:
+    result = router.route(grid_point(2, 0), grid_point(0, 0), shortest=True)
+    assert not rides_westward_on_row(result.points, row=0, col_min=0, col_max=2)
+    assert result.length_km > 0.8
+
+
+def test_shortest_route_still_avoids_motorway(router: Router) -> None:
+    # shortest 只換成本函數：bicycle 不能上的快速道路照樣不能走
+    result = router.route(grid_point(0, 3), grid_point(6, 3), shortest=True)
+    assert not touches_motorway_interior(result.points)
+    assert result.length_km > 1.6
+
+
+def test_shortest_route_still_rides_contraflow(router: Router) -> None:
+    result = router.route(grid_point(6, 0), grid_point(4, 0), shortest=True)
+    assert result.length_km == pytest.approx(0.40, abs=0.05)
+
+
+def test_shortest_route_never_rides_a_denied_way(router: Router) -> None:
+    for start, end in ((grid_point(0, 3), grid_point(6, 3)), (grid_point(6, 3), grid_point(0, 3))):
+        edges = router.edges(router.route(start, end, shortest=True).points)
+        assert all(e.way_id != MOTORWAY_WAY_ID for e in edges)

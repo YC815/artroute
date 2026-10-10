@@ -29,7 +29,7 @@ class IslandRouter:
         snapped = [(lon, lat + shift) for lon, lat in points]
         return RouteResult(points=snapped, length_km=polyline_length_m(snapped) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.route_calls += 1
         if on_island(end):
             raise RoutingError("終點在島上：route 到不了")

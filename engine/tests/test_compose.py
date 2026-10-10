@@ -21,7 +21,7 @@ class StraightRouter:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
 
@@ -147,7 +147,7 @@ def test_empty_parts() -> None:
 class CollapsingRouter(StraightRouter):
     """模擬真 Valhalla：起訖吸附到同一處時 route 成功，但只回傳一個點、長度 0。"""
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         return RouteResult(points=[start, start], length_km=0.0)
 
@@ -159,7 +159,7 @@ class OffsetRouter(StraightRouter):
         super().__init__()
         self.start_off_m, self.end_off_m = start_off_m, end_off_m
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         moved_start = (start[0], start[1] + self.start_off_m / 110_574)
         moved_end = (end[0], end[1] + self.end_off_m / 110_574)
@@ -352,7 +352,7 @@ class BlockedStartRouter(StraightRouter):
         super().__init__()
         self.blocked = blocked
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         if haversine_m(end, self.blocked) <= 5:
             end = (end[0], end[1] + 5 / 110_574)

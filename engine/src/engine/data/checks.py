@@ -88,5 +88,20 @@ def taiwan_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
     return failures
 
 
+class ShortestRoutes:
+    """吸附流程實際用的 route 設定（shortest=True）。驗證查詢也要對這個設定跑：吸附用的就是它。"""
+
+    def __init__(self, router: Router) -> None:
+        self._router = router
+
+    def route(self, start: LonLat, end: LonLat) -> RouteResult:
+        return self._router.route(start, end, shortest=True)
+
+    def edges(self, points: list[LonLat]) -> list[EdgeInfo]:
+        return self._router.edges(points)
+
+
 def validate_build(build_dir: Path) -> list[str]:
-    return taiwan_checks(Router.from_build(build_dir), load_denied(build_dir))
+    router, denied = Router.from_build(build_dir), load_denied(build_dir)
+    shortest = [f"（shortest）{failure}" for failure in taiwan_checks(ShortestRoutes(router), denied)]
+    return taiwan_checks(router, denied) + shortest

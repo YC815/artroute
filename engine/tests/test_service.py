@@ -102,7 +102,7 @@ class FakeRouter:
             raise RoutingError("bad")
         return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         if self.dead and any(self.dead[0] <= lon <= self.dead[1] for lon, _ in (start, end)):
             raise RoutingError("dead")
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
@@ -193,7 +193,7 @@ def test_search_radius_bounds_are_inclusive(radius: float) -> None:
 class ThreePointConnectorRouter(FakeRouter):
     """route 回傳 [start, start, end]：3 個點、2 個不同的點（Valhalla 的 connector 可能長這樣）。"""
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         return RouteResult(points=[start, start, end], length_km=haversine_m(start, end) / 1000)
 
 

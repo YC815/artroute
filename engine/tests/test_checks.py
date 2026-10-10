@@ -9,6 +9,7 @@ from engine.data.checks import (
     ZHOUMEI_EAST,
     ZHOUMEI_ONEWAY_WAY_ID,
     ZHOUMEI_WEST,
+    ShortestRoutes,
     _expressway_checks,
     taiwan_checks,
     validate_build,
@@ -216,6 +217,8 @@ def test_validate_build_loads_router_and_denied_from_build_dir(tmp_path: Path) -
     # 洲美街的兩個端點都吸附到玩具路網的同一點，是零長度路線，不會走到單行段
     assert any("沒有走洲美街單行段" in f for f in failures)
     assert any("找不到洲美快速道路" in f for f in failures)
+    # 吸附用的是 shortest 的 route：兩種設定都要驗
+    assert any(f.startswith("（shortest）") and "沒有走洲美街單行段" in f for f in failures)
 
 
 @pytest.mark.valhalla
@@ -260,3 +263,20 @@ def test_expressway_check_on_real_tiles_survives_link_whose_ends_snap_to_one_jun
     failures = _expressway_checks(unpatched, denied)
     assert any(f"[{EXPRESSWAY_WAY_ID}]" in f for f in failures)
     assert any(f"[{link.id}]" in f for f in failures)
+
+
+@pytest.mark.valhalla
+def test_expressway_check_with_shortest_routes_on_real_tiles(tmp_path: Path) -> None:
+    ways = [replace(w, tags={**w.tags, "name": "洲美快速道路"}) if w.id == EXPRESSWAY_WAY_ID else w for w in EXPRESSWAY_MAP]
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, ways)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    build_with_patch(src, build_dir)
+    denied = load_denied(build_dir)
+    assert _expressway_checks(ShortestRoutes(Router.from_build(build_dir)), denied) == []
+
+    # 對照組：不修補時最短路徑一定走快速道路，檢查必須抓到
+    unpatched = Router(build_tiles(src, tmp_path / "unpatched"))
+    failures = _expressway_checks(ShortestRoutes(unpatched), denied)
+    assert failures and all(f"[{EXPRESSWAY_WAY_ID}]" in f for f in failures)

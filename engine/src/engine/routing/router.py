@@ -138,10 +138,14 @@ class Router:
         _ensure_matched(result, points, search_radius_m)
         return result
 
-    def route(self, start: LonLat, end: LonLat) -> RouteResult:
+    def route(self, start: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult:
+        """shortest=True：bicycle 成本改成取最短距離（costing_options.bicycle.shortest）；
+        只換成本函數，通行權、單行道、轉向限制照舊。"""
         locations = [{**loc, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M} for loc in _locations([start, end])]
-        response = self._call("route", {"locations": locations, "costing": COSTING})
-        return _route_result(response)
+        request: dict = {"locations": locations, "costing": COSTING}
+        if shortest:
+            request["costing_options"] = {COSTING: {"shortest": True}}
+        return _route_result(self._call("route", request))
 
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]:
         # edge_walk 把折線的點逐一對上路段形狀的點，多一個重複點整條就配不上。

@@ -38,7 +38,7 @@ class BlockingRouter:
             return (point[0], point[1] + 5 / 110_574)
         return point
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         a, b = self._off(start, self.blocked_start), self._off(end, self.blocked_end)
         return RouteResult(points=[a, b], length_km=haversine_m(a, b) / 1000)
@@ -116,7 +116,7 @@ def test_short_pieces_are_not_trimmed_away() -> None:
 
 
 class FailingRouter(BlockingRouter):
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         raise RoutingError("no path")
 

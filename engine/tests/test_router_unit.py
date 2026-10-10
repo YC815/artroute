@@ -128,3 +128,12 @@ def test_edges_without_use_or_length_fall_back_to_defaults(monkeypatch: pytest.M
     # 建圖驗證也呼叫 edges()：量測用的欄位缺了不能讓驗證失敗
     edges, _ = _edges_requests(monkeypatch, [A, B, C])
     assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="", length_km=0.0)]
+
+
+def test_route_asks_for_the_shortest_path_only_when_told(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, plain = _captured_request(monkeypatch, lambda router: router.route(A, C))
+    assert "costing_options" not in plain
+    _, shortest = _captured_request(monkeypatch, lambda router: router.route(A, C, shortest=True))
+    assert shortest["costing"] == "bicycle"
+    assert shortest["costing_options"] == {"bicycle": {"shortest": True}}
+    assert [loc["node_snap_tolerance"] for loc in shortest["locations"]] == [0, 0]

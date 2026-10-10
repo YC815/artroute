@@ -40,7 +40,7 @@ class FakeRouter:
             raise RoutingError("bad")
         return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.route_calls += 1
         if self.max_route_m is not None and haversine_m(start, end) > self.max_route_m:
             raise RoutingError("too long")
@@ -200,7 +200,7 @@ class FarSnapRouter(FakeRouter):
         super().__init__(**kwargs)
         self.start_deg, self.end_deg = start_m / 110_574, end_m / 110_574
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         result = super().route(start, end)
         (lon0, lat0), (lon1, lat1) = result.points[0], result.points[-1]
         return RouteResult(
@@ -240,7 +240,7 @@ def test_island_endpoint_never_leaves_a_straight_gap_inside_a_chain() -> None:
 class ShortcutRouter(FakeRouter):
     """route 回傳的長度只有 1 m：任何繞路都會被 MIN_LENGTH_RATIO 拒絕（模擬塌縮、切角）。"""
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         result = super().route(start, end)
         return RouteResult(points=result.points, length_km=0.001)
 
@@ -282,7 +282,7 @@ class SplitSnapRouter(FakeRouter):
         snapped = [(lon, lat + shift) for lon, lat in points]
         return RouteResult(points=snapped, length_km=polyline_length_m(snapped) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.route_calls += 1
         right_start = (self.MID, LAT - self.SHIFT)
         if haversine_m(end, right_start) <= 5:
