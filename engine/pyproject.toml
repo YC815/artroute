@@ -9,6 +9,8 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
+    "numpy>=2.5.3",
+    "osmium>=4.3.1",
     "pyvalhalla==3.9.1",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -20,7 +22,6 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
-    "osmium>=4.3.1",
     "pytest>=9.1.1",
 ]
 
