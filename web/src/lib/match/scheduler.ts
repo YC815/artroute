@@ -2,7 +2,7 @@ import type { MatchOutcome } from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
 import { requestKey } from "@/lib/match/request";
 
-/** 拖曳中送出吸附請求的最小間隔（spec §4.2）。 */
+/** 拖曳中兩次送出之間的最小間隔（spec §4.2），從上一筆送出的時間起算。 */
 export const THROTTLE_MS = 300;
 
 export type SchedulerOptions = {
@@ -13,7 +13,10 @@ export type SchedulerOptions = {
    * key 是產生這個結果的請求的 requestKey：和「目前請求的 key」相等，結果才是目前這個擺放的路線。
    */
   onOutcome: (outcome: MatchOutcome, tag: string | null, key: string) => void;
-  /** 有請求排定（節流計時器）或進行中時為 true，結果套用或取消後為 false。值不變時不呼叫。 */
+  /**
+   * 有請求排定（節流計時器）、進行中、或拖曳中等在途那筆回來後要補送時為 true，結果套用或取消後為 false。
+   * 值不變時不呼叫。
+   */
   onPendingChange: (pending: boolean) => void;
   intervalMs?: number;
   /** 單調遞增的毫秒時鐘；預設 performance.now()，不受系統時間調整影響。 */
@@ -22,8 +25,13 @@ export type SchedulerOptions = {
 
 export type MatchScheduler = {
   /**
-   * 排程送出 request。dragging 為 true 時節流（每 intervalMs 最多一次，送最新的那個），
-   * false 時立刻送出。內容與上一個送出的相同（同一個物件或結構相等）且沒有失敗就不重送；失敗的可以再送。
+   * 排程送出 request。
+   * - dragging 為 true（拖曳中）：最多一筆在途，不 abort 在途的請求。沒有在途時節流（兩次送出至少相隔 intervalMs，
+   *   送最新的那個）；有在途時只記住最新的，等在途那筆回來（成功或失敗）後，若它和剛回來的那筆內容不同才補送，
+   *   補送同樣遵守 intervalMs。在途很慢（超過 intervalMs）時，使用者整段拖曳也看得到每筆回來的結果。
+   * - dragging 為 false（放開、鍵盤微調、改文字等）：立刻送出，並 abort 在途的請求（最終位置優先）。
+   * 內容與上一個送出的相同（同一個物件或結構相等）且沒有失敗就不重送；失敗的可以再送。
+   * 在途那筆失敗、而最新的和它相同時不會自動重送（不對壞掉的引擎無限重試），要下一次 schedule 才重送。
    * tag 會跟著這個請求，結果回來時交給 onOutcome（例如標記請求屬於哪個圖形）。
    */
   schedule: (request: MatchRequest, dragging: boolean, tag?: string | null) => void;
@@ -65,9 +73,18 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     lastSentKey = null;
   }
 
-  /** 排定的計時器或進行中的請求都算 pending：拖曳中「吸附中…」不會在兩次送出之間閃掉。 */
+  /** 進行中：已送出、結果還沒套用也沒被取消。 */
+  function inFlight() {
+    return applied !== issued;
+  }
+
+  /**
+   * 排定的計時器或進行中的請求都算 pending：拖曳中「吸附中…」不會在兩次送出之間閃掉。
+   * 拖曳中等在途完成後要補送的 latest，在補送之前在途那筆本身就讓 pending 維持 true；
+   * apply 在判斷完要不要補送之後才呼叫 syncPending，所以兩筆之間 pending 也不會閃。
+   */
   function syncPending() {
-    const next = timer !== null || applied !== issued;
+    const next = timer !== null || inFlight();
     if (next === pending) return;
     pending = next;
     onPendingChange(next);
@@ -78,16 +95,32 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     // 最新的請求失敗了：允許同一個 request 重送（例如引擎恢復後重試）
     if (!outcome.ok && seq === issued) forgetLastSent();
     onOutcome(outcome, tag, key);
+    // 拖曳中被擋下的 latest：和剛回來的這筆內容不同才補送。比的是這筆的 key 而不是 lastSentKey：
+    // 失敗時 lastSentKey 已被清掉，拿它比會把「剛失敗的同一個請求」當成新請求而無限重送。
+    if (latest !== null && requestKey(latest) !== key) arm();
     syncPending();
   }
 
-  function fire() {
-    clearTimer();
-    sendLatest();
+  /**
+   * 拖曳中的送出時機。已排定計時器就交給它；有請求在途就不動（不 abort），apply 在它回來時會再呼叫這裡。
+   * 否則距離上一筆送出滿 intervalMs 就立刻送，不滿就排計時器補足。
+   */
+  function arm() {
+    if (timer !== null || inFlight()) return;
+    // 夾在 [0, intervalMs]：時鐘倒退時 wait 會變得很大，不能因此卡住
+    const wait = Math.min(Math.max(lastSentAt + intervalMs - now(), 0), intervalMs);
+    if (wait === 0) sendLatest();
+    else timer = setTimeout(fireThrottled, wait);
+  }
+
+  /** 節流計時器到期。arm 只在沒有在途時排計時器，這裡再擋一次：萬一有在途，也只能等它回來，不能 abort 它。 */
+  function fireThrottled() {
+    timer = null;
+    if (!inFlight()) sendLatest();
     syncPending();
   }
 
-  /** 送出 latest；與上一個送出的相同就不送。 */
+  /** 送出 latest（abort 在途的請求）；與上一個送出的相同就不送。拖曳中的呼叫端必須先確認沒有在途。 */
   function sendLatest() {
     if (latest === null || latest === lastSent) return;
     const request = latest;
@@ -118,12 +151,13 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     schedule(request, dragging, tag = null) {
       latest = request;
       latestTag = tag;
-      if (!dragging) return fire();
-      if (timer !== null) return;
-      // 夾在 [0, intervalMs]：時鐘倒退時 wait 會變得很大，不能因此卡住
-      const wait = Math.min(Math.max(lastSentAt + intervalMs - now(), 0), intervalMs);
-      if (wait === 0) return fire();
-      timer = setTimeout(fire, wait);
+      if (dragging) {
+        arm();
+      } else {
+        // 放開：最終位置優先。取消節流計時器、abort 在途的請求，立刻送
+        clearTimer();
+        sendLatest();
+      }
       syncPending();
     },
     cancel() {
