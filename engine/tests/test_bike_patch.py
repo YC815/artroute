@@ -195,7 +195,9 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
     write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(500, [1, 2], tags)])
     patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset()))
     _, ways, _ = read_pbf(dst)
-    # bicycle_road、cycle_network 只是名字長得像，不是 Valhalla 讀的自行車通行 tag，必須留著
+    # bicycle_road、cycle_network 保留。Valhalla 3.9.1 的 lua 其實會讀 bicycle_road（與 cyclestreet）：
+    # bike_tag = bicycle or cycleway or bicycle_road or cyclestreet or ...，留著仍然安全，只因為 or 鏈以 bicycle 開頭，
+    # bicycle=no 已經先決定結果（"false" 在 Lua 是 truthy），後面的 tag 不會被讀。升級 pyvalhalla 要重新核對
     assert ways[500][0] == {
         **EXPRESSWAY_TAGS,
         "name": "八里新店線",
@@ -224,6 +226,9 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         {"vehicle:backward": "yes"},
         {"oneway": "yes", "vehicle:forward": "yes"},
         {"oneway": "-1", "vehicle:backward": "yes"},
+        # lua 會讀，但 bicycle=no 在 or 鏈裡先判定，所以保留也不會重新放行（升級 pyvalhalla 時靠這兩組把關）
+        {"bicycle_road": "yes"},
+        {"cyclestreet": "yes"},
         # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
         {"access:forward": "yes"},
         {"access:backward": "yes"},
@@ -232,7 +237,8 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
     ids=[
         "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
         "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
-        "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "access-forward", "access-backward", "vehicle-access-yes",
+        "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "bicycle-road", "cyclestreet",
+        "access-forward", "access-backward", "vehicle-access-yes",
     ],
 )
 def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags) -> None:
