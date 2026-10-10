@@ -4,7 +4,7 @@ from pathlib import Path
 import osmium
 import pytest
 
-from engine.data.bike_patch import Overrides, is_expressway, load_overrides, patch_pbf
+from engine.data.bike_patch import DeniedWay, Overrides, is_expressway, load_overrides, patch_pbf
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.routing.router import Router, RoutingError
 from engine.routing.tiles import build_tiles, config_path
@@ -307,6 +307,13 @@ def test_build_with_patch_writes_null_coordinates_and_loads_them_back(tmp_path: 
     assert loaded[0].first == pytest.approx(grid_point(0, 1))
     assert loaded[0].last is None
     assert not list(build_dir.glob("*.osm.pbf"))
+
+
+def test_load_denied_reads_old_format_without_highway(tmp_path: Path) -> None:
+    """Task 14 之前建的清單（例如已部署的 build 20261010T183449Z）沒有 highway 欄位：讀成空字串，bench 與驗證照常運作。"""
+    old = [{"id": 1075104270, "name": "洲美快速道路", "ref": "", "first": [121.4974, 25.0946], "last": None}]
+    (tmp_path / DENIED_FILE).write_text(json.dumps(old, ensure_ascii=False))
+    assert load_denied(tmp_path) == [DeniedWay(1075104270, "洲美快速道路", "", (121.4974, 25.0946), None, "")]
 
 
 def test_patch_passes_nodes_and_relations_through_unchanged(tmp_path: Path) -> None:
