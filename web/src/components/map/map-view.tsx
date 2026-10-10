@@ -2,7 +2,7 @@
 
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import { ENDPOINTS_SOURCE, SEGMENTS_SOURCE, addRouteLayers } from "@/components/map/route-layers";
 import type { MatchResponse } from "@/lib/engine/contract";
 import { routeGeoJson } from "@/lib/map/route-geojson";
@@ -10,19 +10,44 @@ import type { LonLat } from "@/lib/shape/types";
 
 export const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const INITIAL_ZOOM = 14;
+const LOAD_ERROR_MESSAGE = "地圖載入失敗，請稍後重試";
 
 type Props = {
   /** 只在建立地圖時使用。 */
   initialCenter: LonLat;
   response: MatchResponse | null;
+  /** 地圖樣式或資料來源載入失敗時通知一次（圖磚個別失敗不算）。 */
+  onError?: (message: string) => void;
   /** 地圖載入後才呼叫，用來疊上編輯器。 */
   children: (map: MapLibreMap) => ReactNode;
 };
 
-export function MapView({ initialCenter, response, children }: Props) {
+/**
+ * 圖磚錯誤（帶 tile）可能一次大量出現，只記一次警告；
+ * 其他錯誤（style、sprite、來源的 TileJSON）代表地圖畫不出來，記錄並通知一次。
+ */
+function watchErrors(map: MapLibreMap, alive: () => boolean, report: (message: string) => void): void {
+  let reported = false;
+  let tileWarned = false;
+  map.on("error", (e) => {
+    if (!alive()) return;
+    if ("tile" in e) {
+      if (!tileWarned) console.warn("地圖圖磚載入失敗", e.error);
+      tileWarned = true;
+      return;
+    }
+    console.error("地圖載入失敗", e.error);
+    if (!reported) report(LOAD_ERROR_MESSAGE);
+    reported = true;
+  });
+}
+
+export function MapView({ initialCenter, response, onError, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [center] = useState(initialCenter);
   const [map, setMap] = useState<MapLibreMap | null>(null);
+  // onError 每次 render 都可能是新函式，包成 effect event 才不會因此重建地圖
+  const reportError = useEffectEvent((message: string) => onError?.(message));
 
   useEffect(() => {
     let disposed = false;
@@ -43,14 +68,19 @@ export function MapView({ initialCenter, response, children }: Props) {
         maxPitch: 0,
       });
       instance.touchZoomRotate.disableRotation();
-      instance.once("load", () => {
+      instance.keyboard.disableRotation();
+      watchErrors(instance, () => !disposed, (message) => reportError(message));
+      // load 要等 style 加上第一批圖磚才會觸發，style 失敗時永遠不會來；style.load 一到就能加圖層
+      instance.once("style.load", () => {
+        if (disposed) return;
         addRouteLayers(instance);
-        if (!disposed) setMap(instance);
+        setMap(instance);
       });
       created = instance;
     });
     return () => {
       disposed = true;
+      setMap(null);
       created?.remove();
     };
   }, [center]);
@@ -58,8 +88,9 @@ export function MapView({ initialCenter, response, children }: Props) {
   useEffect(() => {
     if (!map) return;
     const data = routeGeoJson(response);
-    map.getSource<GeoJSONSource>(SEGMENTS_SOURCE)?.setData(data.segments);
-    map.getSource<GeoJSONSource>(ENDPOINTS_SOURCE)?.setData(data.endpoints);
+    // setData 失敗時 MapLibre 會自己發 error 事件，這裡只避免未處理的 rejection
+    void map.getSource<GeoJSONSource>(SEGMENTS_SOURCE)?.setData(data.segments).catch(() => {});
+    void map.getSource<GeoJSONSource>(ENDPOINTS_SOURCE)?.setData(data.endpoints).catch(() => {});
   }, [map, response]);
 
   return (
@@ -68,7 +99,8 @@ export function MapView({ initialCenter, response, children }: Props) {
       data-testid="map"
       data-route-segments={response?.segments.length ?? 0}
     >
-      <div ref={containerRef} className="absolute inset-0" />
+      {/* 用 inline style：maplibre-gl.css 的 .maplibregl-map { position: relative } 沒有包在 @layer，會蓋過 Tailwind 的 absolute */}
+      <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
       {map && children(map)}
     </div>
   );
