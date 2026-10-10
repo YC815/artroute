@@ -310,8 +310,8 @@ def probe_ends(way: DeniedWay) -> tuple:
     return (first[0] - dx * t, first[1] - dy * t), (last[0] + dx * t, last[1] + dy * t)
 
 
-def steps_router(*steps: DeniedWay) -> FakeRouter:
-    router = FakeRouter(routes={}, edges={})
+def steps_router(*steps: DeniedWay, raises: frozenset = frozenset()) -> FakeRouter:
+    router = FakeRouter(routes={}, edges={}, raises=raises)
     for way in steps:
         start, end = probe_ends(way)
         router.add_route(start, end, [EdgeInfo(7, 90.0)])
@@ -354,6 +354,33 @@ def test_steps_check_needs_at_least_one_route() -> None:
     router = FakeRouter(routes={}, edges={}, fail=True)
     failures = steps_checks(router, [STEPS_A])
     assert len(failures) == 1 and "樓梯檢查失敗" in failures[0]
+
+
+def test_steps_check_fails_when_fewer_than_half_of_the_routes_succeed() -> None:
+    """真實資料上很多樓梯夾在人行道網裡，外延的起訖吸附到別處或無路：只靠一兩條成功的路線不算證據。"""
+    a_start, a_end = probe_ends(STEPS_A)
+    b_start, b_end = probe_ends(STEPS_B)
+    router = steps_router(STEPS_A, STEPS_B, raises=frozenset({(a_end, a_start), (b_start, b_end), (b_end, b_start)}))
+    failures = steps_checks(router, [STEPS_A, STEPS_B])
+    assert len(failures) == 1
+    assert "樓梯檢查失敗" in failures[0] and "1/4" in failures[0] and "boom" in failures[0]
+
+
+def test_steps_check_passes_when_half_of_the_routes_succeed() -> None:
+    a_start, a_end = probe_ends(STEPS_A)
+    b_start, b_end = probe_ends(STEPS_B)
+    router = steps_router(STEPS_A, STEPS_B, raises=frozenset({(a_end, a_start), (b_end, b_start)}))
+    assert steps_checks(router, [STEPS_A, STEPS_B]) == []
+
+
+def test_steps_check_reports_both_violation_and_too_few_routes() -> None:
+    a_start, a_end = probe_ends(STEPS_A)
+    b_start, b_end = probe_ends(STEPS_B)
+    router = steps_router(STEPS_A, STEPS_B, raises=frozenset({(a_end, a_start), (b_start, b_end), (b_end, b_start)}))
+    router.add_route(a_start, a_end, [EdgeInfo(STEPS_B.id, 90.0)])
+    failures = steps_checks(router, [STEPS_A, STEPS_B])
+    assert any("使用了被禁行的路段 way [951]" in f for f in failures)
+    assert any("1/4" in f for f in failures)
 
 
 def test_steps_without_coordinates_fail_the_check() -> None:

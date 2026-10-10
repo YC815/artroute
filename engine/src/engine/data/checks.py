@@ -1,6 +1,6 @@
 """台灣真實路網的驗證查詢：新版路網必須全部通過才會啟用。"""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -18,6 +18,7 @@ STEPS_SAMPLE = 20  # 樓梯檢查抽樣的 way 數（依 way id 排序後等距�
 # route 的起訖不會吸附到樓梯上（實測），從樓梯端點出發的路線一開始就只能走別條路，未修補時也不會走樓梯。
 # 所以起訖改在兩端往外延伸這麼遠的地方，讓路線有機會經過樓梯
 STEPS_PROBE_M = 15.0
+STEPS_ERRORS_SHOWN = 5  # 失敗訊息最多列幾條找不到路的原因
 
 
 class RouterLike(Protocol):
@@ -41,11 +42,16 @@ def _oneway_checks(router: RouterLike) -> list[str]:
     return failures
 
 
-def _avoidance_failures(router: RouterLike, ways: list[DeniedWay], denied_ids: set[int], subject: str, noun: str) -> list[str]:
-    """每條 way 的首尾之間兩個方向各查一次自行車路線，不得經過任何被禁行的 way（ways 的端點座標都不是 None）。
+@dataclass(frozen=True)
+class _Avoidance:
+    failures: list[str]  # 經過禁行路段、或配不出經過哪些路段
+    errors: list[str]  # 找不到路、零長度：沒有證據，但也不是違規
+    succeeded: int  # 配得出路段的路線數（含違規的）
+    attempted: int
 
-    沒有任何一條路線能證明避開、也沒有任何失敗時 raise RoutingError：沒有證據不能算通過。
-    """
+
+def _avoidance(router: RouterLike, ways: list[DeniedWay], denied_ids: set[int], subject: str, noun: str) -> _Avoidance:
+    """每條 way 的首尾之間兩個方向各查一次自行車路線，不得經過任何被禁行的 way（ways 的端點座標都不是 None）。"""
     failures: list[str] = []
     errors: list[str] = []
     succeeded = 0
@@ -71,9 +77,7 @@ def _avoidance_failures(router: RouterLike, ways: list[DeniedWay], denied_ids: s
         used = {e.way_id for e in edges} & denied_ids
         if used:
             failures.append(f"自行車路線（{subject} {name}）使用了被禁行的{noun} way {sorted(used)}")
-    if not succeeded and not failures:
-        raise RoutingError("；".join(errors))
-    return failures
+    return _Avoidance(failures, errors, succeeded, len(directions))
 
 
 def _expressway_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
@@ -87,7 +91,10 @@ def _expressway_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]
     checkable = [d for d in zhoumei if d.first is not None and d.last is not None]
     if not checkable:
         return [f"{ZHOUMEI_EXPRESSWAY_NAME}的 way 都缺少端點座標：無法驗證自行車路線是否避開快速道路"]
-    return _avoidance_failures(router, checkable, {d.id for d in denied}, ZHOUMEI_EXPRESSWAY_NAME, "快速道路")
+    result = _avoidance(router, checkable, {d.id for d in denied}, ZHOUMEI_EXPRESSWAY_NAME, "快速道路")
+    if not result.succeeded and not result.failures:  # 沒有任何一條路線能證明避開，也沒有任何失敗：沒有證據不能算通過
+        raise RoutingError("；".join(result.errors))
+    return result.failures
 
 
 def _beyond(a: LonLat, b: LonLat, meters: float) -> LonLat:
@@ -105,7 +112,9 @@ def _steps_probe(way: DeniedWay) -> DeniedWay:
     return replace(way, first=_beyond(last, first, STEPS_PROBE_M), last=_beyond(first, last, STEPS_PROBE_M))
 
 
-def _steps_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
+def steps_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
+    """被標記禁行的樓梯至少一條；抽樣的樓梯兩端之間的自行車路線不得經過任何被禁行的 way，
+    而且至少一半的路線要配得出路段（真實資料上很多樓梯夾在人行道網裡，只靠一兩條路線不算證據）。"""
     steps = sorted((d for d in denied if d.highway == STEPS), key=lambda d: d.id)
     if not steps:
         return ["沒有任何樓梯被標記為禁行：資料或標記規則可能壞了"]
@@ -113,15 +122,12 @@ def _steps_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
     if not checkable:
         return ["被標記的樓梯都缺少端點座標：無法驗證自行車路線是否避開樓梯"]
     sample = checkable[:: max(1, len(checkable) // STEPS_SAMPLE)][:STEPS_SAMPLE]
-    return _avoidance_failures(router, [_steps_probe(d) for d in sample], {d.id for d in denied}, "樓梯", "路段")
-
-
-def steps_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
-    """被標記禁行的樓梯至少一條；抽樣的樓梯兩端之間的自行車路線不得經過任何被禁行的 way。"""
-    try:
-        return _steps_checks(router, denied)
-    except RoutingError as error:
-        return [f"樓梯檢查失敗：{error}"]
+    result = _avoidance(router, [_steps_probe(d) for d in sample], {d.id for d in denied}, "樓梯", "路段")
+    if 2 * result.succeeded >= result.attempted:
+        return result.failures
+    shortfall = (f"樓梯檢查失敗：只有 {result.succeeded}/{result.attempted} 條路線配得出路段（至少要一半）："
+                 + "；".join(result.errors[:STEPS_ERRORS_SHOWN]))
+    return [*result.failures, shortfall]
 
 
 def taiwan_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:

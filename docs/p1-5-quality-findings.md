@@ -224,8 +224,8 @@ T7+fix 下降清單的 13 條（11 個案例）全部被接受，分三類（對
 ### 做了什麼
 
 - 樓梯：建圖前所有 `highway=steps` 標成 `bicycle=no`，比照快速道路移除會重新放行的 tag（`bicycle:*`、`cycleway*`、`oneway:bicycle`、`vehicle:forward/backward`，另加 `service=driveway`，見下）。沒有例外：`bicycle=yes`＋`ramp:bicycle=yes`（有牽引道的樓梯）也禁行，`allow` 清單也不例外。被標記的樓梯寫進禁行清單（加 `highway` 欄位），bench 的安全斷言因此也涵蓋樓梯。
-- `validate_build` 加樓梯檢查：被標記的樓梯至少一條；依 way id 等距抽 20 條，兩端各往外延伸 15 m 當起訖、兩個方向各查一次（預設與 shortest 兩種設定），路線不得經過任何被禁行的 way。
-- 人行道：自行車**本來就能走**的 `footway`／`pedestrian`（含 sidewalk、crossing）標成 `bicycle=dismount`；本來不能走的維持不能走。判斷「本來就能走」：`bicycle` 是 Valhalla lua 視為可通行的值（yes、designated、permissive、use_sidepath……），或沒有 `bicycle` 時 `cycleway`／`cycleway:both` 放行。`path`、`cycleway` 不動。
+- `validate_build` 加樓梯檢查：被標記的樓梯至少一條；依 way id 等距抽 20 條，兩端各往外延伸 15 m 當起訖、兩個方向各查一次（預設與 shortest 兩種設定），路線不得經過任何被禁行的 way，且至少一半的路線要配得出路段（修補後的真實 build 上兩種設定都是 34/40）。
+- 人行道：自行車**本來就能走**的 `footway`／`pedestrian`（含 sidewalk、crossing）標成 `bicycle=dismount`；本來不能走的維持不能走。判斷「本來就能走」：`bicycle` 是 Valhalla lua 視為可通行的值（yes、designated、permissive、use_sidepath……），或沒有 `bicycle` 時 `cycleway`／`cycleway:both` 放行（`cycleway=opposite*` 只放行逆向，標 dismount 會連順向打開，所以不算；台灣資料 0 條受影響）。`path`、`cycleway` 不動。
 
 ### 標記數量（m1，`/data/osm/taiwan-latest.osm.pbf`，與 build `20261010T183449Z` 同一份）
 
