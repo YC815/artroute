@@ -17,4 +17,4 @@ RUN uv run --no-sync pytest -q
 FROM base AS runtime
 COPY . .
 RUN uv sync --frozen --no-dev
-CMD exec uv run --no-sync uvicorn engine.app:app --host 0.0.0.0 --port "$PORT"
+CMD exec uv run --no-sync uvicorn engine.app:app --host 0.0.0.0 --port "$PORT" --workers "${ENGINE_WORKERS:-2}"
