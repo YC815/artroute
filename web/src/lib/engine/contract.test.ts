@@ -106,4 +106,8 @@ describe("引擎回應型別 → zod 解析結果", () => {
     expectTypeOf<components["schemas"]["MatchResponse"]>().toExtend<z.infer<typeof matchResponseSchema>>();
     expectTypeOf<components["schemas"]["StatusResponse"]>().toExtend<z.infer<typeof statusResponseSchema>>();
   });
+
+  it("ErrorDetail 可被 errorDetailSchema（超集）接受；不綁 code enum", () => {
+    expectTypeOf<components["schemas"]["ErrorDetail"]>().toExtend<z.infer<typeof errorDetailSchema>>();
+  });
 });
