@@ -4,11 +4,11 @@
 import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
-from engine.matching.join import TRIM_STEPS_M, join
+from engine.matching.join import TRIM_STEPS_M, connect, join
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
-from turn_router import TurnBlockRouter
+from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
 M_PER_DEG_LON = 100_900  # 緯度 25° 附近
@@ -172,3 +172,24 @@ def test_link_whose_near_end_turn_cannot_be_ridden_trims_the_previous_piece() ->
     assert_joined(joined)
     assert joined.after == AFTER
     assert is_prefix(joined.before.points, BEFORE_NORTH.points) and joined.before != BEFORE_NORTH
+
+
+# ---- P1.5 Task 10 fix 1：link 旁邊不到 1 m 的片段，不能把轉彎藏起來 ----
+
+
+def test_tiny_piece_next_to_the_link_does_not_hide_the_turn() -> None:
+    # 接在 J 的 right[0] 只有 0.4 m，東→北的轉彎（J 不能轉）在它後面的 right[1]：探針要跨過它才量得到
+    left = [seg([east(J_END, -250), east(J_END, -50)])]  # 終點離 J 西邊 50 m
+    right = [seg([J_END, north(J_END, 0.4)]), seg([north(J_END, 0.4), north(J_END, 200)])]
+    assert connect(TurnBlockRouter(blocked=J_END), Deadline(10), left, right, "connector", None) is None
+    free = connect(TurnBlockRouter(), Deadline(10), left, right, "connector", None)  # 對照：J 能轉彎就接得上
+    assert free is not None and every_junction_rideable(TurnBlockRouter(), free)
+
+
+def test_trim_that_leaves_a_stub_does_not_hide_the_turn() -> None:
+    # 裁掉 before 的尾巴會留下 0.4 m 的殘段：殘段與 link 之間的轉彎（J 不能轉）仍要量到
+    k = east(J_END, 21)
+    left = [seg([east(J_END, -200), J_END]), seg([J_END, east(J_END, 0.4), k])]
+    right = [seg([north(k, 25), north(k, 200)])]
+    router = TurnBlockRouter(blocked=k, also_blocked=(J_END,))  # k 讓第一次嘗試失敗而裁切，J 擋住裁切後的轉彎
+    assert connect(router, Deadline(10), left, right, "connector", None) is None

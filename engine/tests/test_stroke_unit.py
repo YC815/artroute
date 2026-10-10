@@ -4,12 +4,11 @@ import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.stroke import densify, match_stroke
-from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
 from island_router import IslandRouter, across_island
-from turn_router import TurnBlockRouter, east, north
+from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
 
@@ -380,6 +379,5 @@ def test_trace_pieces_meeting_at_a_turn_valhalla_would_not_ride_are_not_joined_d
     assert [[s.kind for s in c] for c in result.chains] == [["stroke", "detour", "stroke"]]
     chain = result.chains[0]
     assert_chain_continuous(chain)
-    check = TurnBlockRouter(blocked=CORNER)
-    assert all(rideable(check, Deadline(10), a.points, b.points) for a, b in zip(chain, chain[1:]))
+    assert every_junction_rideable(TurnBlockRouter(blocked=CORNER), chain)
     assert result.warnings == []

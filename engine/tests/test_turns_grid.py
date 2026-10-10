@@ -11,6 +11,7 @@ from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import Router
 from osm_fixture import X3, grid_point
+from turn_router import every_junction_rideable
 
 pytestmark = pytest.mark.valhalla
 
@@ -43,4 +44,4 @@ def test_compose_never_joins_the_bridge_to_the_road_underneath(router: Router) -
     assert [s.kind for s in result.segments] != ["stroke", "stroke"]  # 舊版：交叉點相距 0 m，直接接成一條
     for a, b in zip(result.segments, result.segments[1:]):
         assert haversine_m(a.points[-1], b.points[0]) <= JOIN_TOLERANCE_M
-        assert rideable(router, Deadline(30), a.points, b.points)
+    assert every_junction_rideable(router, result.segments)

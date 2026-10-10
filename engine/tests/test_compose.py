@@ -7,11 +7,10 @@ import pytest
 from engine.matching.compose import ANCHOR_TIE_M, MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.stroke import densify
-from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
-from turn_router import TurnBlockRouter, east, north
+from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
 
@@ -544,5 +543,4 @@ def test_parts_meeting_at_a_turn_valhalla_would_not_ride_get_a_connector() -> No
     assert result.dropped == []
     assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
     assert_continuous(result.segments)
-    check = TurnBlockRouter(blocked=CORNER)
-    assert all(rideable(check, Deadline(10), x.points, y.points) for x, y in zip(result.segments, result.segments[1:]))
+    assert every_junction_rideable(TurnBlockRouter(blocked=CORNER), result.segments)

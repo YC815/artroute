@@ -16,14 +16,13 @@ from engine.matching.service import (
     default_search_radius,
     match_shape,
 )
-from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
 from grid_helpers import densify, rides_westward_on_row
 from island_router import IslandRouter, across_island
 from osm_fixture import grid_point
-from turn_router import TurnBlockRouter
+from turn_router import TurnBlockRouter, every_junction_rideable
 
 LAT = 25.05
 
@@ -487,5 +486,4 @@ def test_closed_stroke_whose_seam_turn_cannot_be_ridden_is_not_rotated_through_i
     result = match_shape(TurnBlockRouter(blocked=SW), strokes, search_radius_m=50, deadline=Deadline(30))
     assert result.warnings == []
     assert_joins_within_tolerance(result.segments)
-    check = TurnBlockRouter(blocked=SW)
-    assert all(rideable(check, Deadline(10), a.points, b.points) for a, b in zip(result.segments, result.segments[1:]))
+    assert every_junction_rideable(TurnBlockRouter(blocked=SW), result.segments)

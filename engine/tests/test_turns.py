@@ -92,3 +92,24 @@ def test_probes_walk_across_a_tiny_segment() -> None:
 def test_tail_points_stop_once_long_enough() -> None:
     far, near = seg([east(J, -300), east(J, -100)]), seg([east(J, -100), J])
     assert tail_points([far, near]) == near.points
+
+
+def test_zero_length_arm_is_not_straight() -> None:
+    assert turn_deg(J, J, north(J, 10)) == 180
+    assert turn_deg(east(J, -10), J, J) == 180
+
+
+def test_probe_that_folds_back_onto_the_junction_is_not_rideable() -> None:
+    # incoming 最後 8 m 是 J→東 4 m→J 的來回：往回走 8 m 剛好落在 J，量不出通過 J 的方向，不是迴轉，不放行
+    spur_in = [east(J, -200), J, east(J, 4), J]
+    router = TurnBlockRouter(blocked=None)
+    assert not rideable(router, Deadline(10), spur_in, LEFT)
+    # outgoing 一開始也來回 4 m
+    spur_out = [J, east(J, 4), J, north(J, 100)]
+    assert not rideable(router, Deadline(10), INCOMING, spur_out)
+    assert router.route_calls == []  # 量不出來就不放行，不靠 route
+
+
+def test_head_points_stop_once_long_enough() -> None:
+    near, far = seg([J, east(J, 100)]), seg([east(J, 100), east(J, 300)])
+    assert head_points([near, far]) == near.points

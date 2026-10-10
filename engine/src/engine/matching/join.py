@@ -9,6 +9,7 @@
 裁到底仍接不上才回 None，由呼叫端斷開 chain 或丟掉部件。
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from engine.matching.deadline import Deadline
@@ -55,9 +56,13 @@ def _attempt(
     head: int,
     kind: SegmentKind,
     stroke_index: int | None,
+    lead: Sequence[Segment],
+    trail: Sequence[Segment],
 ) -> tuple[Joined | None, bool, bool]:
     """試一次：route 前段第 tail 點 → 後段第 head 點。回傳 (接上的結果或 None, 起點側沒接上, 終點側沒接上)。
-    端點離要求的位置超過 JOIN_TOLERANCE_M，或接點的轉彎不能直接騎，都算那一側沒接上。"""
+    端點離要求的位置超過 JOIN_TOLERANCE_M，或接點的轉彎不能直接騎，都算那一側沒接上。
+    轉彎的探針沿著整條路線走：前段 before 之前接著 lead、後段 after 之後接著 trail，
+    所以裁切留下的短殘段或零長度片段，擋不住它兩側的轉彎。"""
     start, end = before.points[tail], after.points[head]
     result = try_route(router, deadline, start, end)
     if result is None:
@@ -67,12 +72,16 @@ def _attempt(
     if start_missed or end_missed:
         return None, start_missed, end_missed
     kept_before, kept_after = _cut(before, before.points[: tail + 1]), _cut(after, after.points[head:])
-    # 探針跨過 link：很短的 link 不能把前後兩段之間的轉彎藏起來
-    start_missed = not rideable(router, deadline, kept_before.points, result.points + kept_after.points[1:])
-    end_missed = not rideable(router, deadline, kept_before.points + result.points[1:], kept_after.points)
+    link = segment_from(kind, stroke_index, result)
+    start_missed = not rideable(
+        router, deadline, tail_points([*lead, kept_before]), head_points([link, kept_after, *trail])
+    )
+    end_missed = not rideable(
+        router, deadline, tail_points([*lead, kept_before, link]), head_points([kept_after, *trail])
+    )
     if start_missed or end_missed:
         return None, start_missed, end_missed
-    return Joined(kept_before, segment_from(kind, stroke_index, result), kept_after), False, False
+    return Joined(kept_before, link, kept_after), False, False
 
 
 def join(
@@ -82,14 +91,20 @@ def join(
     after: Segment,
     kind: SegmentKind,
     stroke_index: int | None,
+    *,
+    lead: Sequence[Segment] = (),
+    trail: Sequence[Segment] = (),
 ) -> Joined | None:
-    """接上 before 的終點與 after 的起點（兩端都已經在路上）；接不上回傳 None。"""
+    """接上 before 的終點與 after 的起點（兩端都已經在路上）；接不上回傳 None。
+    lead 是 before 之前的路段、trail 是 after 之後的路段（只用來讓轉彎探針跨段，不會被裁切或改動）。"""
     last = len(before.points) - 1
     tails = [last] + [last - k for k in _marks(before.points[::-1])]  # 前段保留到第幾點
     heads = [0] + _marks(after.points)  # 後段從第幾點開始
     t = h = 0
     while True:
-        joined, start_missed, end_missed = _attempt(router, deadline, before, after, tails[t], heads[h], kind, stroke_index)
+        joined, start_missed, end_missed = _attempt(
+            router, deadline, before, after, tails[t], heads[h], kind, stroke_index, lead, trail
+        )
         if joined is not None:
             return joined
         step = (min(t + start_missed, len(tails) - 1), min(h + end_missed, len(heads) - 1))
@@ -120,7 +135,7 @@ def connect(
     """
     if adjacent(router, deadline, left, right):
         return [*left, *right]
-    joined = join(router, deadline, left[-1], right[0], kind, stroke_index)
+    joined = join(router, deadline, left[-1], right[0], kind, stroke_index, lead=left[:-1], trail=right[1:])
     if joined is None:
         return None
     return [*left[:-1], joined.before, joined.link, joined.after, *right[1:]]
