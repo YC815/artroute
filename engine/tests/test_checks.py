@@ -6,17 +6,30 @@ import pytest
 from engine.data.bike_patch import DeniedWay
 from engine.data.build import build_with_patch, load_denied
 from engine.data.checks import (
+    STEPS_PROBE_M,
+    STEPS_SAMPLE,
     ZHOUMEI_EAST,
     ZHOUMEI_ONEWAY_WAY_ID,
     ZHOUMEI_WEST,
     ShortestRoutes,
     _expressway_checks,
+    steps_checks,
     taiwan_checks,
     validate_build,
 )
+from engine.routing.geo import haversine_m
 from engine.routing.router import EdgeInfo, RouteResult, Router, RoutingError
 from engine.routing.tiles import build_tiles
-from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, GridWay, grid_point, write_grid_pbf
+from osm_fixture import (
+    EXPRESSWAY_MAP,
+    EXPRESSWAY_WAY_ID,
+    STEPS_MAP,
+    STEPS_WAY_ID,
+    X0,
+    GridWay,
+    grid_point,
+    write_grid_pbf,
+)
 
 EXPRESSWAY = DeniedWay(900, "洲美快速道路", "", (121.50, 25.10), (121.52, 25.11))
 OTHER_DENIED = DeniedWay(901, "八里新店線", "台64", (121.40, 25.05), (121.45, 25.05))
@@ -281,3 +294,126 @@ def test_expressway_check_with_shortest_routes_on_real_tiles(tmp_path: Path) -> 
     unpatched = Router(build_tiles(src, tmp_path / "unpatched"))
     failures = _expressway_checks(ShortestRoutes(unpatched), denied)
     assert failures and all(f"[{EXPRESSWAY_WAY_ID}]" in f for f in failures)
+
+
+# ---- 樓梯檢查：被標記的樓梯至少一條；抽樣的樓梯兩端之間的自行車路線不得經過任何被禁行的 way ----
+
+STEPS_A = DeniedWay(950, "", "", (121.55, 25.03), (121.551, 25.03), "steps")
+STEPS_B = DeniedWay(951, "", "", (121.56, 25.04), (121.561, 25.04), "steps")
+
+
+def probe_ends(way: DeniedWay) -> tuple:
+    """樓梯檢查實際查的起訖：兩端各往外延伸 STEPS_PROBE_M。"""
+    first, last = way.first, way.last
+    dx, dy = last[0] - first[0], last[1] - first[1]
+    t = STEPS_PROBE_M / haversine_m(first, last)
+    return (first[0] - dx * t, first[1] - dy * t), (last[0] + dx * t, last[1] + dy * t)
+
+
+def steps_router(*steps: DeniedWay) -> FakeRouter:
+    router = FakeRouter(routes={}, edges={})
+    for way in steps:
+        start, end = probe_ends(way)
+        router.add_route(start, end, [EdgeInfo(7, 90.0)])
+        router.add_route(end, start, [EdgeInfo(8, 270.0)])
+    return router
+
+
+def test_steps_probe_ends_lie_beyond_both_ends_of_the_steps() -> None:
+    start, end = probe_ends(STEPS_A)
+    assert haversine_m(start, STEPS_A.first) == pytest.approx(STEPS_PROBE_M, rel=1e-3)
+    assert haversine_m(end, STEPS_A.last) == pytest.approx(STEPS_PROBE_M, rel=1e-3)
+    assert haversine_m(start, end) == pytest.approx(haversine_m(STEPS_A.first, STEPS_A.last) + 2 * STEPS_PROBE_M, rel=1e-3)
+
+
+def test_steps_check_passes_when_routes_avoid_marked_steps() -> None:
+    assert steps_checks(steps_router(STEPS_A, STEPS_B), [EXPRESSWAY, STEPS_A, STEPS_B]) == []
+
+
+def test_steps_check_fails_when_no_steps_are_marked() -> None:
+    failures = steps_checks(steps_router(), [EXPRESSWAY, OTHER_DENIED])
+    assert len(failures) == 1 and "沒有任何樓梯被標記" in failures[0]
+
+
+def test_steps_check_fails_when_route_uses_a_marked_steps_way() -> None:
+    router = steps_router(STEPS_A, STEPS_B)
+    start, end = probe_ends(STEPS_B)
+    router.add_route(end, start, [EdgeInfo(8, 270.0), EdgeInfo(STEPS_A.id, 270.0)])
+    failures = steps_checks(router, [STEPS_A, STEPS_B])
+    assert len(failures) == 1
+    assert "樓梯 way 951 逆向" in failures[0] and "使用了被禁行的路段 way [950]" in failures[0]
+
+
+def test_steps_check_also_catches_marked_expressway() -> None:
+    router = steps_router(STEPS_A)
+    router.add_route(*probe_ends(STEPS_A), [EdgeInfo(EXPRESSWAY.id, 90.0)])
+    assert any("[900]" in f for f in steps_checks(router, [EXPRESSWAY, STEPS_A]))
+
+
+def test_steps_check_needs_at_least_one_route() -> None:
+    router = FakeRouter(routes={}, edges={}, fail=True)
+    failures = steps_checks(router, [STEPS_A])
+    assert len(failures) == 1 and "樓梯檢查失敗" in failures[0]
+
+
+def test_steps_without_coordinates_fail_the_check() -> None:
+    failures = steps_checks(steps_router(), [replace(STEPS_A, first=None), replace(STEPS_B, last=None)])
+    assert len(failures) == 1 and "座標" in failures[0]
+
+
+def test_steps_check_samples_evenly_by_way_id() -> None:
+    """全台上萬條樓梯每條都查太慢：依 way id 排序後等距抽 STEPS_SAMPLE 條（兩個方向）。"""
+    steps = [DeniedWay(10_000 + i, "", "", (121.0 + i * 1e-3, 25.0), (121.0 + i * 1e-3, 25.001), "steps")
+             for i in range(5 * STEPS_SAMPLE)]
+    router = steps_router(*steps)
+    calls: list = []
+    route = router.route
+    router.route = lambda start, end: calls.append((start, end)) or route(start, end)
+    assert steps_checks(router, list(reversed(steps))) == []
+    checked = sorted({d.id for d in steps if probe_ends(d) in calls})
+    assert len(calls) == 2 * STEPS_SAMPLE
+    assert checked == [10_000 + 5 * i for i in range(STEPS_SAMPLE)]
+
+
+def test_expressway_check_does_not_count_steps_as_expressways() -> None:
+    failures = taiwan_checks(make_router(), [STEPS_A])
+    assert any("沒有任何快速道路" in f for f in failures)
+
+
+@pytest.mark.valhalla
+def test_steps_check_on_real_tiles_passes_when_patched_and_fails_when_not(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, STEPS_MAP)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    build_with_patch(src, build_dir)
+    denied = load_denied(build_dir)
+    assert [(d.id, d.highway) for d in denied] == [(STEPS_WAY_ID, "steps")]
+
+    patched = Router.from_build(build_dir)
+    assert steps_checks(patched, denied) == []
+    assert steps_checks(ShortestRoutes(patched), denied) == []
+
+    # 對照組：不修補時最短路徑走樓梯，檢查必須抓到（預設成本本來就繞開樓梯，抓不到不代表檢查壞了）
+    unpatched = Router(build_tiles(src, tmp_path / "unpatched"))
+    failures = steps_checks(ShortestRoutes(unpatched), denied)
+    assert failures and all(f"[{STEPS_WAY_ID}]" in f for f in failures)
+
+
+@pytest.mark.valhalla
+def test_validate_build_runs_steps_check_with_both_route_settings(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, EXPRESSWAY_MAP)  # 沒有樓梯
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    build_with_patch(src, build_dir)
+    failures = validate_build(build_dir)
+    assert any("沒有任何樓梯被標記" in f and not f.startswith("（shortest）") for f in failures)
+    assert any("沒有任何樓梯被標記" in f and f.startswith("（shortest）") for f in failures)
+
+    steps_src = tmp_path / "steps.osm.pbf"
+    write_grid_pbf(steps_src, STEPS_MAP)
+    steps_dir = tmp_path / "steps"
+    steps_dir.mkdir()
+    build_with_patch(steps_src, steps_dir)
+    assert not any("樓梯" in f for f in validate_build(steps_dir))
