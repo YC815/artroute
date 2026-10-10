@@ -61,3 +61,13 @@ def test_trace_rejects_single_point(grid_config: Path) -> None:
 def test_trace_rejects_radius_out_of_range(grid_config: Path, radius: float) -> None:
     with pytest.raises(RoutingError):
         Router(grid_config).trace([grid_point(0, 1), grid_point(1, 1)], search_radius_m=radius)
+
+
+@pytest.mark.valhalla
+def test_from_build_without_tiles_raises_routing_error(grid_config: Path, tmp_path: Path) -> None:
+    broken = tmp_path / "broken"
+    shutil.copytree(grid_config.parent, broken)
+    shutil.rmtree(broken / "tiles")  # 模擬 tiles 目錄沒掛載或被刪掉
+
+    with pytest.raises(RoutingError, match="無法載入路網"):
+        Router.from_build(broken)

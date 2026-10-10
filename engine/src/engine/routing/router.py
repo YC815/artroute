@@ -97,7 +97,10 @@ class Router:
     """
 
     def __init__(self, config: Path | dict) -> None:
-        self._actor = Actor(config if isinstance(config, dict) else str(config))
+        try:
+            self._actor = Actor(config if isinstance(config, dict) else str(config))
+        except (OSError, RuntimeError) as error:  # tiles 目錄不存在（FileNotFoundError 是 OSError）、設定不合法
+            raise RoutingError(f"無法載入路網：{error}") from error
         self._lock = threading.Lock()
 
     @classmethod
