@@ -7,9 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from engine.data.layout import DataLayout
-
-META_FILE = "meta.json"
+from engine.data.layout import META_FILE, DataLayout
 
 
 @dataclass(frozen=True)
@@ -37,11 +35,11 @@ def run_build(
         failures = validator(build_dir)
         if failures:
             raise ValidationFailed("；".join(failures))
+        meta = BuildMeta(build_id=build_id, osm_md5=osm_md5, created_at=datetime.now(UTC).isoformat())
+        (build_dir / META_FILE).write_text(json.dumps(asdict(meta)))
     except BaseException:
         shutil.rmtree(build_dir, ignore_errors=True)
         raise
-    meta = BuildMeta(build_id=build_id, osm_md5=osm_md5, created_at=datetime.now(UTC).isoformat())
-    (build_dir / META_FILE).write_text(json.dumps(asdict(meta)))
     layout.activate(build_dir)
     layout.prune(keep=2)
     return meta

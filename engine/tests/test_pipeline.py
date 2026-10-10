@@ -37,6 +37,7 @@ def test_builder_crash_keeps_previous_current(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         run_build(layout, tmp_path / "x.pbf", "new", "20261010T000000Z", crashing_builder, lambda d: [])
     assert read_meta(layout.current()).osm_md5 == "old"
+    assert not (layout.builds_dir / "20261010T000000Z").exists()
 
 
 def test_read_meta_missing(tmp_path: Path) -> None:

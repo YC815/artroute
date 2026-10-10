@@ -4,6 +4,8 @@ import os
 import shutil
 from pathlib import Path
 
+META_FILE = "meta.json"  # 建置完成的標記：只有含此檔的 build 才算完成
+
 
 class DataLayout:
     def __init__(self, root: Path) -> None:
@@ -39,10 +41,16 @@ class DataLayout:
         os.replace(tmp, self.current_link)
 
     def prune(self, keep: int = 2) -> list[Path]:
-        builds = sorted(p for p in self.builds_dir.iterdir() if p.is_dir())
+        """只有完成的 build 佔 keep 名額；中斷的殘骸一律刪除，不擠掉回滾版。"""
+        if not self.builds_dir.is_dir():
+            return []
+        dirs = sorted(p for p in self.builds_dir.iterdir() if p.is_dir())
+        complete = [p for p in dirs if (p / META_FILE).is_file()]
+        keep_set = {p.resolve() for p in complete[max(len(complete) - keep, 0) :]}
         current = self.current()
-        keep_set = {p.resolve() for p in builds[-keep:]} | ({current} if current else set())
-        removed = [p for p in builds if p.resolve() not in keep_set]
+        if current:
+            keep_set.add(current)
+        removed = [p for p in dirs if p.resolve() not in keep_set]
         for path in removed:
             shutil.rmtree(path)
         return removed
