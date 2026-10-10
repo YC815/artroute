@@ -1,0 +1,544 @@
+{
+  "components": {
+    "schemas": {
+      "BuildInfo": {
+        "properties": {
+          "build_id": {
+            "title": "Build Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "osm_md5": {
+            "title": "Osm Md5",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build_id",
+          "osm_md5",
+          "created_at"
+        ],
+        "title": "BuildInfo",
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "description": "領域錯誤的 detail；warnings 只有 no_route 會帶。",
+        "properties": {
+          "code": {
+            "enum": [
+              "outside_taiwan",
+              "too_small",
+              "no_route",
+              "no_data",
+              "timeout"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WarningOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "MatchRequest": {
+        "properties": {
+          "search_radius_m": {
+            "anyOf": [
+              {
+                "maximum": 150.0,
+                "minimum": 30.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Radius M"
+          },
+          "strokes": {
+            "items": {
+              "$ref": "#/components/schemas/StrokeIn"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Strokes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "strokes"
+        ],
+        "title": "MatchRequest",
+        "type": "object"
+      },
+      "MatchResponse": {
+        "properties": {
+          "data_version": {
+            "title": "Data Version",
+            "type": "string"
+          },
+          "route": {
+            "$ref": "#/components/schemas/RouteOut"
+          },
+          "score": {
+            "$ref": "#/components/schemas/ScoreOut"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentOut"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "target_length_m": {
+            "minimum": 0.0,
+            "title": "Target Length M",
+            "type": "number"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/WarningOut"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "route",
+          "segments",
+          "score",
+          "target_length_m",
+          "warnings",
+          "data_version"
+        ],
+        "title": "MatchResponse",
+        "type": "object"
+      },
+      "RouteOut": {
+        "properties": {
+          "length_m": {
+            "minimum": 0.0,
+            "title": "Length M",
+            "type": "number"
+          },
+          "points": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points",
+          "length_m"
+        ],
+        "title": "RouteOut",
+        "type": "object"
+      },
+      "ScoreOut": {
+        "properties": {
+          "cleanliness": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Cleanliness",
+            "type": "integer"
+          },
+          "coverage": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Coverage",
+            "type": "integer"
+          },
+          "overall": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Overall",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "coverage",
+          "cleanliness",
+          "overall"
+        ],
+        "title": "ScoreOut",
+        "type": "object"
+      },
+      "SegmentOut": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "stroke",
+              "detour",
+              "connector"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "length_m": {
+            "minimum": 0.0,
+            "title": "Length M",
+            "type": "number"
+          },
+          "points": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "stroke_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stroke Index"
+          }
+        },
+        "required": [
+          "kind",
+          "stroke_index",
+          "points",
+          "length_m"
+        ],
+        "title": "SegmentOut",
+        "type": "object"
+      },
+      "StatusResponse": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuildInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "StatusResponse",
+        "type": "object"
+      },
+      "StrokeIn": {
+        "properties": {
+          "closed": {
+            "default": false,
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "points": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 2000,
+            "minItems": 2,
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "StrokeIn",
+        "type": "object"
+      },
+      "ValidationErrorResponse": {
+        "description": "請求格式錯誤（FastAPI 的 422 陣列形式）；每筆只有 type / loc / msg，最多 20 筆。",
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ValidationErrorResponse",
+        "type": "object"
+      },
+      "ValidationIssue": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "loc",
+          "msg"
+        ],
+        "title": "ValidationIssue",
+        "type": "object"
+      },
+      "WarningOut": {
+        "properties": {
+          "code": {
+            "enum": [
+              "no_route",
+              "partial"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "stroke_index": {
+            "title": "Stroke Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stroke_index",
+          "code",
+          "message"
+        ],
+        "title": "WarningOut",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "artroute-engine",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/match": {
+      "post": {
+        "operationId": "match_match_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "圖形不在台灣範圍內（outside_taiwan）"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Match Match Post"
+                }
+              }
+            },
+            "description": "圖形太小、找不到路線，或請求格式錯誤"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "路網資料尚未就緒（no_data）"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "吸附超過時間上限（timeout）"
+          }
+        },
+        "summary": "Match"
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "status_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status"
+      }
+    }
+  }
+}

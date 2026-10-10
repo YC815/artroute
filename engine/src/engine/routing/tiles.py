@@ -9,11 +9,18 @@ from pathlib import Path
 from valhalla import get_config
 
 
-MAX_SEARCH_RADIUS_M = 150  # spec §4.3 的 trace search_radius 上限（Valhalla 預設只有 100）
+# spec §4.3 的搜尋半徑範圍（唯一定義處）：API 驗證、自動半徑、Valhalla 設定共用。上限要寫進 Valhalla 設定（預設只有 100）
+MIN_SEARCH_RADIUS_M = 30
+MAX_SEARCH_RADIUS_M = 150
 
 
 class TileBuildError(Exception):
     pass
+
+
+def config_path(build_dir: Path) -> Path:
+    """build 目錄裡 Valhalla 設定檔的位置（唯一定義處）。"""
+    return build_dir / "valhalla.json"
 
 
 def write_config(tile_dir: Path, config_path: Path) -> dict:
@@ -35,14 +42,14 @@ def build_tiles(pbf: Path, out_dir: Path) -> Path:
     if not pbf.is_file():
         raise TileBuildError(f"找不到 pbf：{pbf}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    config_path = out_dir / "valhalla.json"
-    write_config(out_dir / "tiles", config_path)
+    config_file = config_path(out_dir)
+    write_config(out_dir / "tiles", config_file)
     # `python -m valhalla` 用 PATH 找執行檔：把目前直譯器所在的 bin/ 補進去，不依賴呼叫端有沒有 activate venv
     path = os.pathsep.join(filter(None, [str(Path(sys.executable).parent), os.environ.get("PATH")]))
     env = {**os.environ, "PATH": path}
     # cwd 設成 out_dir：valhalla_build_tiles 會在工作目錄寫中間檔
     result = subprocess.run(
-        [sys.executable, "-m", "valhalla", "valhalla_build_tiles", "-c", str(config_path), str(pbf)],
+        [sys.executable, "-m", "valhalla", "valhalla_build_tiles", "-c", str(config_file), str(pbf)],
         cwd=out_dir,
         env=env,
         capture_output=True,
@@ -50,4 +57,4 @@ def build_tiles(pbf: Path, out_dir: Path) -> Path:
     )
     if result.returncode != 0:
         raise TileBuildError(f"valhalla_build_tiles 失敗（{result.returncode}）：{result.stderr[-2000:]}")
-    return config_path
+    return config_file

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from engine.routing.router import Router, RoutingError
+from grid_helpers import densify, rides_westward_on_row
 from osm_fixture import BOTTOM_ONEWAY_WAY_ID, CONTRAFLOW_WAY_ID, MOTORWAY_WAY_ID, grid_point
 
 pytestmark = pytest.mark.valhalla
@@ -13,23 +14,6 @@ pytestmark = pytest.mark.valhalla
 @pytest.fixture(scope="module")
 def router(grid_config: Path) -> Router:
     return Router(grid_config)
-
-
-def densify(start: tuple[float, float], end: tuple[float, float], n: int = 16) -> list[tuple[float, float]]:
-    (x1, y1), (x2, y2) = start, end
-    return [(x1 + (x2 - x1) * i / n, y1 + (y2 - y1) * i / n) for i in range(n + 1)]
-
-
-def rides_westward_on_row(points: list[tuple[float, float]], row: int, col_min: int, col_max: int) -> bool:
-    """路線是否在 row 這條街、col_min..col_max 之間往西騎。"""
-    lat = grid_point(0, row)[1]
-    lo, hi = grid_point(col_min, row)[0], grid_point(col_max, row)[0]
-    for (x1, y1), (x2, y2) in zip(points, points[1:]):
-        on_row = abs(y1 - lat) < 1e-5 and abs(y2 - lat) < 1e-5
-        within = lo - 1e-6 <= min(x1, x2) and max(x1, x2) <= hi + 1e-6
-        if on_row and within and x2 < x1 - 1e-7:
-            return True
-    return False
 
 
 def touches_motorway_interior(points: list[tuple[float, float]]) -> bool:
@@ -81,6 +65,19 @@ def test_edges_report_way_ids_and_heading(router: Router) -> None:
     assert oneway_edges
     assert all(45 <= e.begin_heading <= 135 for e in oneway_edges)  # 往東
     assert all(e.way_id not in (CONTRAFLOW_WAY_ID, MOTORWAY_WAY_ID) for e in edges)
+
+
+def test_edges_tolerate_repeated_vertex(router: Router) -> None:
+    # edge_walk 逐點比對路段形狀：重複一個點（route 端點落在路口時會出現）就整條配不上
+    along = router.route(grid_point(0, 1), grid_point(6, 1)).points
+    assert router.edges([along[0], *along]) == router.edges(along)
+
+
+def test_edges_of_zero_length_route_is_empty(router: Router) -> None:
+    # 兩端都在不能騎的快速道路上，吸附到同一個路口：零長度路線，沒有經過任何路段
+    route = router.route(grid_point(1, 3), grid_point(2, 3))
+    assert len(set(route.points)) == 1
+    assert router.edges(route.points) == []
 
 
 def test_trace_far_from_roads_raises(router: Router) -> None:
