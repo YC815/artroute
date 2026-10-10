@@ -7,7 +7,7 @@ function escapeXml(text: string): string {
 }
 
 /** XML 1.0 不允許的字元。嚴格的解析器遇到會拒絕整個檔案。 */
-const XML_ILLEGAL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g;
+const XML_ILLEGAL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
 
 /** 作品名稱（可能來自使用者文字）：去掉非法字元，所有空白收成一個空白並去頭尾（兩行文字會變成一行），清空後用 artroute。 */
 function cleanName(name: string): string {
