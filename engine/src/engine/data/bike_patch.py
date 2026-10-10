@@ -57,11 +57,12 @@ def _tags(obj) -> dict[str, str]:
 
 
 def _is_bicycle_tag(key: str) -> bool:
-    return key.startswith("bicycle:") or key.startswith("cycleway")
+    # oneway:bicycle=no 會讓單行的快速道路對自行車雙向放行，也要一起移除
+    return key.startswith("bicycle:") or key.startswith("cycleway") or key == "oneway:bicycle"
 
 
 def _denied_tags(tags: Mapping[str, str]) -> dict[str, str]:
-    """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track 等都會讓 Valhalla 照樣放行。"""
+    """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track、oneway:bicycle=no 等都會讓 Valhalla 照樣放行。"""
     return {**{k: v for k, v in tags.items() if not _is_bicycle_tag(k)}, "bicycle": "no"}
 
 

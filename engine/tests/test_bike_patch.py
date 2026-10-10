@@ -159,11 +159,24 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         "cycleway": "lane",
         "cycleway:both": "track",
         "cycleway:right:lane": "exclusive",
+        "oneway": "yes",
+        "oneway:bicycle": "no",
+        "bicycle_road": "yes",
+        "cycle_network": "TW:NCN",
     }
     write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(500, [1, 2], tags)])
     patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset()))
     _, ways, _ = read_pbf(dst)
-    assert ways[500][0] == {**EXPRESSWAY_TAGS, "name": "八里新店線", "maxspeed": "90", "bicycle": "no"}
+    # bicycle_road、cycle_network 只是名字長得像，不是 Valhalla 讀的自行車通行 tag，必須留著
+    assert ways[500][0] == {
+        **EXPRESSWAY_TAGS,
+        "name": "八里新店線",
+        "maxspeed": "90",
+        "oneway": "yes",
+        "bicycle_road": "yes",
+        "cycle_network": "TW:NCN",
+        "bicycle": "no",
+    }
 
 
 @pytest.mark.valhalla
@@ -176,8 +189,9 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         {"cycleway": "lane"},
         {"bicycle": "designated"},
         {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
+        {"oneway": "yes", "oneway:bicycle": "no"},
     ],
-    ids=["bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated", "bicycle-yes-conditional"],
+    ids=["bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated", "bicycle-yes-conditional", "oneway-bicycle-no"],
 )
 def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags) -> None:
     src = tmp_path / "src.osm.pbf"
