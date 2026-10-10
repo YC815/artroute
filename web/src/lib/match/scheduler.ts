@@ -6,8 +6,12 @@ export const THROTTLE_MS = 300;
 
 export type SchedulerOptions = {
   send: (request: MatchRequest, signal: AbortSignal) => Promise<MatchOutcome>;
-  /** 只會收到「比已套用的更新」且未被取消的結果，舊結果永遠不會覆蓋新結果。 */
-  onOutcome: (outcome: MatchOutcome) => void;
+  /**
+   * 只會收到「比已套用的更新」且未被取消的結果，舊結果永遠不會覆蓋新結果。
+   * tag 是產生這個結果的請求在 schedule 時帶的標記（送出當下就綁定，之後排定的新 tag 不會套到舊結果上）。
+   */
+  onOutcome: (outcome: MatchOutcome, tag: string | null) => void;
+  /** 有請求排定（節流計時器）或進行中時為 true，結果套用或取消後為 false。值不變時不呼叫。 */
   onPendingChange: (pending: boolean) => void;
   intervalMs?: number;
   /** 單調遞增的毫秒時鐘；預設 performance.now()，不受系統時間調整影響。 */
@@ -18,8 +22,9 @@ export type MatchScheduler = {
   /**
    * 排程送出 request。dragging 為 true 時節流（每 intervalMs 最多一次，送最新的那個），
    * false 時立刻送出。內容與上一個送出的相同（同一個物件或結構相等）且沒有失敗就不重送；失敗的可以再送。
+   * tag 會跟著這個請求，結果回來時交給 onOutcome（例如標記請求屬於哪個圖形）。
    */
-  schedule: (request: MatchRequest, dragging: boolean) => void;
+  schedule: (request: MatchRequest, dragging: boolean, tag?: string | null) => void;
   /**
    * 暫停：取消排定的節流計時器與進行中的請求（結果丟棄），pending 回到 false。
    * 排程器之後仍可繼續使用；已成功套用的請求不會因此被當成沒送過。
@@ -38,13 +43,15 @@ const UNEXPECTED_FAILURE: MatchOutcome = {
 export function createMatchScheduler(options: SchedulerOptions): MatchScheduler {
   const { send, onOutcome, onPendingChange, intervalMs = THROTTLE_MS, now = () => performance.now() } = options;
   let latest: MatchRequest | null = null;
+  let latestTag: string | null = null;
   let lastSent: MatchRequest | null = null; // 同一個物件的快速判斷
   let lastSentKey: string | null = null; // 結構相等的判斷（呼叫端每次 render 都重建 request 時也不會重送）
   let lastSentAt = -Infinity;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let controller: AbortController | null = null;
   let issued = 0; // 最後送出的序號
-  let applied = 0; // 最後套用的序號
+  let applied = 0; // 最後套用（或取消）的序號
+  let pending = false; // 最後通知的 pending
 
   function clearTimer() {
     if (timer !== null) clearTimeout(timer);
@@ -56,18 +63,33 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     lastSentKey = null;
   }
 
-  function apply(seq: number, outcome: MatchOutcome) {
+  /** 排定的計時器或進行中的請求都算 pending：拖曳中「吸附中…」不會在兩次送出之間閃掉。 */
+  function syncPending() {
+    const next = timer !== null || applied !== issued;
+    if (next === pending) return;
+    pending = next;
+    onPendingChange(next);
+  }
+
+  function apply(seq: number, tag: string | null, outcome: MatchOutcome) {
     applied = seq;
     // 最新的請求失敗了：允許同一個 request 重送（例如引擎恢復後重試）
     if (!outcome.ok && seq === issued) forgetLastSent();
-    onOutcome(outcome);
-    onPendingChange(applied !== issued);
+    onOutcome(outcome, tag);
+    syncPending();
   }
 
   function fire() {
     clearTimer();
+    sendLatest();
+    syncPending();
+  }
+
+  /** 送出 latest；與上一個送出的相同就不送。 */
+  function sendLatest() {
     if (latest === null || latest === lastSent) return;
     const request = latest;
+    const tag = latestTag;
     const key = JSON.stringify(request);
     if (key === lastSentKey) {
       lastSent = request;
@@ -80,26 +102,27 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     controller?.abort();
     const current = new AbortController();
     controller = current;
-    onPendingChange(true);
     void send(request, current.signal)
       .catch(() => UNEXPECTED_FAILURE)
       .then((outcome) => {
         // 被取消的結果一律丟掉（fetchMatch 取消時會立刻回「已取消」的錯誤，序號卻可能比已套用的大）；
         // 其餘比已套用的還舊的結果也丟掉（序號單調遞增）。
         if (current.signal.aborted || seq <= applied) return;
-        apply(seq, outcome);
+        apply(seq, tag, outcome);
       });
   }
 
   return {
-    schedule(request, dragging) {
+    schedule(request, dragging, tag = null) {
       latest = request;
+      latestTag = tag;
       if (!dragging) return fire();
       if (timer !== null) return;
       // 夾在 [0, intervalMs]：時鐘倒退時 wait 會變得很大，不能因此卡住
       const wait = Math.min(Math.max(lastSentAt + intervalMs - now(), 0), intervalMs);
       if (wait === 0) return fire();
       timer = setTimeout(fire, wait);
+      syncPending();
     },
     cancel() {
       clearTimer();
@@ -107,7 +130,9 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
       latest = null;
       // 進行中的請求結果會被丟棄，等於沒送成：之後再排程同一個請求必須能重送
       if (applied !== issued) forgetLastSent();
-      onPendingChange(false);
+      // 被取消的請求視同已了結（結果一律丟棄），pending 才會回到 false
+      applied = issued;
+      syncPending();
     },
     dispose() {
       clearTimer();

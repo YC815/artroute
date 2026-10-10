@@ -36,30 +36,14 @@ export function shapeKey(shape: Shape | null): string | null {
 /** 吸附結果：路線或錯誤（兩者不會同時存在）。 */
 export type Outcome = { response: MatchResponse | null; error: MatchError | null };
 
-/** 最近一次吸附結果與它所屬的圖形（shapeKey）。 */
-export type OwnedOutcome = Outcome & { shapeKey: string | null };
-
-export const NO_OUTCOME: OwnedOutcome = { response: null, error: null, shapeKey: null };
-
 const NOTHING: Outcome = { response: null, error: null };
 
 /**
- * 新的結果（不同物件）出現時，記下它屬於目前的圖形。
- * 結果被遮掉（都是 null，例如 request 為 null）時不更新：同一個結果之後再出現，仍然屬於原來的圖形。
- * 排程器只套用最新請求的結果，而圖形一變就立刻送出新請求、取消舊的，所以新結果一定屬於目前的圖形。
+ * 只顯示屬於目前圖形的結果。appliedTag 是結果的請求在「送出時」標記的圖形 key（useLiveMatch 的 appliedTag），
+ * 所以圖形換了之後，不論舊結果早到晚到、新請求送出了沒，都不會畫在新圖形上。
  */
-export function trackOutcome(owned: OwnedOutcome, outcome: Outcome, key: string | null): OwnedOutcome {
-  if (!outcome.response && !outcome.error) return owned;
-  if (outcome.response === owned.response && outcome.error === owned.error) return owned;
-  return { response: outcome.response, error: outcome.error, shapeKey: key };
-}
-
-/**
- * 只顯示屬於目前圖形的結果。圖形換了（例如從不合法變回另一個圖形），
- * useLiveMatch 在新結果回來前仍回傳舊圖形的路線，這裡把它藏起來。owned 要先經過 trackOutcome。
- */
-export function visibleOutcome(owned: OwnedOutcome, outcome: Outcome, key: string | null): Outcome {
-  return owned.shapeKey === key ? outcome : NOTHING;
+export function visibleOutcome(outcome: Outcome, appliedTag: string | null, key: string | null): Outcome {
+  return key !== null && appliedTag === key ? outcome : NOTHING;
 }
 
 // 固定的空陣列：沒有 warnings 時每次 render 回傳同一個物件，useMemo 才不會白白重算

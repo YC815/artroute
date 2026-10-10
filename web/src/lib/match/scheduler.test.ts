@@ -48,7 +48,7 @@ describe("createMatchScheduler", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].request).toBe(r);
     calls[0].resolve(OK);
-    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledWith(OK));
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledWith(OK, null));
   });
 
   it("拖曳中每 300ms 最多送一次，送的是最新的請求", async () => {
@@ -115,7 +115,7 @@ describe("createMatchScheduler", () => {
     calls[0].resolve(OK);
     await vi.advanceTimersByTimeAsync(0);
     expect(onOutcome).toHaveBeenCalledTimes(1);
-    expect(onOutcome).toHaveBeenLastCalledWith(newer);
+    expect(onOutcome).toHaveBeenLastCalledWith(newer, null);
   });
 
   it("依序回來的結果都會套用，以最後一個為準", async () => {
@@ -126,7 +126,7 @@ describe("createMatchScheduler", () => {
     scheduler.schedule(req(2), false);
     calls[1].resolve(FAIL);
     await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(2));
-    expect(onOutcome).toHaveBeenLastCalledWith(FAIL);
+    expect(onOutcome).toHaveBeenLastCalledWith(FAIL, null);
   });
 
   it("同一個 request 物件成功後不重送；失敗後可以重送", async () => {
@@ -180,7 +180,7 @@ describe("createMatchScheduler", () => {
     expect(onOutcome).not.toHaveBeenCalled();
     calls[1].resolve(OK);
     await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(1));
-    expect(onOutcome).toHaveBeenLastCalledWith(OK);
+    expect(onOutcome).toHaveBeenLastCalledWith(OK, null);
   });
 
   it("cancel：引擎在 trailing 計時器排定後回 503，取消後不會再送出（停用吸附）", async () => {
@@ -190,7 +190,7 @@ describe("createMatchScheduler", () => {
     scheduler.schedule(req(2), true); // 排定 t=300 的 trailing
     await vi.advanceTimersByTimeAsync(50);
     calls[0].resolve(FAIL); // t=150：R1 回 503
-    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledWith(FAIL));
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledWith(FAIL, null));
     scheduler.cancel(); // 呼叫端因此停用吸附
     expect(onPendingChange).toHaveBeenLastCalledWith(false);
     expect(vi.getTimerCount()).toBe(0);
@@ -267,6 +267,95 @@ describe("createMatchScheduler", () => {
     expect(calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(calls).toHaveLength(2);
+  });
+
+  it("onOutcome 帶回送出時的 tag；沒給 tag 時是 null", async () => {
+    const { scheduler, calls, onOutcome } = setup();
+    scheduler.schedule(req(1), false, "A");
+    calls[0].resolve(OK);
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledWith(OK, "A"));
+    scheduler.schedule(req(2), false);
+    calls[1].resolve(FAIL);
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenLastCalledWith(FAIL, null));
+  });
+
+  it("結果標記的是產生它的請求的 tag：之後才排定的新 tag 不會套到舊結果上", async () => {
+    const { scheduler, calls, onOutcome } = setup();
+    scheduler.schedule(req(1), true, "K1"); // leading 送出 K1
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.schedule(req(2), true, "K2"); // K2 排在 t=300 的 trailing
+    const k1: MatchOutcome = { ok: true, response: { ...SAMPLE_MATCH_RESPONSE, data_version: "k1" } };
+    calls[0].resolve(k1); // K1 的結果在 K2 送出前回來
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(1));
+    expect(onOutcome).toHaveBeenLastCalledWith(k1, "K1");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(calls).toHaveLength(2);
+    calls[1].resolve(OK);
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(2));
+    expect(onOutcome).toHaveBeenLastCalledWith(OK, "K2");
+  });
+
+  it("pending：節流計時器排定時就是 true，前一個結果先回來也不會掉回 false", async () => {
+    const { scheduler, calls, onPendingChange } = setup();
+    scheduler.schedule(req(1), true); // t=0 leading 送出
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.schedule(req(2), true); // 排定 t=300 的 trailing
+    const before = onPendingChange.mock.calls.length;
+    calls[0].resolve(OK); // t=100 第一個結果回來，trailing 還沒送
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onPendingChange.mock.calls.slice(before)).not.toContainEqual([false]);
+    await vi.advanceTimersByTimeAsync(200); // t=300 送出 trailing
+    expect(calls).toHaveLength(2);
+    expect(onPendingChange.mock.calls.slice(before)).not.toContainEqual([false]);
+    calls[1].resolve(OK);
+    await vi.waitFor(() => expect(onPendingChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it("pending：沒有進行中的請求、只排了計時器時也是 true", async () => {
+    const { scheduler, calls, onPendingChange } = setup();
+    scheduler.schedule(req(1), true);
+    calls[0].resolve(OK);
+    await vi.waitFor(() => expect(onPendingChange).toHaveBeenLastCalledWith(false));
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.schedule(req(2), true); // 只排定計時器
+    expect(calls).toHaveLength(1);
+    expect(onPendingChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("pending：cancel 清掉排定的計時器後回到 false", async () => {
+    const { scheduler, calls, onPendingChange } = setup();
+    scheduler.schedule(req(1), true);
+    calls[0].resolve(OK);
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.schedule(req(2), true);
+    expect(onPendingChange).toHaveBeenLastCalledWith(true);
+    scheduler.cancel();
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("pending：計時器到了但請求與已套用的相同（不重送）時回到 false", async () => {
+    const { scheduler, calls, onPendingChange } = setup();
+    scheduler.schedule(req(1), true);
+    calls[0].resolve(OK);
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.schedule(req(1), true); // 內容相同的新物件
+    expect(onPendingChange).toHaveBeenLastCalledWith(true);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(calls).toHaveLength(1);
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("pending：cancel 掉進行中的請求後，下一個請求的結果套用時 pending 回到 false", async () => {
+    const { scheduler, calls, onPendingChange } = setup();
+    scheduler.schedule(req(1), false);
+    scheduler.cancel();
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
+    scheduler.schedule(req(2), false);
+    expect(onPendingChange).toHaveBeenLastCalledWith(true);
+    calls[1].resolve(OK);
+    await vi.waitFor(() => expect(onPendingChange).toHaveBeenLastCalledWith(false));
   });
 
   it("send 意外 reject：當成失敗套用，pending 不會卡住，且允許重送", async () => {
