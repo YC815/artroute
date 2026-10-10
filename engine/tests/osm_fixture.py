@@ -117,11 +117,15 @@ CROSSING_MAP: list[GridWay] = [
     GridWay(503, [(X3 + 2, 1), (X3 + 2, 2), (X3 + 1, 2)], RESIDENTIAL),
 ]
 
-# ---- 樓梯（Task 14）：每個情境各寫成獨立的 pbf，彼此不會互相吸附 ----
+# ---- 樓梯與人行道（Task 14）：每個情境各寫成獨立的 pbf，彼此不會互相吸附 ----
 X4 = 100  # 與其他地圖分開
 STEPS_WAY_ID = 700
 STEPS_ONLY_WAY_ID = 710
 STEPS = {"highway": "steps"}
+SIDEWALK_WAY_ID = 720
+SIDEWALK_ONLY_WAY_ID = 730
+CLOSED_FOOTWAY_WAY_ID = 740
+NO_BICYCLE_FOOTWAY_WAY_ID = 741
 
 # edge_walk 遇到兩條 way 共用同一對端點時可能配錯 way（實測：2 點的捷徑被配成同端點的 4 點道路），
 # 所以捷徑與繞路不共用端點：兩端各接一段住宅街，繞路從住宅街的外端出發
@@ -144,3 +148,30 @@ def steps_only_map(steps_tags: dict[str, str]) -> list[GridWay]:
 
 # 未修補時走得通，標成 bicycle=no 後必須無路可走
 STEPS_ONLY_MAP = steps_only_map(STEPS)
+
+SIDEWALK = {"highway": "footway", "footway": "sidewalk", "bicycle": "yes"}  # 明確允許自行車的人行道（台灣最常見）
+
+SIDEWALK_MAP: list[GridWay] = [
+    # 經人行道捷徑約 0.8 km（人行道 0.4 km）對稍長的道路（經列 0，約 1.25 km）
+    GridWay(SIDEWALK_WAY_ID, [(X4 + 8, 1), (X4 + 10, 1)], SIDEWALK),
+    GridWay(721, [(X4 + 7, 1), (X4 + 8, 1)], RESIDENTIAL),
+    GridWay(722, [(X4 + 10, 1), (X4 + 11, 1)], RESIDENTIAL),
+    GridWay(723, [(X4 + 7, 1), (X4 + 7, 0), (X4 + 11, 0), (X4 + 11, 1)], RESIDENTIAL),
+]
+
+SIDEWALK_ONLY_MAP: list[GridWay] = [
+    # 人行道是兩段住宅街之間唯一的路：盡量避免但仍要能到達
+    GridWay(SIDEWALK_ONLY_WAY_ID, [(X4 + 13, 1), (X4 + 15, 1)], SIDEWALK),
+    GridWay(731, [(X4 + 12, 1), (X4 + 13, 1)], RESIDENTIAL),
+    GridWay(732, [(X4 + 15, 1), (X4 + 16, 1)], RESIDENTIAL),
+]
+
+CLOSED_FOOTWAY_MAP: list[GridWay] = [
+    # Valhalla 3.9.1 的 footway／pedestrian 預設不給自行車走；沒有允許自行車的 tag、或明確 bicycle=no，修補後也必須照樣不通
+    GridWay(CLOSED_FOOTWAY_WAY_ID, [(X4 + 19, 1), (X4 + 21, 1)], {"highway": "footway", "footway": "sidewalk"}),
+    GridWay(742, [(X4 + 18, 1), (X4 + 19, 1)], RESIDENTIAL),
+    GridWay(743, [(X4 + 21, 1), (X4 + 22, 1)], RESIDENTIAL),
+    GridWay(NO_BICYCLE_FOOTWAY_WAY_ID, [(X4 + 19, 3), (X4 + 21, 3)], {"highway": "pedestrian", "bicycle": "no"}),
+    GridWay(744, [(X4 + 18, 3), (X4 + 19, 3)], RESIDENTIAL),
+    GridWay(745, [(X4 + 21, 3), (X4 + 22, 3)], RESIDENTIAL),
+]

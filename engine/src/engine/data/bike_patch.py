@@ -3,6 +3,9 @@
 - 快速道路標成 bicycle=no：台灣的快速道路多半標成 highway=trunk，Valhalla 對 bicycle 視為可騎；
   但一般省道（台1線等）也是 trunk，所以用名稱、編號與 motorroad 判斷，而不是全面禁止 trunk。
 - 樓梯一律標成 bicycle=no（使用者決定：禁走樓梯，沒有例外）。Valhalla 3.9.1 預設讓自行車走樓梯。
+- 自行車本來就能走的人行道（footway／pedestrian）標成 bicycle=dismount：仍可通行，但 Valhalla 的預設成本
+  以牽車速度計，盡量避開（使用者決定：人行道盡量避免）。Valhalla 3.9.1 的 footway／pedestrian 預設不給自行車走，
+  dismount 卻會放行，所以本來不能走的不能標，否則反而多出上萬條可騎的人行道。
 """
 
 import tomllib
@@ -20,6 +23,22 @@ EXPRESSWAY_REFS = frozenset(
 NAME_KEYWORDS = ("快速道路", "快速公路", "快速路", "高架")
 TRUNK = frozenset({"trunk", "trunk_link"})
 STEPS = "steps"
+FOOTWAYS = frozenset({"footway", "pedestrian"})
+# Valhalla 3.9.1 lua 的 bicycle 表裡對應 "true" 的值：bicycle 是這些值的路自行車可以走
+BICYCLE_ACCESS = frozenset(
+    {"yes", "designated", "use_sidepath", "permissive", "destination", "dismount", "lane", "track", "shared",
+     "shared_lane", "sidepath", "share_busway", "allowed", "private", "official", "permit", "residents"}
+)
+# 沒有 bicycle tag 時，lua 的 or 鏈接著讀 cycleway（cycleway 表與反向的 bike_reverse 表）
+CYCLEWAY_ACCESS = frozenset(
+    {"yes", "designated", "use_sidepath", "permissive", "destination", "dismount", "lane", "track", "shared",
+     "shared_lane", "sidepath", "share_busway", "allowed", "private", "cyclestreet", "crossing",
+     "opposite", "opposite_lane", "opposite_track"}
+)
+# cycleway:both 只認 lua 的 shared／separated／dedicated 表
+CYCLEWAY_BOTH_ACCESS = frozenset(
+    {"shared", "shared_lane", "share_busway", "lane", "opposite_lane", "buffered_lane", "track", "opposite_track"}
+)
 
 Coord = tuple[float, float] | None  # 端點節點不在 pbf 裡（或 way 不到 2 個節點）時是 None
 
@@ -33,6 +52,20 @@ def is_expressway(tags: Mapping[str, str]) -> bool:
         return True
     refs = {ref.strip().removeprefix("台").removeprefix("臺") for ref in tags.get("ref", "").split(";")}
     return bool(refs & EXPRESSWAY_REFS)
+
+
+def rideable_footway(tags: Mapping[str, str]) -> bool:
+    """Valhalla 3.9.1 會讓自行車走的人行道（footway／pedestrian，含 sidewalk、crossing）。
+
+    只看最常見的放行方式：bicycle（lua 的 or 鏈以它開頭，有值就由它決定），沒有 bicycle 時再看 cycleway、cycleway:both。
+    其他少見的放行方式（cycleway:left 加 right、vehicle、bicycle_road……）不處理：漏掉只是那條人行道沒被避開，不影響安全。
+    """
+    if tags.get("highway") not in FOOTWAYS:
+        return False
+    bicycle = tags.get("bicycle")
+    if bicycle is not None:
+        return bicycle in BICYCLE_ACCESS
+    return tags.get("cycleway") in CYCLEWAY_ACCESS or tags.get("cycleway:both") in CYCLEWAY_BOTH_ACCESS
 
 
 @dataclass(frozen=True)
@@ -87,9 +120,11 @@ def _denied(way_id: int, tags: Mapping[str, str], overrides: Overrides) -> bool:
 
 
 def _patched_way(way, targets: dict):
-    """被禁行的 way 換成 bicycle=no 的 tag；其他原樣。"""
+    """被禁行的 way 換成 bicycle=no 的 tag；自行車能走的人行道換成 bicycle=dismount；其他原樣。"""
     if way.id in targets:
         return way.replace(tags=_denied_tags(targets[way.id][0]))
+    if way.tags.get("highway") in FOOTWAYS and rideable_footway(tags := _tags(way)):
+        return way.replace(tags={**tags, "bicycle": "dismount"})
     return way
 
 
