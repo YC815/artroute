@@ -21,12 +21,14 @@ class CurrentRouter[R]:
         self._router: R | None = None
 
     def get(self) -> tuple[R, str]:
-        build = self._layout.current()
-        if build is None or not build.is_dir():
-            raise NoDataError("路網資料尚未就緒")
+        # 讀 current 與載入必須在同一把鎖內：鎖外讀到的版本可能已過期，晚到的舊版會覆寫新版
         with self._lock:
+            build = self._layout.current()
+            if build is None or not build.is_dir():
+                raise NoDataError("路網資料尚未就緒")
             if build != self._build or self._router is None:
-                # 先建好新的再替換：正在用舊 Router 的請求會在舊實例上跑完
+                # 先建好新的再替換：正在用舊 Router 的請求會在舊實例上跑完；
+                # 換版載入期間新進來的請求會排在鎖後面，等新的 Router 建好才拿到
                 self._router = self._factory(build)
                 self._build = build
             return self._router, build.name
