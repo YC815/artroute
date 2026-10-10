@@ -4,7 +4,7 @@
     "coverage": 80,
     "error": null,
     "length_m": 11499.0,
-    "ms": 238,
+    "ms": 239,
     "name": "heart@kaohsiung_lingya",
     "overall": 72,
     "target_length_m": 6768.7
@@ -14,7 +14,7 @@
     "coverage": 76,
     "error": null,
     "length_m": 10970.0,
-    "ms": 150,
+    "ms": 155,
     "name": "heart@taichung_west",
     "overall": 68,
     "target_length_m": 6768.7
@@ -24,7 +24,7 @@
     "coverage": 76,
     "error": null,
     "length_m": 12641.0,
-    "ms": 345,
+    "ms": 351,
     "name": "heart@taipei_daan",
     "overall": 64,
     "target_length_m": 6768.7
@@ -34,7 +34,7 @@
     "coverage": 58,
     "error": null,
     "length_m": 12826.0,
-    "ms": 318,
+    "ms": 313,
     "name": "heart@taipei_daan@r30",
     "overall": 52,
     "target_length_m": 6766.7
@@ -44,7 +44,7 @@
     "coverage": 41,
     "error": null,
     "length_m": 19632.0,
-    "ms": 204,
+    "ms": 199,
     "name": "heart@taipei_riverside",
     "overall": 20,
     "target_length_m": 6768.7
@@ -54,7 +54,7 @@
     "coverage": 75,
     "error": null,
     "length_m": 21348.0,
-    "ms": 200,
+    "ms": 190,
     "name": "hi@kaohsiung_lingya",
     "overall": 38,
     "target_length_m": 7232.4
@@ -74,7 +74,7 @@
     "coverage": 75,
     "error": null,
     "length_m": 17997.0,
-    "ms": 221,
+    "ms": 217,
     "name": "hi@taipei_daan",
     "overall": 46,
     "target_length_m": 7232.4
@@ -84,7 +84,7 @@
     "coverage": 84,
     "error": null,
     "length_m": 19898.0,
-    "ms": 307,
+    "ms": 303,
     "name": "hi@taipei_daan@r30",
     "overall": 62,
     "target_length_m": 7224.3
@@ -94,7 +94,7 @@
     "coverage": 31,
     "error": null,
     "length_m": 32353.0,
-    "ms": 232,
+    "ms": 219,
     "name": "hi@taipei_riverside",
     "overall": 16,
     "target_length_m": 7232.4
@@ -104,7 +104,7 @@
     "coverage": 80,
     "error": null,
     "length_m": 5837.0,
-    "ms": 95,
+    "ms": 93,
     "name": "letter_l@kaohsiung_lingya",
     "overall": 66,
     "target_length_m": 3210.0
@@ -114,7 +114,7 @@
     "coverage": 48,
     "error": null,
     "length_m": 4488.0,
-    "ms": 49,
+    "ms": 50,
     "name": "letter_l@taichung_west",
     "overall": 46,
     "target_length_m": 3210.0
@@ -124,7 +124,7 @@
     "coverage": 0,
     "error": null,
     "length_m": 1711.0,
-    "ms": 123,
+    "ms": 125,
     "name": "letter_l@taipei_daan",
     "overall": 44,
     "target_length_m": 3210.0
@@ -134,7 +134,7 @@
     "coverage": 55,
     "error": null,
     "length_m": 7028.0,
-    "ms": 135,
+    "ms": 130,
     "name": "letter_l@taipei_daan@r30",
     "overall": 42,
     "target_length_m": 3208.6
@@ -144,7 +144,7 @@
     "coverage": 0,
     "error": null,
     "length_m": 2000.0,
-    "ms": 103,
+    "ms": 98,
     "name": "letter_l@taipei_riverside",
     "overall": 30,
     "target_length_m": 3210.0
@@ -154,7 +154,7 @@
     "coverage": 78,
     "error": null,
     "length_m": 16231.0,
-    "ms": 289,
+    "ms": 278,
     "name": "square@kaohsiung_lingya",
     "overall": 39,
     "target_length_m": 8018.0
@@ -164,7 +164,7 @@
     "coverage": 81,
     "error": null,
     "length_m": 12042.0,
-    "ms": 131,
+    "ms": 139,
     "name": "square@taichung_west",
     "overall": 70,
     "target_length_m": 8018.0
@@ -174,7 +174,7 @@
     "coverage": 74,
     "error": null,
     "length_m": 15022.0,
-    "ms": 314,
+    "ms": 308,
     "name": "square@taipei_daan",
     "overall": 56,
     "target_length_m": 8018.0
@@ -184,7 +184,7 @@
     "coverage": 83,
     "error": null,
     "length_m": 16087.0,
-    "ms": 502,
+    "ms": 497,
     "name": "square@taipei_daan@r30",
     "overall": 72,
     "target_length_m": 8018.0
@@ -194,7 +194,7 @@
     "coverage": 40,
     "error": null,
     "length_m": 31371.0,
-    "ms": 300,
+    "ms": 288,
     "name": "square@taipei_riverside",
     "overall": 20,
     "target_length_m": 8018.0
@@ -204,7 +204,7 @@
     "coverage": 74,
     "error": null,
     "length_m": 12179.0,
-    "ms": 222,
+    "ms": 230,
     "name": "star@kaohsiung_lingya",
     "overall": 64,
     "target_length_m": 7177.0
@@ -214,7 +214,7 @@
     "coverage": 76,
     "error": null,
     "length_m": 11327.0,
-    "ms": 113,
+    "ms": 114,
     "name": "star@taichung_west",
     "overall": 58,
     "target_length_m": 7177.0
@@ -224,7 +224,7 @@
     "coverage": 78,
     "error": null,
     "length_m": 15029.0,
-    "ms": 283,
+    "ms": 281,
     "name": "star@taipei_daan",
     "overall": 61,
     "target_length_m": 7177.0
@@ -234,7 +234,7 @@
     "coverage": 66,
     "error": null,
     "length_m": 14957.0,
-    "ms": 341,
+    "ms": 352,
     "name": "star@taipei_daan@r30",
     "overall": 42,
     "target_length_m": 7177.0
@@ -244,7 +244,7 @@
     "coverage": 43,
     "error": null,
     "length_m": 22548.0,
-    "ms": 239,
+    "ms": 229,
     "name": "star@taipei_riverside",
     "overall": 22,
     "target_length_m": 7177.0
