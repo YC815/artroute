@@ -1,4 +1,4 @@
-// Hershey 單筆畫字型。資料來自 hersheytext 套件的 JSON（字型資料為 Public Domain）。
+// Hershey 單筆畫字型。資料來自 hersheytext 套件的 JSON。Hershey 字型授權（寬鬆，須隨資料附致謝）。
 // 只引入 JSON：套件的 main 依賴 cheerio 和 fs，不能在瀏覽器裡用。
 // 字型授權要求隨字型資料散布的致謝（原文照錄，來源：hersheytext 套件 svg_fonts 的 metadata）：
 // - The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the U. S. National Bureau of Standards.

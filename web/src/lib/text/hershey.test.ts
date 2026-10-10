@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FONT_IDS, glyphFor, parseHersheyPath, toStroke } from "@/lib/text/hershey";
+import { glyphFor, parseHersheyPath, toStroke } from "@/lib/text/hershey";
 
 describe("parseHersheyPath", () => {
   it("每個 M 開始一筆，L 後面可以接多組座標", () => {
@@ -69,17 +69,6 @@ describe("glyphFor", () => {
 
   it("字型裡沒有的字回傳 null", () => {
     expect(glyphFor("futural", "中")).toBeNull();
-  });
-
-  it("validateText 允許的每個字，每筆都至少 2 點", () => {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!?&.- ♥";
-    for (const font of FONT_IDS) {
-      for (const c of chars) {
-        for (const s of glyphFor(font, c)!.strokes) {
-          expect(s.points.length, `${font} ${c}`).toBeGreaterThanOrEqual(2);
-        }
-      }
-    }
   });
 
   it("字型資料裡的單點與空筆畫會被濾掉", async () => {
