@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import { proxyMatch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
 
@@ -11,6 +11,24 @@ function deps(fetchImpl: ProxyDeps["fetch"], overrides: Partial<ProxyDeps> = {})
 function post(body: string): Request {
   return new Request("http://web/api/match", { method: "POST", body });
 }
+
+/** 沒有 content-length 的串流 body：共 chunks 塊、每塊 chunkBytes bytes。 */
+function streamPost(chunks: number, chunkBytes: number): { request: Request; pulled: () => number } {
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent === chunks) return controller.close();
+      sent += 1;
+      controller.enqueue(new Uint8Array(chunkBytes).fill(0x20));
+    },
+  });
+  const request = new Request("http://web/api/match", { method: "POST", body, duplex: "half" } as RequestInit);
+  return { request, pulled: () => sent };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("proxyMatch", () => {
   it("不合法的請求回 422（繁中訊息），不轉發", async () => {
@@ -86,6 +104,133 @@ describe("proxyMatch", () => {
     expect(await res.json()).toEqual({
       detail: { code: "engine_unreachable", message: "伺服器沒有設定 ENGINE_URL" },
     });
+  });
+});
+
+describe("proxyMatch 請求大小與錯誤訊息長度", () => {
+  const TOO_LARGE = { detail: { code: "too_large", message: "請求太大" } };
+
+  it("content-length 超過 8 MB → 413，不讀 body、不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const request = new Request("http://web/api/match", {
+      method: "POST",
+      body: "{}",
+      headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+    });
+    const res = await proxyMatch(request, deps(fetchImpl));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual(TOO_LARGE);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("沒有 content-length 的串流超過 8 MB → 413，讀到上限就停", async () => {
+    const fetchImpl = vi.fn();
+    const { request, pulled } = streamPost(64, 1024 * 1024);
+    expect(request.headers.get("content-length")).toBeNull();
+    const res = await proxyMatch(request, deps(fetchImpl));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual(TOO_LARGE);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(pulled()).toBeLessThan(64);
+  });
+
+  it("沒有 content-length、剛好在上限內的串流照常處理（空白填充的非法 JSON → 422）", async () => {
+    const { request } = streamPost(8, 1024 * 1024);
+    const res = await proxyMatch(request, deps(vi.fn()));
+    expect(res.status).toBe(422);
+  });
+
+  it.each([
+    ["3 萬點 → 約 6 萬個 zod issue", 30_000],
+    ["10 萬點 → zod 內部展開參數 RangeError", 100_000],
+  ])("病態請求（%s）只回小小的 422", async (_name, count) => {
+    const points = Array.from({ length: count }, () => ["a", "b"]);
+    const body = JSON.stringify({ strokes: [{ points, closed: false }] });
+    const fetchImpl = vi.fn();
+    const res = await proxyMatch(post(body), deps(fetchImpl));
+    expect(res.status).toBe(422);
+    const text = await res.text();
+    expect(text.length).toBeLessThan(1500);
+    expect(JSON.parse(text).detail.code).toBe("validation");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("驗證訊息最多列 5 個問題、不超過 500 字", async () => {
+    const strokes = Array.from({ length: 10 }, () => ({ points: [[121.5, 25.03]], closed: false }));
+    const res = await proxyMatch(post(JSON.stringify({ strokes })), deps(vi.fn()));
+    const { message } = (await res.json()).detail as { message: string };
+    expect(message.split("\n").filter((line) => line.startsWith("✖")).length).toBeLessThanOrEqual(5);
+    expect(message.length).toBeLessThanOrEqual(500);
+  });
+});
+
+describe("forwardToEngine 的錯誤處理", () => {
+  it("連不上時在伺服器 log 記下路徑與錯誤，回應 body 不含錯誤細節", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const boom = new TypeError("fetch failed: ECONNREFUSED 10.0.0.7:8080");
+    const fetchImpl = vi.fn(async () => {
+      throw boom;
+    });
+    const res = await proxyMatch(post(JSON.stringify(VALID)), deps(fetchImpl));
+    expect(spy).toHaveBeenCalledWith("[engine proxy]", "/match", boom);
+    expect(JSON.stringify(await res.json())).not.toContain("ECONNREFUSED");
+  });
+
+  it("瀏覽器自己取消請求時不記 log", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    const request = new Request("http://web/api/match", {
+      method: "POST",
+      body: JSON.stringify(VALID),
+      signal: controller.signal,
+    });
+    const pending = proxyMatch(request, deps(fetchImpl));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    await pending;
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("ENGINE_URL 結尾有斜線也不會變成 //match", async () => {
+    const fetchImpl = vi.fn(async () => Response.json(SAMPLE_MATCH_RESPONSE));
+    await proxyMatch(post(JSON.stringify(VALID)), deps(fetchImpl, { engineUrl: "http://engine:8080/" }));
+    await proxyStatus(new Request("http://web/api/status"), deps(fetchImpl, { engineUrl: "http://engine:8080//" }));
+    const urls = fetchImpl.mock.calls.map((call) => (call as unknown as [string])[0]);
+    expect(urls).toEqual(["http://engine:8080/match", "http://engine:8080/status"]);
+  });
+
+  it("收到 headers 之後 body 卡住逾時 → 504，不是截斷的串流", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchImpl = vi.fn(
+      async (_url: string, init: RequestInit) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init.signal!.addEventListener("abort", () => controller.error(init.signal!.reason));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const res = await proxyMatch(post(JSON.stringify(VALID)), deps(fetchImpl, { timeoutMs: 20 }));
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({ detail: { code: "timeout", message: "引擎回應逾時" } });
+  });
+
+  it("轉回引擎的 status、content-type 與 body bytes", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response("純文字錯誤", { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } }),
+    );
+    const res = await proxyMatch(post(JSON.stringify(VALID)), deps(fetchImpl));
+    expect(res.status).toBe(502);
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(await res.text()).toBe("純文字錯誤");
   });
 });
 

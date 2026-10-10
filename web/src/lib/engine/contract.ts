@@ -71,11 +71,12 @@ export const errorDetailSchema = z.object({
 
 /**
  * 錯誤回應 body：{ detail }。
- * detail 可能是領域錯誤物件、字串（舊式 HTTPException），或 FastAPI 請求驗證失敗的
- * pydantic 錯誤陣列等任意值，所以最後一個分支是 unknown；欄位本身也可省略。
+ * detail 有三種形狀：errorDetailSchema 的領域錯誤物件、字串（舊式 HTTPException），
+ * 以及 FastAPI 請求驗證失敗的 pydantic 錯誤陣列等任意值。
+ * 所以型別不限（unknown），欄位本身也可省略；由 client.ts 的 readDetail 統一判別。
  */
 export const errorBodySchema = z.object({
-  detail: z.union([errorDetailSchema, z.string(), z.unknown()]).optional(),
+  detail: z.unknown().optional(),
 });
 
 /** GET /status：data 為 null 代表引擎還沒有可用的路網。 */

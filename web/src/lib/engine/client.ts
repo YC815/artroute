@@ -8,7 +8,11 @@ import {
   type MatchWarning,
 } from "@/lib/engine/contract";
 
-/** 給 UI 用的錯誤。status 0 代表連不上；engineDown 為 true 時停用即時吸附並顯示橫幅。 */
+/**
+ * 給 UI 用的錯誤。status 0 代表沒有拿到 HTTP 回應：連不上（engineDown 為 true），
+ * 或被呼叫端用 AbortSignal 取消（engineDown 為 false，message 為「已取消」）。
+ * engineDown 為 true 時停用即時吸附並顯示橫幅。
+ */
 export type MatchError = { status: number; message: string; warnings: MatchWarning[]; engineDown: boolean };
 
 export type MatchOutcome = { ok: true; response: MatchResponse } | { ok: false; error: MatchError };
@@ -44,7 +48,15 @@ export function toMatchError(status: number, body: unknown): MatchError {
   };
 }
 
-/** POST /api/match。不會丟例外：網路錯誤、HTTP 錯誤、格式不符都變成 { ok: false }。 */
+/** 呼叫端自己取消的請求：不是引擎的問題，不能讓 UI 顯示離線橫幅。 */
+function cancelled(): MatchOutcome {
+  return { ok: false, error: { status: 0, message: "已取消", warnings: [], engineDown: false } };
+}
+
+/**
+ * POST /api/match。不會丟例外：網路錯誤、HTTP 錯誤、格式不符都變成 { ok: false }。
+ * signal 被取消時（不論發生在等回應或讀 body）一律回傳「已取消」，不會被當成引擎離線或格式錯誤。
+ */
 export async function fetchMatch(
   request: MatchRequest,
   signal: AbortSignal,
@@ -59,9 +71,10 @@ export async function fetchMatch(
       signal,
     });
   } catch {
-    return { ok: false, error: toMatchError(0, null) };
+    return signal.aborted ? cancelled() : { ok: false, error: toMatchError(0, null) };
   }
   const body: unknown = await res.json().catch(() => null);
+  if (signal.aborted) return cancelled();
   if (!res.ok) return { ok: false, error: toMatchError(res.status, body) };
   const parsed = matchResponseSchema.safeParse(body);
   return parsed.success ? { ok: true, response: parsed.data } : { ok: false, error: toMatchError(502, null) };

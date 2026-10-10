@@ -91,6 +91,66 @@ describe("fetchMatch", () => {
       error: { status: 0, message: "連不上伺服器", warnings: [], engineDown: true },
     });
   });
+
+  describe("被呼叫端取消（AbortController）不算引擎離線", () => {
+    const CANCELLED = {
+      ok: false,
+      error: { status: 0, message: "已取消", warnings: [], engineDown: false },
+    };
+
+    it("回應前就被取消 → 已取消、engineDown false", async () => {
+      const controller = new AbortController();
+      const fetchImpl: FetchLike = vi.fn(
+        (_input, init) =>
+          new Promise<Response>((_, reject) => {
+            init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+      );
+      const pending = fetchMatch(REQUEST, controller.signal, fetchImpl);
+      controller.abort();
+      expect(await pending).toEqual(CANCELLED);
+    });
+
+    it("讀 body 時被取消（200）→ 已取消，不是 502", async () => {
+      const controller = new AbortController();
+      const res = {
+        ok: true,
+        status: 200,
+        json: () =>
+          new Promise<unknown>((_, reject) => {
+            controller.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+      } as unknown as Response;
+      const pending = fetchMatch(REQUEST, controller.signal, vi.fn(async () => res));
+      await Promise.resolve();
+      controller.abort();
+      expect(await pending).toEqual(CANCELLED);
+    });
+
+    it("讀 body 時被取消（HTTP 錯誤）→ 已取消，不是 503／engineDown", async () => {
+      const controller = new AbortController();
+      const res = {
+        ok: false,
+        status: 503,
+        json: () =>
+          new Promise<unknown>((_, reject) => {
+            controller.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+      } as unknown as Response;
+      const pending = fetchMatch(REQUEST, controller.signal, vi.fn(async () => res));
+      await Promise.resolve();
+      controller.abort();
+      expect(await pending).toEqual(CANCELLED);
+    });
+
+    it("沒被取消的網路錯誤仍然是 engineDown", async () => {
+      const fetchImpl: FetchLike = vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      });
+      const outcome = await fetchMatch(REQUEST, new AbortController().signal, fetchImpl);
+      expect(outcome.ok === false && outcome.error.engineDown).toBe(true);
+    });
+  });
 });
 
 describe("toMatchError", () => {
@@ -110,12 +170,15 @@ describe("toMatchError", () => {
   });
 
   it("detail 物件缺 message 或 warnings 格式錯 → 預設訊息，不丟例外", () => {
-    expect(toMatchError(422, { detail: { code: "no_route" } })).toEqual({
+    const fallback = {
       status: 422,
       message: "輸入不合法，或所有部件都吸附失敗",
       warnings: [],
       engineDown: false,
-    });
+    };
+    expect(toMatchError(422, { detail: { code: "no_route" } })).toEqual(fallback);
+    const malformed = { code: "no_route", message: "壞掉的 warnings", warnings: [{ stroke_index: "x" }] };
+    expect(toMatchError(422, { detail: malformed })).toEqual(fallback);
   });
 });
 
