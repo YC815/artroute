@@ -10,11 +10,21 @@ const LOCAL_HOST = "127.0.0.1";
  * - 頁面的 pageerror 與 console.error 必須是空的（例如 MapLibre 的 worker 載入失敗只會 console.error，
  *   地圖照樣有 style，圖形編輯器也照樣出現，光看畫面斷言抓不到）。
  * - 不連外：沒被測試 mock 的 http(s) 請求（本機以外）一律中止並記錄，測試結束時必須是空的。
+ * - 刻意製造 HTTP 錯誤的測試（例如引擎離線時真的收到 503）：Chromium 會把 4xx／5xx 的回應記成 console.error，
+ *   測試用 allowedErrors 登記預期的那一則（比對格式化後的整行文字），其餘照樣不准出現。
  * 斷言放在 fixture 收尾：測試本身先失敗時，這裡的失敗訊息也會一起列出來。
  */
-const test = base.extend<{ guard: void }>({
+const test = base.extend<{ allowedErrors: RegExp[]; guard: void }>({
+  // 每個測試各自一份空陣列（Playwright 要求 fixture 的第一個參數是解構）。用 tuple 寫法：
+  // 直接寫成 allowedErrors: async (...) 的話，react-hooks 規則會把裡面的 use() 誤判成 Hook。
+  allowedErrors: [
+    async ({}, use) => {
+      await use([]);
+    },
+    { scope: "test" },
+  ],
   guard: [
-    async ({ page }, use) => {
+    async ({ page, allowedErrors }, use) => {
       const errors: string[] = [];
       const external: string[] = [];
       page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -30,7 +40,8 @@ const test = base.extend<{ guard: void }>({
       });
       await use();
       expect(external, "有請求連到外網（沒有被 mock）").toEqual([]);
-      expect(errors, "頁面出現 pageerror 或 console.error").toEqual([]);
+      const unexpected = errors.filter((line) => !allowedErrors.some((allowed) => allowed.test(line)));
+      expect(unexpected, "頁面出現 pageerror 或 console.error").toEqual([]);
     },
     { auto: true },
   ],
@@ -105,16 +116,27 @@ async function countRoutePixels(decoder: Page, png: Buffer): Promise<number> {
   );
 }
 
-test("文字 → 放到地圖 → 吸附 → 下載 GPX", async ({ page }) => {
-  const seen: { hi?: MatchResponse } = {};
+/** 地圖 style 與 /api/status 換成固定內容；不連外、不需要引擎。 */
+async function mockMapAndStatus(page: Page) {
   await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ json: BLANK_STYLE }));
   await page.route("**/api/status", (route) => route.fulfill({ json: STATUS }));
+}
+
+/** 再加上 /api/match：依請求的筆畫產生回應，順便驗證 app 送出的請求符合契約。 */
+async function mockEngine(page: Page, onMatch?: (request: MatchRequest, response: MatchResponse) => void) {
+  await mockMapAndStatus(page);
   await page.route("**/api/match", async (route) => {
-    // 順便驗證 app 送出的請求符合契約
     const request = matchRequestSchema.parse(route.request().postDataJSON());
     const response = matchResponseFor(request);
-    if (request.strokes.length === HI_STROKES) seen.hi = response;
+    onMatch?.(request, response);
     await route.fulfill({ json: response });
+  });
+}
+
+test("文字 → 放到地圖 → 吸附 → 下載 GPX", async ({ page }) => {
+  const seen: { hi?: MatchResponse } = {};
+  await mockEngine(page, (request, response) => {
+    if (request.strokes.length === HI_STROKES) seen.hi = response;
   });
 
   await page.goto("/");
@@ -166,4 +188,82 @@ test("文字 → 放到地圖 → 吸附 → 下載 GPX", async ({ page }) => {
   // GPX 只輸出 route.points，順序與座標都要和回應一致
   const expectedPoints = response.route.points.map(([x, y]) => `<trkpt lat="${y.toFixed(6)}" lon="${x.toFixed(6)}"/>`);
   expect(gpx.match(/<trkpt [^>]*\/>/g)).toEqual(expectedPoints);
+});
+
+/**
+ * 在頁面裡用 canvas 畫一張 PNG：白底，blank 為 false 時畫一個黑色實心圓和一個中空的黑色方框
+ * （外框 2 個、洞 1 個）。尺寸大於 MAX_SIDE（512），縮圖的路徑也會走到。
+ */
+async function makePng(page: Page, { width, height, blank }: { width: number; height: number; blank: boolean }) {
+  const base64 = await page.evaluate(
+    ({ width, height, blank }) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, width, height);
+      if (!blank) {
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.arc(width * 0.3, height * 0.5, Math.min(width, height) * 0.25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillRect(width * 0.6, height * 0.25, width * 0.25, height * 0.5);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(width * 0.67, height * 0.4, width * 0.1, height * 0.2);
+      }
+      return canvas.toDataURL("image/png").split(",")[1];
+    },
+    { width, height, blank },
+  );
+  return Buffer.from(base64, "base64");
+}
+
+async function uploadImage(page: Page, name: string, buffer: Buffer) {
+  await page.getByRole("tab", { name: "圖片" }).click();
+  await page.locator("#source-image").setInputFiles({ name, mimeType: "image/png", buffer });
+}
+
+test("圖片 → 輪廓 → 以封閉筆畫吸附", async ({ page }) => {
+  await mockEngine(page);
+  await page.goto("/");
+  // 開頁時預設文字（15 筆）也會送一次；圖片預設只選最大的一個外框，所以等的是「1 筆、封閉」那一次
+  const imageRequest = page.waitForRequest((r) => {
+    const strokes = r.url().endsWith("/api/match") ? r.postDataJSON()?.strokes : undefined;
+    return strokes?.length === 1 && strokes[0].closed === true;
+  });
+  await uploadImage(page, "shapes.png", await makePng(page, { width: 1200, height: 800, blank: false }));
+
+  const request = matchRequestSchema.parse((await imageRequest).postDataJSON());
+  expect(request.strokes[0].closed).toBe(true);
+  expect(request.strokes[0].points.length).toBeGreaterThanOrEqual(3);
+
+  // worker 抽到輪廓、圖形放上地圖，吸附結果也畫出來
+  await expect(page.getByRole("group", { name: "輪廓選取" }).locator("polygon").first()).toBeAttached();
+  await expect(page.getByTestId("target-stroke").first()).toBeAttached();
+  await expect(page.getByTestId("map")).toHaveAttribute("data-route-segments", "1");
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+});
+
+test("引擎離線：顯示橫幅、停用吸附，不送 /api/match", async ({ page, allowedErrors }) => {
+  // 不 mock /api/status：走真的 standalone 代理，playwright.config.ts 把 ENGINE_URL 設成空字串，代理回 503
+  allowedErrors.push(/status of 503.*\/api\/status/);
+  const matchRequests: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/match")) matchRequests.push(r.url());
+  });
+  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ json: BLANK_STYLE }));
+  const statusResponse = page.waitForResponse((r) => r.url().endsWith("/api/status"));
+  await page.goto("/");
+
+  const status = await statusResponse;
+  expect(status.status()).toBe(503);
+  expect((await status.json()).detail.code).toBe("engine_unreachable");
+  await expect(page.getByText("路線引擎暫時無法使用")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重試" })).toBeVisible();
+  // 圖形仍可編輯，但沒有送出任何吸附請求
+  await expect(page.getByTestId("target-stroke").first()).toBeAttached();
+  await page.waitForLoadState("networkidle");
+  expect(matchRequests).toEqual([]);
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeDisabled();
 });
