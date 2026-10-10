@@ -1,0 +1,3 @@
+# 人工修正快速道路判斷：deny 強制禁騎、allow 強制可騎（OSM way id）。allow 優先。
+deny = []
+allow = []

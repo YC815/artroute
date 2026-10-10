@@ -32,7 +32,7 @@ def write_grid_pbf(path: Path, ways: list[GridWay]) -> None:
             writer.add_node(
                 osmium.osm.mutable.Node(id=node_id, location=grid_point(*coord), version=1)
             )
-        for way in ways:
+        for way in sorted(ways, key=lambda w: w.id):  # Valhalla 要求 pbf 內物件依 id 排序，不排會 "Detected unsorted input data"
             writer.add_way(
                 osmium.osm.mutable.Way(
                     id=way.id,
@@ -62,4 +62,19 @@ TEST_MAP: list[GridWay] = [
         {**RESIDENTIAL, "oneway": "yes", "oneway:bicycle": "no"},
     ),
     GridWay(MOTORWAY_WAY_ID, [(c, 3) for c in range(7)], {"highway": "motorway"}),
+]
+
+
+EXPRESSWAY_WAY_ID = 200   # trunk + ref 台64：要被標記
+PLAIN_TRUNK_WAY_ID = 201  # 一般 trunk（例如台1線）：不標記
+X0 = 20  # 與 TEST_MAP 分開
+
+EXPRESSWAY_MAP: list[GridWay] = [
+    # 上：快速公路直線；下：住宅街繞路
+    GridWay(EXPRESSWAY_WAY_ID, [(X0 + c, 1) for c in range(5)], {"highway": "trunk", "ref": "台64", "name": "八里新店線"}),
+    GridWay(210, [(X0, 1), (X0, 0)], RESIDENTIAL),
+    GridWay(211, [(X0 + c, 0) for c in range(5)], RESIDENTIAL),
+    GridWay(212, [(X0 + 4, 0), (X0 + 4, 1)], RESIDENTIAL),
+    # 一般 trunk：唯一通路，必須可騎
+    GridWay(PLAIN_TRUNK_WAY_ID, [(X0 + 4, 1), (X0 + 4, 2), (X0 + 4, 3)], {"highway": "trunk", "ref": "台1"}),
 ]
