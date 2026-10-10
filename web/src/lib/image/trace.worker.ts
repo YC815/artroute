@@ -14,7 +14,7 @@ function createBitmap(file: Blob, options: ImageBitmapOptions): Promise<ImageBit
 }
 
 async function decode(file: Blob): Promise<GrayImage> {
-  // 長邊縮到 MAX_SIDE 的 bitmap 才會走到 canvas，不會完整解出原始尺寸
+  // 走到 canvas 的 bitmap 長邊已 ≤ MAX_SIDE（縮小的是輸出；解碼本身可能仍先解出原始尺寸，見 decode.ts 開頭）
   const bitmap = await decodeWithinLimit(file, createBitmap);
   try {
     const { width, height } = bitmap;

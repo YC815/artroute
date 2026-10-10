@@ -1,5 +1,7 @@
-// 圖片解碼的尺寸防線：絕不產生長邊超過 MAX_SIDE 的 bitmap（防解壓縮炸彈）。
-// 5 MB 的 PNG 可以解出每邊數萬像素，所以不能先完整解碼再縮。
+// 圖片解碼的尺寸防線：保證後面的流程（canvas、灰階、輪廓）拿到的 bitmap 長邊 ≤ MAX_SIDE。
+// 限制：createImageBitmap 的 resize 只是縮小「輸出」，不保證以低解析度解碼。Chromium 對 PNG、WebP 多半先完整解碼再縮放，
+// 所以 5 MB 但高度壓縮、每邊數萬像素的圖，解碼時仍可能吃掉大量記憶體（影響範圍只有使用者自己的分頁，不是安全問題）。
+// 後續工作：先讀檔頭尺寸（PNG IHDR、JPEG SOF、WebP VP8），超過上限就直接拒絕，不交給 createImageBitmap。
 
 /** 描邊用的影像長邊上限（像素）。輪廓的洞歸屬運算是超線性的（1024 px 的雜訊圖約 26 秒），不能拿掉或調高。 */
 export const MAX_SIDE = 512;
