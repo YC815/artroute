@@ -69,8 +69,12 @@
 - 部署：通過。`hl deploy artroute-engine --internal` 最後一行 `完成：http://artroute-engine:8080 （內網：只有 hl 網路上的 app 連得到）`，健康檢查「內網回應正常」
 - ls：通過。`artroute-engine  running  http://artroute-engine:8080  internal`
 - 從 hl 網路內讀 `/status`：通過。`docker exec hl-proxy wget -qO- http://artroute-engine:8080/status` 回 `{"data":{"build_id":"20261010T145928Z","osm_md5":"28cc8b1b689b45b640b5a8c5d2042b79","created_at":"2026-10-10T15:00:09.887427+00:00"}}`；建置前同一個端點回 `{"data":null}`，建置完成後不用重啟就回新版（`/status` 每次讀 `current`）
-- public 拒絕：未在 m1 實測（這次任務不跑 `hl public`）；`hl` 腳本在 `hl public` 前檢查 `zone.chen.hl.internal` label，是內網 app 就 `die`
+- public 拒絕：通過，實測在 Task 1 的 smoke test（m1，測試 app `hl-internal-smoke`，用 homelab commit c9ff5be 的 `hl`，現已合併、就是 PATH 上的 `hl`），不是對 `artroute-engine` 本身跑；這次任務沒有再跑 `hl public`
+  - `hl public hl-internal-smoke` exit 1，輸出 `錯誤：hl-internal-smoke 是內網 app，不能公開。要對外的話，用 hl deploy（不加 --internal）重新部署`
+  - m1 的 `proxy/sites/` 沒有該 app 的 `.caddy` 路由檔
+  - 內網 → 一般 → 內網的重新部署切換正常（切回內網時路由檔被移除）；`hl rm` 清理成功
+  - 機制：`hl` 腳本在 `hl public` 前檢查 `zone.chen.hl.internal` label，是內網 app 就 `die`
 
 ## 結論
 - P0 四項（pyvalhalla on m1、台灣 tiles、bicycle 單行道、hl --internal）：全部通過。唯一的修補是 test stage 補 `libexpat1`，與 P0 假設無關
-- 對設計的影響：無，spec 不用改。P1 的參考數字：台灣完整建置約 41 秒、約 2.1 GiB RAM、tiles 336 MiB，每次重建都可以直接全量重跑
+- 對設計的影響：無，spec 不用改。P1 的參考數字：tiles 建置＋驗證約 41 秒（含下載共 2 分 43 秒）、約 2.1 GiB RAM（重跑 `build_tiles` 量到的 anon 尖峰）、tiles 336 MiB，每次重建都可以直接全量重跑
