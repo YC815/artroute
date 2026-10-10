@@ -469,3 +469,24 @@ def test_compare_flags_coverage_drop_even_when_overall_holds() -> None:
     base = {"a": {"overall": 50, "coverage": 66, "error": None}, "old": {"overall": 50, "error": None}}
     results = [CaseResult("a", 0, 100, 50, 1.0, 1.0, 1, None), CaseResult("old", 0, 100, 50, 1.0, 1.0, 1, None)]
     assert compare(results, base) == ["a：coverage 66 → 0"]  # 沒有 coverage 的舊條目只比 overall
+
+
+class UturnRouter:
+    """edge_walk 配不上原地折返（A→B→A）：整段含折返就失敗，切開後各自配得上。
+    way id 依位置給：經度 ≥ split 的點落在 way 9，其餘在 way 1。"""
+
+    def __init__(self, split: float = 999.0) -> None:
+        self.split = split
+
+    def edges(self, points):
+        if any(points[i - 1] == points[i + 1] for i in range(1, len(points) - 1)):
+            raise RoutingError("edge_walk algorithm failed to find exact route match")
+        return [EdgeInfo(9 if lon >= self.split else 1, 0.0) for lon, _ in points[1:]]
+
+
+def test_safety_splits_a_segment_edge_walk_cannot_match_whole() -> None:
+    # 真實資料：吸附結果在死巷原地折返時 edge_walk 整段配不上；從中間切開各自配，經過的路段一條都不漏
+    spur = seg([A, B, (B[0], B[1] + 0.0003), B, C])
+    assert safety_problem(UturnRouter(), [spur], frozenset({9})) is None
+    flagged = safety_problem(UturnRouter(split=C[0]), [spur], frozenset({9}))
+    assert flagged is not None and flagged[0] == UNSAFE and "9" in flagged[1]

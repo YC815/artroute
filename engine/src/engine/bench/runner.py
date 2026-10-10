@@ -45,13 +45,28 @@ def _target_length_m(strokes: list[StrokeInput]) -> float:
     return sum(polyline_length_m(s.points + [s.points[0]] if s.closed else s.points) for s in strokes)
 
 
+def _ways(router: BenchRouter, points: list[LonLat]) -> set[int]:
+    """折線經過的 way。edge_walk 整段配不上時（實測：吸附結果在死巷原地折返 A→B→A），從中間的點切成兩半各自配：
+    兩半共用切點，經過的路段一條都不會漏。切到只剩兩點還配不上，或配到的路段是空的，就丟 RoutingError。"""
+    try:
+        edges = router.edges(points)
+    except RoutingError:
+        if len(points) <= 2:
+            raise
+        mid = len(points) // 2
+        return _ways(router, points[: mid + 1]) | _ways(router, points[mid:])
+    if not edges and len(set(points)) >= 2:
+        raise RoutingError("沒有配到任何路段")
+    return {e.way_id for e in edges}
+
+
 def safety_problem(
     router: BenchRouter, segments: list[Segment], denied_ids: frozenset[int]
 ) -> tuple[str, str] | None:
     """吸附結果的安全不變式；通過回傳 None，否則回傳 (UNSAFE 或 UNDETERMINED, 說明)。
 
     1. 相鄰路段的接點相距 ≤ JOIN_TOLERANCE_M：超過的話輸出會把缺口畫成一條地圖上不存在的直線。
-    2. 每一段經過的路段（edges）都不是被禁行的 way。逐段查：每段都是 Valhalla 自己的輸出，edge_walk 配得上。
+    2. 每一段經過的路段（edges）都不是被禁行的 way。逐段查：每段都是 Valhalla 自己的輸出；配不上就切開再配（_ways）。
     """
     for i, (a, b) in enumerate(zip(segments, segments[1:])):
         gap_m = haversine_m(a.points[-1], b.points[0])
@@ -63,13 +78,10 @@ def safety_problem(
         if len(set(segment.points)) < 2:
             continue  # 封閉圈旋轉切出的零長度片段：沒有經過任何路段
         try:
-            edges = router.edges(segment.points)
+            used |= _ways(router, segment.points) & denied_ids
         except RoutingError as error:
             return UNDETERMINED, f"第 {i} 段（{segment.kind}）配不出經過的路段：{error}"
-        if not edges:
-            return UNDETERMINED, f"第 {i} 段（{segment.kind}）沒有配到任何路段"
         checked += 1
-        used |= {e.way_id for e in edges} & denied_ids
     if not checked:
         return UNDETERMINED, "路線沒有任何可檢查的路段"
     if used:
