@@ -26,8 +26,10 @@ from osm_fixture import (
     PLAIN_TRUNK_WAY_ID,
     X0,
     X1,
+    OPPOSITE_FOOTWAY_WAY_ID,
     X4,
     grid_point,
+    opposite_footway_map,
     steps_only_map,
     write_grid_pbf,
 )
@@ -455,6 +457,10 @@ def test_other_bicycle_tags_cannot_reopen_steps(tmp_path: Path, extra: Tags) -> 
         ({"highway": "footway", "cycleway": "no"}, None),
         ({"highway": "footway", "cycleway:both": "yes"}, None),  # lua 的 cycleway:both 只認 lane／track／shared 類
         ({"highway": "footway", "cycleway:left": "track"}, None),  # 只有一側不會放行
+        # opposite* 只在 lua 的 bike_reverse 表：只放行逆向。標 dismount 會連順向一起打開（等於放行逆向騎）
+        ({"highway": "footway", "cycleway": "opposite"}, None),
+        ({"highway": "footway", "cycleway": "opposite_lane"}, None),
+        ({"highway": "pedestrian", "cycleway": "opposite_track"}, None),
         # path、cycleway 不動
         ({"highway": "path", "bicycle": "yes"}, "yes"),
         ({"highway": "cycleway"}, None),
@@ -522,3 +528,27 @@ def test_footways_closed_to_bicycles_stay_closed_after_patch(tmp_path: Path) -> 
             for shortest in (False, True):
                 with pytest.raises(RoutingError):
                     router.route(start, end, shortest=shortest)
+
+
+@pytest.mark.valhalla
+@pytest.mark.parametrize("cycleway", ["opposite", "opposite_lane", "opposite_track"])
+def test_patch_does_not_open_the_closed_direction_of_a_contraflow_footway(tmp_path: Path, cycleway: str) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, opposite_footway_map(cycleway))
+    west, east = grid_point(X4 + 24, 1), grid_point(X4 + 28, 1)
+
+    # 對照組：未修補時只有東→西走得通（證明這張圖真的是單向，下面「修補後西→東仍不通」不是空洞的）
+    control = Router(build_tiles(src, tmp_path / "control"))
+    back = control.route(east, west)
+    assert OPPOSITE_FOOTWAY_WAY_ID in {e.way_id for e in control.edges(back.points)}
+    with pytest.raises(RoutingError):
+        control.route(west, east)
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    for shortest in (False, True):
+        with pytest.raises(RoutingError):
+            router.route(west, east, shortest=shortest)
+        route = router.route(east, west, shortest=shortest)
+        assert OPPOSITE_FOOTWAY_WAY_ID in {e.way_id for e in router.edges(route.points)}

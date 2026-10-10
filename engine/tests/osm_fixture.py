@@ -126,6 +126,7 @@ SIDEWALK_WAY_ID = 720
 SIDEWALK_ONLY_WAY_ID = 730
 CLOSED_FOOTWAY_WAY_ID = 740
 NO_BICYCLE_FOOTWAY_WAY_ID = 741
+OPPOSITE_FOOTWAY_WAY_ID = 750
 
 # edge_walk 遇到兩條 way 共用同一對端點時可能配錯 way（實測：2 點的捷徑被配成同端點的 4 點道路），
 # 所以捷徑與繞路不共用端點：兩端各接一段住宅街，繞路從住宅街的外端出發
@@ -175,3 +176,12 @@ CLOSED_FOOTWAY_MAP: list[GridWay] = [
     GridWay(744, [(X4 + 18, 3), (X4 + 19, 3)], RESIDENTIAL),
     GridWay(745, [(X4 + 21, 3), (X4 + 22, 3)], RESIDENTIAL),
 ]
+
+
+def opposite_footway_map(cycleway: str) -> list[GridWay]:
+    """沒有 bicycle tag、只有 cycleway=opposite* 的人行道：lua 只把逆向（東→西）放行給自行車，順向（西→東）不通。"""
+    return [
+        GridWay(OPPOSITE_FOOTWAY_WAY_ID, [(X4 + 25, 1), (X4 + 27, 1)], {"highway": "footway", "cycleway": cycleway}),
+        GridWay(751, [(X4 + 24, 1), (X4 + 25, 1)], RESIDENTIAL),
+        GridWay(752, [(X4 + 27, 1), (X4 + 28, 1)], RESIDENTIAL),
+    ]

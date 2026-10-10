@@ -29,11 +29,11 @@ BICYCLE_ACCESS = frozenset(
     {"yes", "designated", "use_sidepath", "permissive", "destination", "dismount", "lane", "track", "shared",
      "shared_lane", "sidepath", "share_busway", "allowed", "private", "official", "permit", "residents"}
 )
-# 沒有 bicycle tag 時，lua 的 or 鏈接著讀 cycleway（cycleway 表與反向的 bike_reverse 表）
+# 沒有 bicycle tag 時，lua 的 or 鏈接著讀 cycleway（cycleway 表）。opposite／opposite_lane／opposite_track 不在表裡，
+# 只經 bike_reverse 放行逆向；標成 dismount 會連順向一起打開（等於放行逆向騎），所以不算
 CYCLEWAY_ACCESS = frozenset(
     {"yes", "designated", "use_sidepath", "permissive", "destination", "dismount", "lane", "track", "shared",
-     "shared_lane", "sidepath", "share_busway", "allowed", "private", "cyclestreet", "crossing",
-     "opposite", "opposite_lane", "opposite_track"}
+     "shared_lane", "sidepath", "share_busway", "allowed", "private", "cyclestreet", "crossing"}
 )
 # cycleway:both 只認 lua 的 shared／separated／dedicated 表
 CYCLEWAY_BOTH_ACCESS = frozenset(
