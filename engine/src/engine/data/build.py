@@ -23,4 +23,8 @@ def build_with_patch(pbf: Path, build_dir: Path) -> Path:
 
 def load_denied(build_dir: Path) -> list[DeniedWay]:
     raw = json.loads((build_dir / DENIED_FILE).read_text())
-    return [DeniedWay(d["id"], d["name"], d["ref"], tuple(d["first"]), tuple(d["last"])) for d in raw]
+    return [DeniedWay(d["id"], d["name"], d["ref"], _coord(d["first"]), _coord(d["last"])) for d in raw]
+
+
+def _coord(raw: list[float] | None) -> tuple[float, float] | None:
+    return None if raw is None else (raw[0], raw[1])

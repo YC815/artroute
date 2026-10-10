@@ -18,6 +18,8 @@ EXPRESSWAY_REFS = frozenset(
 NAME_KEYWORDS = ("快速道路", "快速公路", "快速路", "高架")
 TRUNK = frozenset({"trunk", "trunk_link"})
 
+Coord = tuple[float, float] | None  # 端點節點不在 pbf 裡（或 way 不到 2 個節點）時是 None
+
 
 def is_expressway(tags: Mapping[str, str]) -> bool:
     if tags.get("highway") not in TRUNK:
@@ -46,12 +48,21 @@ class DeniedWay:
     id: int
     name: str
     ref: str
-    first: tuple[float, float]
-    last: tuple[float, float]
+    first: Coord
+    last: Coord
 
 
 def _tags(obj) -> dict[str, str]:
     return {tag.k: tag.v for tag in obj.tags}
+
+
+def _is_bicycle_tag(key: str) -> bool:
+    return key.startswith("bicycle:") or key.startswith("cycleway")
+
+
+def _denied_tags(tags: Mapping[str, str]) -> dict[str, str]:
+    """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track 等都會讓 Valhalla 照樣放行。"""
+    return {**{k: v for k, v in tags.items() if not _is_bicycle_tag(k)}, "bicycle": "no"}
 
 
 def _denied(way_id: int, tags: Mapping[str, str], overrides: Overrides) -> bool:
@@ -59,13 +70,14 @@ def _denied(way_id: int, tags: Mapping[str, str], overrides: Overrides) -> bool:
 
 
 def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
-    # 第一遍只看 way：找出要標記的 way 與它們首尾節點的 id
-    targets: dict[int, tuple[dict[str, str], int, int]] = {}
+    # 第一遍只看 way：找出要標記的 way 與它們首尾節點的 id（不到 2 個節點的壞資料不記端點，tag 照改）
+    targets: dict[int, tuple[dict[str, str], tuple[int, int] | None]] = {}
     for way in osmium.FileProcessor(str(src), osmium.osm.WAY):
         tags = _tags(way)
         if _denied(way.id, tags, overrides):
-            targets[way.id] = (tags, way.nodes[0].ref, way.nodes[-1].ref)
-    needed = {ref for _, first, last in targets.values() for ref in (first, last)}
+            ends = (way.nodes[0].ref, way.nodes[-1].ref) if len(way.nodes) >= 2 else None
+            targets[way.id] = (tags, ends)
+    needed = {ref for _, ends in targets.values() if ends for ref in ends}
 
     # 第二遍完整複製；節點在 way 之前，順便記下需要的座標
     locations: dict[int, tuple[float, float]] = {}
@@ -78,7 +90,7 @@ def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
                 writer.add_node(obj)
             elif obj.is_way():
                 if obj.id in targets:
-                    writer.add_way(obj.replace(tags={**targets[obj.id][0], "bicycle": "no"}))
+                    writer.add_way(obj.replace(tags=_denied_tags(targets[obj.id][0])))
                 else:
                     writer.add_way(obj)
             elif obj.is_relation():
@@ -86,7 +98,14 @@ def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
     finally:
         writer.close()
 
+    # 清單只是驗證用的中繼資料：缺節點時座標記 None，不能讓整個 build 掛掉
     return [
-        DeniedWay(way_id, tags.get("name", ""), tags.get("ref", ""), locations[first], locations[last])
-        for way_id, (tags, first, last) in sorted(targets.items())
+        DeniedWay(
+            way_id,
+            tags.get("name", ""),
+            tags.get("ref", ""),
+            locations.get(ends[0]) if ends else None,
+            locations.get(ends[1]) if ends else None,
+        )
+        for way_id, (tags, ends) in sorted(targets.items())
     ]
