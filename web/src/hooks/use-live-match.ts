@@ -7,9 +7,19 @@ import { createMatchScheduler, type MatchScheduler } from "@/lib/match/scheduler
 
 export type LiveMatch = { response: MatchResponse | null; error: MatchError | null; pending: boolean };
 
+/** request 為 null（輸入被清空、圖形不合法）時不能再顯示上一次的路線或錯誤。 */
+export function matchForRequest(state: LiveMatch, request: MatchRequest | null): LiveMatch {
+  return request ? state : { ...state, response: null, error: null };
+}
+
 /**
  * 即時吸附：request 變了就排程送出（拖曳中每 300ms 一次、放開立刻送）。
- * enabled 為 false（引擎不可用）時不送。最新的結果是錯誤時清掉舊路線，避免顯示過時的結果。
+ *
+ * - request 必須用 useMemo 穩定住；排程器雖會略過內容相同的請求，每次 render 都重建仍白白增加比對成本。
+ * - request 為 null 或 enabled 為 false（引擎不可用）時不送，並取消已排定與進行中的請求；
+ *   request 為 null 時回傳的 response、error 都是 null，不會留著舊路線。
+ * - 最新的結果是錯誤時清掉舊路線，避免顯示過時的結果。
+ * - 引擎離線橫幅請看 useEngineStatus().status，不要用這裡的 error 判斷。
  */
 export function useLiveMatch(
   request: MatchRequest | null,
@@ -36,15 +46,17 @@ export function useLiveMatch(
         setState((s) => ({ ...s, response: null, error: outcome.error }));
         if (outcome.error.engineDown) onEngineDownRef.current();
       },
-      onPendingChange: (pending) => setState((s) => ({ ...s, pending })),
+      onPendingChange: (pending) => setState((s) => (s.pending === pending ? s : { ...s, pending })),
     });
     schedulerRef.current = scheduler;
     return () => scheduler.dispose();
   }, []);
 
   useEffect(() => {
-    if (request && enabled) schedulerRef.current?.schedule(request, dragging);
+    const scheduler = schedulerRef.current;
+    if (request && enabled) scheduler?.schedule(request, dragging);
+    else scheduler?.cancel();
   }, [request, dragging, enabled]);
 
-  return state;
+  return matchForRequest(state, request);
 }
