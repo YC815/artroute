@@ -5,7 +5,7 @@ import pytest
 from valhalla import Actor
 
 from engine.routing.tiles import TileBuildError, build_tiles
-from osm_fixture import grid_point
+from osm_fixture import TEST_MAP, grid_point, write_grid_pbf
 
 pytestmark = pytest.mark.valhalla
 
@@ -28,3 +28,20 @@ def test_built_tiles_can_route(grid_config: Path) -> None:
 def test_missing_pbf_raises(tmp_path: Path) -> None:
     with pytest.raises(TileBuildError):
         build_tiles(tmp_path / "nope.osm.pbf", tmp_path / "build")
+
+
+def test_build_tiles_accepts_relative_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    write_grid_pbf(Path("g.osm.pbf"), TEST_MAP)
+    config_path = build_tiles(Path("g.osm.pbf"), Path("build"))
+    config = json.loads(config_path.read_text())
+    assert Path(config["mjolnir"]["tile_dir"]).is_absolute()
+    assert any(Path(config["mjolnir"]["tile_dir"]).rglob("*.gph"))
+
+
+def test_build_tiles_works_without_venv_bin_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    pbf = tmp_path / "g.osm.pbf"
+    write_grid_pbf(pbf, TEST_MAP)
+    config_path = build_tiles(pbf, tmp_path / "build")
+    assert any(Path(json.loads(config_path.read_text())["mjolnir"]["tile_dir"]).rglob("*.gph"))
