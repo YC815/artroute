@@ -193,3 +193,54 @@ def test_trim_that_leaves_a_stub_does_not_hide_the_turn() -> None:
     right = [seg([north(k, 25), north(k, 200)])]
     router = TurnBlockRouter(blocked=k, also_blocked=(J_END,))  # k 讓第一次嘗試失敗而裁切，J 擋住裁切後的轉彎
     assert connect(router, Deadline(10), left, right, "connector", None) is None
+
+
+# ---- P1.5 Task 10 fix 2：新接上的幾何也落在鄰近既有接點的探針裡，那些接點要一併重量 ----
+
+NODE = (121.507, LAT)
+WEST = seg([east(NODE, -100), NODE])  # 由西往東到 NODE
+SOUTH_4M = seg([NODE, north(NODE, -4)])  # 在 NODE 轉向南走 4 m（單獨量：探針只有這 4 m，轉彎能騎）
+BACK_NORTH = seg([north(NODE, -4), north(NODE, 50)])  # 在那裡折回，沿同一條路往北經過 NODE
+
+
+def test_neighbour_junction_whose_probe_now_folds_back_is_rechecked_by_adjacent() -> None:
+    # 接縫（南端）的轉彎沒問題，但 WEST|SOUTH_4M 的往後 8 m 探針現在走 4 m 又折回 NODE：量不出方向，不能直接串
+    router = TurnBlockRouter()
+    assert every_junction_rideable(router, [WEST, SOUTH_4M])  # 前提：原本這條鏈的接點都能騎
+    assert connect(router, Deadline(10), [WEST, SOUTH_4M], [BACK_NORTH], "connector", None) is None
+
+
+def test_neighbour_junction_after_the_link_is_rechecked_too() -> None:
+    # 反過來：右邊的鏈由 NODE 北端出發往南 4 m 折回、再往西，接縫前面的探針折回 NODE
+    left = [seg([north(NODE, 50), north(NODE, -4)])]
+    right = [seg([north(NODE, -4), NODE]), seg([NODE, east(NODE, -100)])]
+    router = TurnBlockRouter()
+    assert every_junction_rideable(router, right)
+    assert connect(router, Deadline(10), left, right, "connector", None) is None
+
+
+def test_recheck_walks_past_several_tiny_pieces() -> None:
+    # 壞的接點在兩片之外：WEST|第一片（NODE）離接縫 4 m，中間還隔著一個接點
+    pieces = [seg([NODE, north(NODE, -1.5)]), seg([north(NODE, -1.5), north(NODE, -4)])]
+    router = TurnBlockRouter()
+    assert every_junction_rideable(router, [WEST, *pieces])
+    assert connect(router, Deadline(10), [WEST, *pieces], [BACK_NORTH], "connector", None) is None
+
+
+def test_neighbour_beyond_the_probe_length_is_not_rechecked() -> None:
+    # 對照：南行片段 12 m，鄰近接點離接縫超過 8 m，探針碰不到新的幾何，照舊直接串，不多呼叫 route
+    south = seg([NODE, north(NODE, -12)])
+    back = seg([north(NODE, -12), north(NODE, 50)])
+    router = TurnBlockRouter()
+    connected = connect(router, Deadline(10), [WEST, south], [back], "connector", None)
+    assert connected == [WEST, south, back]
+    assert every_junction_rideable(TurnBlockRouter(), connected)
+
+
+def test_connect_accepts_a_short_bent_arm_that_is_not_a_fold_back() -> None:
+    start = NODE
+    corner = east(north(start, 0.6), 0.6)
+    left = [seg([start, north(start, 0.6), corner])]
+    right = [seg([corner, east(corner, 100)])]
+    connected = connect(TurnBlockRouter(), Deadline(10), left, right, "connector", None)
+    assert connected == [*left, *right]

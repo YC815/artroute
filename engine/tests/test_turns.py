@@ -113,3 +113,29 @@ def test_probe_that_folds_back_onto_the_junction_is_not_rideable() -> None:
 def test_head_points_stop_once_long_enough() -> None:
     near, far = seg([J, east(J, 100)]), seg([east(J, 100), east(J, 300)])
     assert head_points([near, far]) == near.points
+
+
+# ---- P1.5 Task 10 fix 2：折回接點的判斷看走的路，不只看直線距離 ----
+
+
+def test_short_bent_arm_is_not_a_fold_back() -> None:
+    # 0.6 m 向北再 0.6 m 向東：走了 1.2 m，直線只有 0.85 m。多走的路不到 JOIN_TOLERANCE_M，不是折回，照一般轉角量
+    start = J
+    at = east(north(start, 0.6), 0.6)
+    assert rideable(TurnBlockRouter(), Deadline(10), [start, north(start, 0.6), at], [at, east(at, 100)])
+    assert rideable(TurnBlockRouter(), Deadline(10), [east(at, -100), at], [at, east(at, 0.6), north(east(at, 0.6), 0.6)])
+
+
+def test_both_arms_folding_back_is_not_a_u_turn() -> None:
+    # 兩邊都是 4 m 的來回：p、q 都落回 J，看起來像迴轉（p≈q），其實兩條臂都量不出方向
+    router = TurnBlockRouter(blocked=J)
+    assert not rideable(router, Deadline(10), [east(J, -200), J, east(J, 4), J], [J, north(J, -4), J, north(J, 100)])
+    assert router.route_calls == []
+
+
+def test_outgoing_that_folds_onto_its_own_start_is_not_rideable() -> None:
+    # outgoing 從離 J 0.9 m 的地方出發，來回 4 m 後落回自己的起點：折回
+    start = north(J, 0.9)
+    router = TurnBlockRouter(blocked=J)
+    assert not rideable(router, Deadline(10), INCOMING, [start, east(start, -4), start, east(start, 100)])
+    assert router.route_calls == []

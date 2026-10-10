@@ -4,8 +4,9 @@
 route(p, q)（shortest）的起訖要落在 p、q 的 JOIN_TOLERANCE_M 內，長度不能比沿原路線經過接點多 TURN_SLACK_M 以上；
 繞一大圈代表這個轉彎不能直接騎（轉向限制、立體交叉在平面上剛好是同一點……），接點視同沒接上。
 兩個探針落在同一處（原地迴轉）沒辦法用 route 量，不檢查；可量的路線不到 JOIN_TOLERANCE_M 也不檢查。
-探針落回接點上（那 TURN_PROBE_M 公尺的路線折回接點本身，臂長 ≤ JOIN_TOLERANCE_M）時量不出通過接點的方向，
-但這不是迴轉，所以不放行：視同不能騎。
+探針折回接點（走了 TURN_PROBE_M 以內的路，終點卻落回接點 JOIN_TOLERANCE_M 內，走的路比直線距離多出超過
+JOIN_TOLERANCE_M）時量不出通過接點的方向，但這不是迴轉，所以不放行：視同不能騎；兩邊都折回更是。
+彎曲但很短的臂（走的路只比直線多一點）不算折回，照一般轉角量。
 """
 
 import math
@@ -64,16 +65,27 @@ def head_points(segments: list[Segment]) -> list[LonLat]:
     return out
 
 
+def _folds_back(walked_m: float, chord_m: float) -> bool:
+    """探針走了 walked_m 公尺，終點離接點只有 chord_m：路線折回接點本身（彎曲的短臂走的路只比直線多一點，不算）。"""
+    return chord_m <= JOIN_TOLERANCE_M and walked_m - chord_m > JOIN_TOLERANCE_M
+
+
 def rideable(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
     """incoming 的終點接 outgoing 的起點（相距 ≤ JOIN_TOLERANCE_M）時，Valhalla 會不會直接騎過這個接點。"""
     p, back_m = _walk(incoming[::-1], TURN_PROBE_M)
     q, ahead_m = _walk(outgoing, TURN_PROBE_M)
-    if min(back_m, ahead_m) < JOIN_TOLERANCE_M or haversine_m(p, q) <= JOIN_TOLERANCE_M:
+    if min(back_m, ahead_m) < JOIN_TOLERANCE_M:
         return True
-    if min(haversine_m(p, incoming[-1]), haversine_m(q, incoming[-1])) <= JOIN_TOLERANCE_M:
+    at = incoming[-1]
+    folded_p, folded_q = _folds_back(back_m, haversine_m(p, at)), _folds_back(ahead_m, haversine_m(q, at))
+    if folded_p and folded_q:
+        return False  # 兩邊都折回：p≈q 看起來像迴轉，其實兩條臂都量不出方向
+    if haversine_m(p, q) <= JOIN_TOLERANCE_M:
+        return True
+    if folded_p or folded_q:
         return False  # 臂長 0：探針折回接點，量不出方向（不是迴轉），不放行
-    if turn_deg(p, incoming[-1], q) <= TURN_CHECK_DEG:
+    if turn_deg(p, at, q) <= TURN_CHECK_DEG:
         return True
     result = legal_route(router, deadline, p, q, JOIN_TOLERANCE_M)
-    direct_m = back_m + haversine_m(incoming[-1], outgoing[0]) + ahead_m
+    direct_m = back_m + haversine_m(at, outgoing[0]) + ahead_m
     return result is not None and result.length_km * 1000 <= direct_m + TURN_SLACK_M
