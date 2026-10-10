@@ -116,3 +116,31 @@ CROSSING_MAP: list[GridWay] = [
     GridWay(502, [(X3, 1), (X3, 0), (X3 + 1, 0)], RESIDENTIAL),
     GridWay(503, [(X3 + 2, 1), (X3 + 2, 2), (X3 + 1, 2)], RESIDENTIAL),
 ]
+
+# ---- 樓梯（Task 14）：每個情境各寫成獨立的 pbf，彼此不會互相吸附 ----
+X4 = 100  # 與其他地圖分開
+STEPS_WAY_ID = 700
+STEPS_ONLY_WAY_ID = 710
+STEPS = {"highway": "steps"}
+
+# edge_walk 遇到兩條 way 共用同一對端點時可能配錯 way（實測：2 點的捷徑被配成同端點的 4 點道路），
+# 所以捷徑與繞路不共用端點：兩端各接一段住宅街，繞路從住宅街的外端出發
+STEPS_MAP: list[GridWay] = [
+    # 樓梯捷徑（經樓梯約 0.6 km）對住宅街繞路（約 2.4 km）。未修補時 shortest 走樓梯，預設成本本來就繞開樓梯
+    GridWay(STEPS_WAY_ID, [(X4, 1), (X4 + 1, 1)], STEPS),
+    GridWay(701, [(X4 - 1, 1), (X4, 1)], RESIDENTIAL),
+    GridWay(702, [(X4 + 1, 1), (X4 + 2, 1)], RESIDENTIAL),
+    GridWay(703, [(X4 - 1, 1), (X4 - 1, DETOUR_ROW), (X4 + 2, DETOUR_ROW), (X4 + 2, 1)], RESIDENTIAL),
+]
+
+def steps_only_map(steps_tags: dict[str, str]) -> list[GridWay]:
+    """樓梯是兩段住宅街之間唯一的路。起訖要在住宅街上：Valhalla 不會把 route 的起訖吸附到樓梯上（實測）。"""
+    return [
+        GridWay(STEPS_ONLY_WAY_ID, [(X4 + 4, 1), (X4 + 5, 1)], steps_tags),
+        GridWay(711, [(X4 + 3, 1), (X4 + 4, 1)], RESIDENTIAL),
+        GridWay(712, [(X4 + 5, 1), (X4 + 6, 1)], RESIDENTIAL),
+    ]
+
+
+# 未修補時走得通，標成 bicycle=no 後必須無路可走
+STEPS_ONLY_MAP = steps_only_map(STEPS)

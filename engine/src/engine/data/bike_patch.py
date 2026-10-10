@@ -1,7 +1,8 @@
-"""建圖前把台灣快速道路標成 bicycle=no（spec §6.1）。
+"""建圖前修補自行車通行 tag（spec §6.1）。
 
-台灣的快速道路多半標成 highway=trunk，Valhalla 對 bicycle 視為可騎；
-但一般省道（台1線等）也是 trunk，所以用名稱、編號與 motorroad 判斷，而不是全面禁止 trunk。
+- 快速道路標成 bicycle=no：台灣的快速道路多半標成 highway=trunk，Valhalla 對 bicycle 視為可騎；
+  但一般省道（台1線等）也是 trunk，所以用名稱、編號與 motorroad 判斷，而不是全面禁止 trunk。
+- 樓梯一律標成 bicycle=no（使用者決定：禁走樓梯，沒有例外）。Valhalla 3.9.1 預設讓自行車走樓梯。
 """
 
 import tomllib
@@ -18,6 +19,7 @@ EXPRESSWAY_REFS = frozenset(
 )
 NAME_KEYWORDS = ("快速道路", "快速公路", "快速路", "高架")
 TRUNK = frozenset({"trunk", "trunk_link"})
+STEPS = "steps"
 
 Coord = tuple[float, float] | None  # 端點節點不在 pbf 裡（或 way 不到 2 個節點）時是 None
 
@@ -51,6 +53,7 @@ class DeniedWay:
     ref: str
     first: Coord
     last: Coord
+    highway: str = ""  # 被標記的 way 的 highway（例如 trunk、steps）；舊版清單沒有這個欄位
 
 
 def _tags(obj) -> dict[str, str]:
@@ -58,22 +61,36 @@ def _tags(obj) -> dict[str, str]:
 
 
 # 實測（真實 Valhalla）會讓 bicycle=no 的路重新可騎的 tag：oneway:bicycle=no 讓單行路雙向放行；
-# vehicle:forward／backward 會蓋過 bicycle=no（lua：bk_forward = bicycle:forward or vehicle:forward）。
-# access:forward／backward 與其他 conditional 變體實測不影響。引擎只算自行車路線，移除 vehicle 方向 tag 沒有副作用
+# vehicle:forward／backward 會蓋過 bicycle=no（lua：bk_forward = bicycle:forward or vehicle:forward）；
+# service=driveway 且沒有 access 時 lua 讓所有交通方式通行（實測會蓋過 trunk 的 bicycle=no）。
+# access:forward／backward 與其他 conditional 變體實測不影響；ramp:bicycle lua 不讀。
+# 引擎只算自行車路線，移除 vehicle 方向 tag、service=driveway 沒有副作用
 REOPENING_KEYS = frozenset({"oneway:bicycle", "vehicle:forward", "vehicle:backward"})
 
 
-def _is_bicycle_tag(key: str) -> bool:
-    return key.startswith("bicycle:") or key.startswith("cycleway") or key in REOPENING_KEYS
+def _reopens(key: str, value: str) -> bool:
+    return (
+        key.startswith("bicycle:") or key.startswith("cycleway") or key in REOPENING_KEYS
+        or (key, value) == ("service", "driveway")
+    )
 
 
 def _denied_tags(tags: Mapping[str, str]) -> dict[str, str]:
     """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track、oneway:bicycle=no、vehicle:forward=yes 等都會讓 Valhalla 照樣放行。"""
-    return {**{k: v for k, v in tags.items() if not _is_bicycle_tag(k)}, "bicycle": "no"}
+    return {**{k: v for k, v in tags.items() if not _reopens(k, v)}, "bicycle": "no"}
 
 
 def _denied(way_id: int, tags: Mapping[str, str], overrides: Overrides) -> bool:
+    if tags.get("highway") == STEPS:
+        return True  # 使用者決定禁走樓梯：allow 清單也不例外
     return (is_expressway(tags) or way_id in overrides.deny) and way_id not in overrides.allow
+
+
+def _patched_way(way, targets: dict):
+    """被禁行的 way 換成 bicycle=no 的 tag；其他原樣。"""
+    if way.id in targets:
+        return way.replace(tags=_denied_tags(targets[way.id][0]))
+    return way
 
 
 def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
@@ -96,10 +113,7 @@ def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
                     locations[obj.id] = (obj.location.lon, obj.location.lat)
                 writer.add_node(obj)
             elif obj.is_way():
-                if obj.id in targets:
-                    writer.add_way(obj.replace(tags=_denied_tags(targets[obj.id][0])))
-                else:
-                    writer.add_way(obj)
+                writer.add_way(_patched_way(obj, targets))
             elif obj.is_relation():
                 writer.add_relation(obj)
     finally:
@@ -113,6 +127,7 @@ def patch_pbf(src: Path, dst: Path, overrides: Overrides) -> list[DeniedWay]:
             tags.get("ref", ""),
             locations.get(ends[0]) if ends else None,
             locations.get(ends[1]) if ends else None,
+            tags.get("highway", ""),
         )
         for way_id, (tags, ends) in sorted(targets.items())
     ]

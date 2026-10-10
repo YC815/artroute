@@ -13,11 +13,17 @@ from osm_fixture import (
     EXPRESSWAY_ONLY_MAP,
     EXPRESSWAY_ONLY_WAY_ID,
     EXPRESSWAY_WAY_ID,
+    STEPS_MAP,
+    STEPS_ONLY_MAP,
+    STEPS_ONLY_WAY_ID,
+    STEPS_WAY_ID,
     GridWay,
     PLAIN_TRUNK_WAY_ID,
     X0,
     X1,
+    X4,
     grid_point,
+    steps_only_map,
     write_grid_pbf,
 )
 
@@ -210,37 +216,40 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
     }
 
 
+# 會（或曾被懷疑會）讓 bicycle=no 的路重新可騎的 tag 組合：快速道路與樓梯共用
+REOPENING_EXTRAS = [
+    {"bicycle:forward": "yes", "bicycle:backward": "yes"},
+    {"cycleway:both": "track"},
+    {"cycleway:right": "lane", "cycleway:left": "lane"},
+    {"cycleway": "lane"},
+    {"bicycle": "designated"},
+    {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
+    {"oneway": "yes", "oneway:bicycle": "no"},
+    # Valhalla lua：bk_forward = bicycle:forward or vehicle:forward，會蓋過 bicycle=no
+    {"vehicle:forward": "yes"},
+    {"vehicle:backward": "yes"},
+    {"oneway": "yes", "vehicle:forward": "yes"},
+    {"oneway": "-1", "vehicle:backward": "yes"},
+    # lua 會讀，但 bicycle=no 在 or 鏈裡先判定，所以保留也不會重新放行（升級 pyvalhalla 時靠這兩組把關）
+    {"bicycle_road": "yes"},
+    {"cyclestreet": "yes"},
+    # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
+    {"access:forward": "yes"},
+    {"access:backward": "yes"},
+    {"vehicle": "yes", "access": "yes"},
+    # lua：service=driveway 且沒有 access 時所有交通方式都放行，實測會蓋過 trunk 的 bicycle=no
+    {"service": "driveway"},
+]
+REOPENING_IDS = [
+    "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
+    "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
+    "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "bicycle-road", "cyclestreet",
+    "access-forward", "access-backward", "vehicle-access-yes", "service-driveway",
+]
+
+
 @pytest.mark.valhalla
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"bicycle:forward": "yes", "bicycle:backward": "yes"},
-        {"cycleway:both": "track"},
-        {"cycleway:right": "lane", "cycleway:left": "lane"},
-        {"cycleway": "lane"},
-        {"bicycle": "designated"},
-        {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
-        {"oneway": "yes", "oneway:bicycle": "no"},
-        # Valhalla lua：bk_forward = bicycle:forward or vehicle:forward，會蓋過 bicycle=no
-        {"vehicle:forward": "yes"},
-        {"vehicle:backward": "yes"},
-        {"oneway": "yes", "vehicle:forward": "yes"},
-        {"oneway": "-1", "vehicle:backward": "yes"},
-        # lua 會讀，但 bicycle=no 在 or 鏈裡先判定，所以保留也不會重新放行（升級 pyvalhalla 時靠這兩組把關）
-        {"bicycle_road": "yes"},
-        {"cyclestreet": "yes"},
-        # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
-        {"access:forward": "yes"},
-        {"access:backward": "yes"},
-        {"vehicle": "yes", "access": "yes"},
-    ],
-    ids=[
-        "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
-        "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
-        "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "bicycle-road", "cyclestreet",
-        "access-forward", "access-backward", "vehicle-access-yes",
-    ],
-)
+@pytest.mark.parametrize("extra", REOPENING_EXTRAS, ids=REOPENING_IDS)
 def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags) -> None:
     src = tmp_path / "src.osm.pbf"
     write_grid_pbf(src, [GridWay(EXPRESSWAY_ONLY_WAY_ID, [(X1 + c, 1) for c in range(5)], {**EXPRESSWAY_TAGS, **extra})])
@@ -324,3 +333,95 @@ def test_allow_beats_deny_when_same_way_is_in_both(tmp_path: Path) -> None:
     assert patch_pbf(src, dst, Overrides(deny=both, allow=both)) == []
     _, ways, _ = read_pbf(dst)
     assert all("bicycle" not in tags for tags, _ in ways.values())
+
+
+# ---- 樓梯禁行（使用者決定：禁走樓梯，沒有例外）----
+
+
+def test_patch_marks_every_steps_way_and_strips_reopening_tags(tmp_path: Path) -> None:
+    src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
+    write_raw_pbf(
+        src,
+        [node(1, 0), node(2, 1), node(3, 2), node(4, 3)],
+        [
+            way(700, [1, 2], {"highway": "steps"}),
+            # 有自行車牽引道的樓梯也一樣禁行；ramp:bicycle 不是 Valhalla 會讀的 tag，照樣保留
+            way(701, [2, 3], {"highway": "steps", "bicycle": "yes", "ramp:bicycle": "yes", "step_count": "12"}),
+            way(702, [3, 4], {
+                "highway": "steps", "bicycle": "designated", "bicycle:forward": "yes", "cycleway": "lane",
+                "oneway": "yes", "oneway:bicycle": "no", "vehicle:forward": "yes", "service": "driveway",
+            }),
+        ],
+    )
+    denied = patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset()))
+    assert [(d.id, d.highway) for d in denied] == [(700, "steps"), (701, "steps"), (702, "steps")]
+    assert denied[0].first == pytest.approx(grid_point(0, 1))
+    assert denied[0].last == pytest.approx(grid_point(1, 1))
+    _, ways, _ = read_pbf(dst)
+    assert ways[700][0] == {"highway": "steps", "bicycle": "no"}
+    assert ways[701][0] == {"highway": "steps", "bicycle": "no", "ramp:bicycle": "yes", "step_count": "12"}
+    assert ways[702][0] == {"highway": "steps", "bicycle": "no", "oneway": "yes"}
+
+
+def test_allow_override_does_not_exempt_steps(tmp_path: Path) -> None:
+    src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
+    write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(700, [1, 2], {"highway": "steps"})])
+    denied = patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset({700})))
+    assert [d.id for d in denied] == [700]
+    assert read_pbf(dst)[1][700][0]["bicycle"] == "no"
+
+
+@pytest.mark.valhalla
+def test_steps_shortcut_is_never_taken_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, STEPS_MAP)
+    start, end = grid_point(X4 - 1, 1), grid_point(X4 + 2, 1)
+
+    # 對照組：未修補時 shortest 走樓梯（預設成本本來就重罰樓梯，所以只有 shortest 能證明 patch 有作用）
+    control = Router(build_tiles(src, tmp_path / "control"))
+    control_route = control.route(start, end, shortest=True)
+    assert STEPS_WAY_ID in {e.way_id for e in control.edges(control_route.points)}
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    assert [(d.id, d.highway) for d in load_denied(build_dir)] == [(STEPS_WAY_ID, "steps")]
+    for shortest in (False, True):
+        route = router.route(start, end, shortest=shortest)
+        assert STEPS_WAY_ID not in {e.way_id for e in router.edges(route.points)}
+        assert route.length_km > 2.0  # 走住宅街繞路
+
+
+@pytest.mark.valhalla
+def test_steps_only_path_becomes_unroutable_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, STEPS_ONLY_MAP)
+    start, end = grid_point(X4 + 3, 1), grid_point(X4 + 6, 1)
+
+    control = Router(build_tiles(src, tmp_path / "control"))
+    for shortest in (False, True):
+        route = control.route(start, end, shortest=shortest)
+        assert STEPS_ONLY_WAY_ID in {e.way_id for e in control.edges(route.points)}
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    for shortest in (False, True):
+        for a, b in ((start, end), (end, start)):
+            with pytest.raises(RoutingError):
+                router.route(a, b, shortest=shortest)
+
+
+@pytest.mark.valhalla
+@pytest.mark.parametrize("extra", REOPENING_EXTRAS, ids=REOPENING_IDS)
+def test_other_bicycle_tags_cannot_reopen_steps(tmp_path: Path, extra: Tags) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, steps_only_map({"highway": "steps", **extra}))
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    west, east = grid_point(X4 + 3, 1), grid_point(X4 + 6, 1)
+    for start, end in ((west, east), (east, west)):
+        for shortest in (False, True):
+            with pytest.raises(RoutingError):
+                router.route(start, end, shortest=shortest)
