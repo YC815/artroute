@@ -216,3 +216,80 @@ T7+fix 下降清單的 13 條（11 個案例）全部被接受，分三類（對
 - 容忍值內的小降（不在計畫的 Task 7 預告清單內；`heart@kaohsiung_lingya`、`square@kaohsiung_lingya`、`square@taichung_west` 與原型相同，`hi@taichung_west` overall 37 是計畫 Task 9 預測會改善的值，`hi@taipei_daan` coverage 73 對原型 74）：`heart@kaohsiung_lingya` coverage 80 → 78、`hi@taichung_west` overall 40 → 37、`hi@taipei_daan` coverage 75 → 73、`square@kaohsiung_lingya` coverage 78 → 76、`square@taichung_west` coverage 81 → 79。
 
 閘門結論：通過（T7+fix `ece472e`：安全斷言全過；letter_l@taipei_riverside 回到 30/0/59；letter_l@taipei_daan overall 44→34 依 A3 例外；其餘案例 overall 下降 ≤ 3、coverage 下降 ≤ 8；overall 中位數 46→60、平均 48.1→53.6；star@taipei_daan@r30 coverage 69；預設文字 median 290–298 ms、bench 最慢 1118 ms）
+
+## 樓梯與人行道（Task 14）
+
+使用者決定（2026-10-11）：「禁走樓梯」「人行道盡量避免」。
+
+### 做了什麼
+
+- 樓梯：建圖前所有 `highway=steps` 標成 `bicycle=no`，比照快速道路移除會重新放行的 tag（`bicycle:*`、`cycleway*`、`oneway:bicycle`、`vehicle:forward/backward`，另加 `service=driveway`，見下）。沒有例外：`bicycle=yes`＋`ramp:bicycle=yes`（有牽引道的樓梯）也禁行，`allow` 清單也不例外。被標記的樓梯寫進禁行清單（加 `highway` 欄位），bench 的安全斷言因此也涵蓋樓梯。
+- `validate_build` 加樓梯檢查：被標記的樓梯至少一條；依 way id 等距抽 20 條，兩端各往外延伸 15 m 當起訖、兩個方向各查一次（預設與 shortest 兩種設定），路線不得經過任何被禁行的 way，且至少一半的路線要配得出路段（修補後的真實 build 上兩種設定都是 34/40）。
+- 人行道：自行車**本來就能走**的 `footway`／`pedestrian`（含 sidewalk、crossing）標成 `bicycle=dismount`；本來不能走的維持不能走。判斷「本來就能走」：`bicycle` 是 Valhalla lua 視為可通行的值（yes、designated、permissive、use_sidepath……），或沒有 `bicycle` 時 `cycleway`／`cycleway:both` 放行（`cycleway=opposite*` 只放行逆向，標 dismount 會連順向打開，所以不算；台灣資料 0 條受影響）。`path`、`cycleway` 不動。
+
+### 標記數量（m1，`/data/osm/taiwan-latest.osm.pbf`，與 build `20261010T183449Z` 同一份）
+
+| 類別 | 條數 |
+| --- | --- |
+| 樓梯 → `bicycle=no` | 16,359 |
+| 快速道路 → `bicycle=no`（不變，供對照） | 2,399 |
+| 禁行清單合計 | 18,758 |
+| footway → dismount（不含 sidewalk、crossing） | 1,631 |
+| footway=sidewalk → dismount | 1,810 |
+| footway=crossing → dismount | 1,429 |
+| pedestrian → dismount | 124 |
+| footway／pedestrian 不動（自行車本來就不能走） | 120,429 |
+
+### Valhalla 3.9.1 的實測行為（合成地圖，本機 pyvalhalla 3.9.1；lua 取自 `valhalla_build_tiles` 內嵌的 graph.lua）
+
+- **footway／pedestrian（含 `footway=sidewalk`）沒有自行車 tag 時，自行車本來就不能走**（lua 的 highway 表 `bike_forward=false`；route 實測無解）。bench 量到的人行道公尺數全部來自明確允許自行車的人行道：base 的 30,580 m 裡，`footway=sidewalk`＋`bicycle=yes` 21,097 m、`footway=sidewalk`＋`bicycle=designated` 5,135 m、其他 `bicycle=yes`／`designated`／`use_sidepath`／`cycleway=shared` 等約 4,300 m；沒有任何允許 tag 的只有 3 m（推測是 edge_walk 配錯）。
+- **`bicycle=dismount` 會放行本來不能走的人行道**（lua 的 bicycle 表 dismount＝true）。所以「沒有明確 bicycle=yes／designated／permissive 就標 dismount」這條規則（計畫原文）會讓沒有 `bicycle` tag 的 113,820 條 footway、5,013 條 pedestrian（除了約百條靠 cycleway 放行的，本來都不通）與 `bicycle=no` 的 1,653 條變成可騎，而真正被走的人行道（都有明確允許）一條也不會被避開。實作改成只標本來就能走的。
+- dismount 在**預設成本**下以牽車速度計價：經人行道 0.8 km（其中人行道 0.4 km）對經道路 1.25 km 會改走道路（測試釘住）；但 0.2 km 的人行道對 1.1 km、2.0 km 的道路繞路（5–10 倍）仍走人行道，所以只是「有稍長的道路就繞開」。
+- dismount 對 **shortest** 沒有作用：成本只看長度，照樣走人行道（測試釘住，升級 pyvalhalla 時會提醒）。
+- dismount 對 **map_snap（trace）** 沒有作用：平行人行道相距 10 m／20 m、畫線落在兩者之間的各種位置，`bicycle=dismount` 與 `bicycle=yes` 吸附到的路完全相同。
+- 樓梯：預設成本本來就重罰（0.2 km 樓梯對 2.4 km 繞路仍繞路），shortest 會直接走；route 的起訖不會吸附到樓梯上（只有樓梯可走時連未修補都無解），所以樓梯檢查的起訖要往外延伸。
+- `service=driveway`（沒有 `access`）會蓋過 trunk 的 `bicycle=no`（lua 讓所有交通方式通行，實測重新可騎）；台灣快速道路目前 0 條帶這個 tag，屬防護。樓梯帶這個 tag 實測不會重開，一樣移除。
+- edge_walk 遇到兩條 way 共用同一對端點時會配錯 way（2 點的捷徑被配成同端點的 4 點道路），合成地圖已避開這種配置。
+
+### 吸附的人行道公尺數從哪來（base，量測腳本以 edge.use 分 segment 種類加總）
+
+| segment 種類 | footway m | pedestrian_crossing m | steps m |
+| --- | --- | --- | --- |
+| stroke（trace 吸附） | 23,418 | 4,130 | 96 |
+| detour | 4,108 | 417 | 97 |
+| connector | 3,054 | 343 | 114 |
+
+76% 的人行道公尺數來自 trace 吸附，而 trace 不看 dismount；繞路、橋接、connector 的成本設定最多只能影響其餘約 7.2 km。
+
+### bench 對照（m1，scratch build，不啟用）
+
+量測方法：用分支程式（`920e561` 的 `engine/src/engine`，PYTHONPATH 載入 `/tmp/p15-t14-*`）在 `artroute-engine` 容器對同一份 pbf 建 scratch build 到 `/data/p15-scratch/`（121 s），只把 scratch 目錄自己的 `current` 指過去，正式 `/data/current` 不動，量完刪除。base＝`0ad47e6`（Task 14 之前）在正式 build `20261010T183449Z` 上。各變體：
+
+- (a)：資料修補＋繞路／橋接／connector 維持 shortest（分支現況）。
+- (b)：資料修補＋繞路／橋接／connector 改回預設 bicycle 成本（接點轉彎的 rideable 探針仍用 shortest）。
+- (b2)：同 (b)，預設成本加 `use_roads=1.0`（計畫提到的「調 use_roads」）。
+- (S)：參考用，不在計畫的 (a)(b) 內：`footway=sidewalk` 且自行車本來能走的改標 `bicycle=no`（禁行），其他同 (a)。另一份 scratch build `/data/p15-scratch-s/`。
+
+| 變體 | footway m（bench 合計） | steps m | overall 中位數／平均 | A1（對 committed baseline） | 最大 overall 降幅（對 committed） | 預設文字 median ms（4 次） | bench 最慢 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| committed baseline | — | — | 46／48.1 | — | — | — | — |
+| base（`0ad47e6`） | 30,580 | 307 | 62／53.6 | 通過 | letter_l@taipei_daan −10（A3） | 291–299 | 1134 |
+| (a) | 30,766 | 0 | 62／53.6 | 通過 | 同 base | 303–309 | 1114 |
+| (b) | 26,801（−12.4%） | 0 | 59／52.4 | **不通過**：square@taipei_daan@r30 72→67、hi@taipei_daan@r30 62→58 | −5 | 310–315 | 1128 |
+| (b2) | 26,301（−14.0%） | 0 | 59／51.8 | **不通過**：hi@taipei_daan 46→36、hi@taipei_daan@r30 62→58 | −10 | 306–312 | 1123 |
+| (S) | 4,167（−86.4%） | 0 | 58／51.0 | **不通過**：square@taipei_daan@r30 72→55、letter_l@taipei_daan 44→33、letter_l@taipei_daan@r30 42→32、heart@taipei_daan 64→58；coverage −9 兩案 | −17 | 319–331 | 1045 |
+
+- 安全斷言：5 個變體全部 25/25 成功、不安全 0、無法判斷 0（禁行清單含 18,758 條，樓梯包含在內）。
+- (a) 對 base：25 案例 overall 完全相同；coverage 只有 `hi@taipei_riverside` 60→59、`square@taipei_riverside` 48→49；樓梯 307 m → 0（`heart@taipei_riverside`、`square@taipei_riverside`、`hi@taipei_riverside` 改走別條路，前者 footway 911 → 1,326 m）。footway 多 186 m：trace 部分 23,418 → 23,833 m（樓梯禁行後改道），detour／connector 略降。
+- (b) 的 footway 下降全部來自 connector（2,937 → 385 m）與 detour（3,996 → 2,583 m）；trace 部分 23,833 m 不變。對 base 另有 `hi@kaohsiung_lingya` 58→36（committed baseline 是 38，所以 A1 沒抓到）。
+- 預設文字（「I ♥ TAIPEI」）：base／(a) 48/72/23、16,884 m；(b) 44/71/18；(b2) 40/71/8；(S) 37/69/5。(a) 的 median 比 base 多約 4%，程式的吸附部分與 base 相同（只有 `data/` 不同），差異來自路網（樓梯禁行改道）或 tile 快取狀態，推測；在 +10% 內。
+- 洲美街／洲美快速道路／樓梯檢查：scratch build 上 `validate_build` 回 `[]`（0.7 s）。樓梯檢查的非空洞性：用 scratch 的禁行清單在未修補的正式 build 上跑，預設成本 0 項（預設成本本來就繞開樓梯）、shortest 抓到 4 項（20 條抽樣裡 3 條的路線經過樓梯，例如 way 607070536 兩個方向都走它）。
+
+### 決定
+
+計畫的規則：人行道公尺數明顯下降，且符合 A1，且預設文字中位數與最慢案例不劣於 290–298 ms／1118 ms 超過 10%；(a)(b) 都符合選人行道較少者，都不符合就停下交由決策。
+
+- (a)：人行道沒有下降（30,580 → 30,766 m），不符合。
+- (b)：人行道 −12.4%，但 A1 不通過（兩案 overall 降 4–5），不符合；(b2) 同樣不通過。
+
+兩者都不符合，**沒有選定**，分支維持 (a)（樓梯禁行已生效、人行道 dismount 只影響預設成本的 route）。根本原因：Valhalla 3.9.1 的 dismount 只有預設成本會看，而吸附流程 76% 的人行道來自 trace（map_snap 不看成本）、其餘是 shortest（也不看）。要讓吸附真的避開人行道，只剩「禁行」這條路（S：−86%），但 S 在大安區的案例 overall 最多降 17、預設文字慢約 10%，而且違反「盡量避免」而非「禁止」的字面，需要使用者決定。

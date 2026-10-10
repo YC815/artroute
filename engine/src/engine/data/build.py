@@ -1,4 +1,4 @@
-"""建置一個 build：標記快速道路 → 建 tiles → 留下被標記的 way 清單供驗證。"""
+"""建置一個 build：修補自行車 tag（快速道路、樓梯禁行，人行道 dismount）→ 建 tiles → 留下被禁行的 way 清單供驗證。"""
 
 import json
 from dataclasses import asdict
@@ -23,7 +23,10 @@ def build_with_patch(pbf: Path, build_dir: Path) -> Path:
 
 def load_denied(build_dir: Path) -> list[DeniedWay]:
     raw = json.loads((build_dir / DENIED_FILE).read_text())
-    return [DeniedWay(d["id"], d["name"], d["ref"], _coord(d["first"]), _coord(d["last"])) for d in raw]
+    return [
+        DeniedWay(d["id"], d["name"], d["ref"], _coord(d["first"]), _coord(d["last"]), d.get("highway", ""))
+        for d in raw
+    ]
 
 
 def _coord(raw: list[float] | None) -> tuple[float, float] | None:
