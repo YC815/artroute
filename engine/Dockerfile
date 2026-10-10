@@ -7,6 +7,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 FROM base AS test
+# osmium wheel 在 bookworm-slim 缺 libexpat.so.1（只有測試用到 osmium，runtime 不需要）
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 && rm -rf /var/lib/apt/lists/*
 RUN uv sync --frozen --no-install-project
 COPY . .
 RUN uv sync --frozen
