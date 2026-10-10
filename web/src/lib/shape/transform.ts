@@ -71,6 +71,8 @@ export function scaleTo(t: Transform, b: ShapeBounds, pointer: LonLat): Transfor
 /** 拉旋轉把手：圖形的上方轉向指標。 */
 export function rotateTo(t: Transform, pointer: LonLat): Transform {
   const [east, north] = toLocal(t.center, pointer);
+  // 指標正好在中心時方向未定義，atan2(0, 0) 會把角度歸零，這裡維持原角度
+  if (east === 0 && north === 0) return t;
   const deg = Math.atan2(east, north) / RAD;
   return { ...t, rotationDeg: (deg + 360) % 360 };
 }

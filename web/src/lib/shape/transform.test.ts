@@ -98,6 +98,21 @@ describe("把手與拖曳", () => {
     expect(rotateTo(T0, fromLocal(CENTER, -100, 0)).rotationDeg).toBeCloseTo(270, 9);
   });
 
+  it("rotateTo：指標正好在中心時，角度不變（atan2(0, 0) 不能把角度歸零）", () => {
+    const spun: Transform = { ...T0, rotationDeg: 45 };
+    expect(rotateTo(spun, CENTER)).toEqual(spun);
+  });
+
+  it("scaleTo：零尺寸外框時結果仍是有限數字", () => {
+    const zero = { halfWidth: 0, halfHeight: 0 };
+    expect(Number.isFinite(scaleTo(T0, zero, fromLocal(CENTER, 300, 0)).sizeM)).toBe(true);
+    expect(Number.isFinite(scaleTo(T0, zero, CENTER).sizeM)).toBe(true);
+  });
+
+  it("shapeLengthM：空的封閉筆畫長度為 0", () => {
+    expect(shapeLengthM([{ points: [], closed: true }], 1000)).toBe(0);
+  });
+
   it("nudge：方向鍵 10 m、Shift 100 m，其他按鍵回傳 null", () => {
     const [e, n] = local(nudge(T0, "ArrowUp", false)!.center);
     expect(e).toBeCloseTo(0, 6);

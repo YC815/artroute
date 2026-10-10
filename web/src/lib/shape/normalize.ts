@@ -35,7 +35,10 @@ export function normalizeStrokes(strokes: Stroke[]): Stroke[] {
 export type ShapeBounds = { halfWidth: number; halfHeight: number };
 
 export function shapeBounds(strokes: Stroke[]): ShapeBounds {
-  const box = boundingBox(strokes.flatMap((s) => s.points));
+  const points = strokes.flatMap((s) => s.points);
+  // 沒有任何點時 boundingBox 會保留 ±Infinity，回傳它會讓把手座標變成 NaN
+  if (points.length === 0) return { halfWidth: 0, halfHeight: 0 };
+  const box = boundingBox(points);
   return {
     halfWidth: Math.max(0, Math.abs(box.minX), Math.abs(box.maxX)),
     halfHeight: Math.max(0, Math.abs(box.minY), Math.abs(box.maxY)),
