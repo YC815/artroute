@@ -1,6 +1,7 @@
 """串接器 v1（spec §4.4）：把各部件串成一條連續路線。
 
 順序與封閉圈的進出點用直線距離估計（貪婪 + 2-opt），選定後只對實際用到的接點呼叫 route。
+排序是純 Python 的 CPU 計算：貪婪每接一個部件、2-opt 每一列各檢查一次期限與取消。
 """
 
 from collections.abc import Iterator
@@ -12,7 +13,8 @@ from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, legal_
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 
-CLOSED_ROTATION_STEP_M = 50.0
+CLOSED_ROTATION_STEP_M = 50.0  # 封閉圈進入點的最小間隔
+MAX_CLOSED_ENTRIES = 24  # 每個封閉圈最多約這麼多個進入點：間隔取 max(50 m, 周長 / 24)，大圈的 2-opt 才不會失控
 
 
 @dataclass(frozen=True)
@@ -87,11 +89,12 @@ def _options(part: Part) -> list[_Option]:
     flat = _flat(part.segments)
     if not part.closed:
         return [_Option(0, flat[0].point, part.segments[-1].points[-1])]
-    # 封閉圈的進入點：起點，加上沿途每隔約 CLOSED_ROTATION_STEP_M 一個（不含與起點重合的終點）
+    # 封閉圈的進入點：起點，加上沿途每隔 step_m 一個（不含與起點重合的終點）
+    step_m = max(CLOSED_ROTATION_STEP_M, sum(s.length_m for s in part.segments) / MAX_CLOSED_ENTRIES)
     picks, walked = [0], 0.0
     for k in range(1, len(flat) - 1):
         walked += haversine_m(flat[k - 1].point, flat[k].point)
-        if walked >= CLOSED_ROTATION_STEP_M:
+        if walked >= step_m:
             picks.append(k)
             walked = 0.0
     return [_Option(k, flat[k].point, flat[k].point) for k in picks]
@@ -114,11 +117,12 @@ def _plan(options: list[list[_Option]], order: list[int]) -> tuple[float, dict[i
     return cost, chosen
 
 
-def _greedy(options: list[list[_Option]]) -> list[int]:
+def _greedy(options: list[list[_Option]], deadline: Deadline) -> list[int]:
     """從第 0 個部件出發，每次接上離目前位置最近的部件。"""
     order, remaining = [0], list(range(1, len(options)))
     position = options[0][0].exit
     while remaining:
+        deadline.check()
         nxt = min(remaining, key=lambda i: haversine_m(position, _nearest(position, options[i]).entry))
         order.append(nxt)
         remaining.remove(nxt)
@@ -126,17 +130,20 @@ def _greedy(options: list[list[_Option]]) -> list[int]:
     return order
 
 
-def _reversals(size: int) -> Iterator[tuple[int, int]]:
-    """2-opt 要試的反轉區間 (i, j)，反轉 order[i..j]；第 0 個部件固定。"""
+def _reversals(size: int, deadline: Deadline) -> Iterator[tuple[int, int]]:
+    """2-opt 要試的反轉區間 (i, j)，反轉 order[i..j]；第 0 個部件固定。每一列 i 開始前檢查一次期限。"""
     for i in range(1, size - 1):
+        deadline.check()
         for j in range(i + 1, size):
             yield i, j
 
 
-def _sweep(options: list[list[_Option]], order: list[int], cost: float) -> tuple[list[int], float, bool]:
+def _sweep(
+    options: list[list[_Option]], order: list[int], cost: float, deadline: Deadline
+) -> tuple[list[int], float, bool]:
     """掃過所有反轉區間一輪：找到改善就立刻換掉 order，掃描接著往下走（不從頭再來）。"""
     improved = False
-    for i, j in _reversals(len(order)):
+    for i, j in _reversals(len(order), deadline):
         candidate = order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
         candidate_cost, _ = _plan(options, candidate)
         if candidate_cost < cost - 1e-6:
@@ -144,11 +151,11 @@ def _sweep(options: list[list[_Option]], order: list[int], cost: float) -> tuple
     return order, cost, improved
 
 
-def _two_opt(options: list[list[_Option]], order: list[int]) -> list[int]:
+def _two_opt(options: list[list[_Option]], order: list[int], deadline: Deadline) -> list[int]:
     cost, _ = _plan(options, order)
     improved = True
     while improved:
-        order, cost, improved = _sweep(options, order, cost)
+        order, cost, improved = _sweep(options, order, cost, deadline)
     return order
 
 
@@ -177,7 +184,7 @@ def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Compo
     if not parts:
         return Composition(segments=[], dropped=[])
     options = [_options(part) for part in parts]
-    order = _two_opt(options, _greedy(options))
+    order = _two_opt(options, _greedy(options, deadline), deadline)
     _, chosen = _plan(options, order)
     segments: list[Segment] = []
     dropped: list[int] = []

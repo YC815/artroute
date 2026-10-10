@@ -135,7 +135,9 @@ def test_closed_stroke_is_entered_near_previous_end_and_returns_there() -> None:
     result = match_shape(FakeRouter(), strokes, search_radius_m=50, deadline=Deadline(30))
     assert result.warnings == []
     loop = [p for s in result.segments if s.stroke_index == 1 for p in s.points]
-    assert haversine_m(loop[0], (121.525, LAT)) < 60  # 不是從角落 (121.52, LAT) 進
+    # 不是從角落 (121.52, LAT)（約 505 m 外）進。周長約 4 km，進入點每 max(50 m, 周長 / 24) ≈ 175 m 一個，
+    # 離前一段終點最近的那個在半個間隔內
+    assert haversine_m(loop[0], (121.525, LAT)) < 100
     assert haversine_m(loop[0], loop[-1]) <= JOIN_TOLERANCE_M  # 繞一圈回到進入點
 
 

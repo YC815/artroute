@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from engine.matching.compose import Part, _greedy, _options, _plan, _two_opt, compose, rotate
-from engine.matching.deadline import Deadline, MatchTimeout
+from engine.matching.compose import MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
@@ -138,8 +138,8 @@ def _continue_scan_two_opt(options, order):
 @pytest.mark.parametrize("seed", range(300))
 def test_two_opt_matches_continue_scan_reference(seed: int) -> None:
     options = [_options(part) for part in _random_parts(seed)]
-    start = _greedy(options)
-    assert _two_opt(options, list(start)) == _continue_scan_two_opt(options, list(start))
+    start = _greedy(options, Deadline(60))
+    assert _two_opt(options, list(start), Deadline(60)) == _continue_scan_two_opt(options, list(start))
 
 
 def test_empty_parts() -> None:
@@ -288,3 +288,58 @@ def test_grid_corner_adjacent_parts_are_not_dropped(grid_router: Router, a_off: 
     assert result.dropped == []
     assert [s.stroke_index for s in result.segments if s.kind == "stroke"] == [0, 1]
     assert_continuous(result.segments)
+
+
+# ---- 最終審查 M1：貪婪＋2-opt 是純 Python 的 CPU 計算，也要受期限與取消約束 ----
+
+
+class CountingDeadline(Deadline):
+    def __init__(self) -> None:
+        super().__init__(60)
+        self.checks = 0
+
+    def check(self) -> None:
+        self.checks += 1
+        super().check()
+
+
+def touching_parts(n: int) -> list[Part]:
+    """n 個首尾相接的開放部件：串接時不需要任何 route，只剩排序的 CPU 計算。"""
+    lons = [121.50 + 0.001 * k for k in range(n + 1)]
+    return [Part([seg([(lons[k], LAT), (lons[k + 1], LAT)], index=k)], closed=False) for k in range(n)]
+
+
+def test_ordering_checks_the_deadline_without_any_route_call() -> None:
+    n = 12
+    router = StraightRouter()
+    deadline = CountingDeadline()
+    compose(router, touching_parts(n), deadline)
+    assert router.calls == []
+    assert deadline.checks >= n - 2  # 2-opt 每一列至少一次
+
+
+def test_cancelled_caller_stops_ordering() -> None:
+    deadline = Deadline(60)
+    deadline.cancel()
+    with pytest.raises(MatchCancelled):
+        compose(StraightRouter(), touching_parts(12), deadline)
+
+
+def ring(center_lon: float, radius_deg: float, n: int) -> list[tuple[float, float]]:
+    pts = [
+        (center_lon + radius_deg * math.cos(2 * math.pi * k / n), LAT + radius_deg * math.sin(2 * math.pi * k / n))
+        for k in range(n)
+    ]
+    return pts + pts[:1]
+
+
+def test_closed_loop_entry_candidates_are_capped() -> None:
+    # 周長約 20 km、每 10 m 一點：每 50 m 一個候選會有約 400 個，2-opt 每評估一個順序都要掃過它們
+    big = Part([seg(ring(121.50, 0.03, 2000))], closed=True)
+    assert len(_options(big)) <= MAX_CLOSED_ENTRIES + 1
+
+
+def test_small_closed_loop_keeps_fifty_metre_candidates() -> None:
+    # 周長約 630 m：每 50 m 一個候選（周長 / 24 只有約 26 m，不能比 50 m 更密）
+    small = Part([seg(ring(121.50, 0.001, 120))], closed=True)
+    assert 10 <= len(_options(small)) <= 13
