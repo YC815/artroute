@@ -1,7 +1,7 @@
 """單一部件的分治吸附（spec §4.3）。
 
-整段 trace → 失敗就對半切 → 短於 min_piece_m 仍失敗的小段標記為失敗。
-連續的失敗小段合併成一次合法 route 繞路（見 _merge、_detour_run）。
+整段 trace → 失敗就對半切（串接：左半 trace 成功時，右半的第一個點換成左半的實際終點）→
+短於 min_piece_m 仍失敗的小段標記為失敗。連續的失敗小段合併成一次合法 route 繞路（見 _merge、_detour_run）。
 相鄰段落接不上時用 route 補（join：接點只容許 JOIN_TOLERANCE_M，接不上先裁掉兩邊 20／50／100 m 再試）；
 補不起來、或繞路被拒絕，就斷成新的 chain，絕不畫直線。
 
@@ -66,7 +66,12 @@ def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
 
 
 def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
-    """回傳依序排列的結果：trace 成功的 Segment，或切到最小仍失敗的 _Failed。這裡不呼叫 route。"""
+    """回傳依序排列的結果：trace 成功的 Segment，或切到最小仍失敗的 _Failed。這裡不呼叫 route。
+
+    串接：左半 trace 成功時，右半的第一個點換成左半的實際終點（已經吸附在路上），
+    兩半在切點自然接上，不必補橋（品質調查根因 2：兩半各自吸附，切點兩側常落在不同的路）。
+    左半最後是失敗的小段時，右半照原本的輸入點開始。
+    """
     ctx.deadline.check()
     try:
         return [segment_from("stroke", ctx.stroke_index, ctx.router.trace(piece, search_radius_m=ctx.search_radius_m))]
@@ -75,7 +80,11 @@ def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
     if len(piece) < 3 or polyline_length_m(piece) <= ctx.min_piece_m:
         return [_Failed(piece[0], piece[-1], polyline_length_m(piece))]
     mid = len(piece) // 2
-    return _solve(ctx, piece[: mid + 1]) + _solve(ctx, piece[mid:])
+    left = _solve(ctx, piece[: mid + 1])
+    right = piece[mid:]
+    if isinstance(left[-1], Segment):
+        right = [left[-1].points[-1], *right[1:]]
+    return left + _solve(ctx, right)
 
 
 def _detour_run(ctx: _Context, run: list[_Failed], start: LonLat, end: LonLat) -> list[Segment | None]:
