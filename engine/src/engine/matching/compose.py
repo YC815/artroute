@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from engine.matching.deadline import Deadline
-from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, legal_route, segment_from
+from engine.matching.join import join
+from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 
@@ -159,22 +160,15 @@ def _two_opt(options: list[list[_Option]], order: list[int], deadline: Deadline)
     return order
 
 
-def _connect(router: MatchRouter, deadline: Deadline, start: LonLat, end: LonLat) -> Segment | None:
-    """start 到 end 的 connector。兩端都是部件的端點（已經在路上），所以端點容許誤差都是 JOIN_TOLERANCE_M。"""
-    result = legal_route(
-        router, deadline, start, end, start_tolerance_m=JOIN_TOLERANCE_M, end_tolerance_m=JOIN_TOLERANCE_M
-    )
-    return None if result is None else segment_from("connector", None, result)
-
-
 def _append(router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment]) -> bool:
-    """把 body 接在 route 後面，必要時先補 connector。接不上回傳 False，route 不變。"""
-    start = body[0].points[0]
-    if route and haversine_m(route[-1].points[-1], start) > JOIN_TOLERANCE_M:
-        connector = _connect(router, deadline, route[-1].points[-1], start)
-        if connector is None:
+    """把 body 接在 route 後面，必要時先補 connector（join：兩端都是部件端點，已經在路上，容許誤差 JOIN_TOLERANCE_M；
+    接不上先裁掉 route 尾巴、body 開頭再試）。接不上回傳 False，route 不變。"""
+    if route and haversine_m(route[-1].points[-1], body[0].points[0]) > JOIN_TOLERANCE_M:
+        joined = join(router, deadline, route[-1], body[0], "connector", None)
+        if joined is None:
             return False
-        route.append(connector)
+        route[-1:] = [joined.before, joined.link]
+        body = [joined.after, *body[1:]]
     route.extend(body)
     return True
 

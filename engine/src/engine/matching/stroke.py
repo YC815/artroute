@@ -2,10 +2,11 @@
 
 整段 trace → 失敗就對半切 → 短於 min_piece_m 仍失敗的小段標記為失敗。
 連續的失敗小段合併成一次合法 route 繞路（見 _merge、_detour_run）。
-相鄰段落接不上時用 route 補；補不起來、或繞路被拒絕，就斷成新的 chain，絕不畫直線。
+相鄰段落接不上時用 route 補（join：接點只容許 JOIN_TOLERANCE_M，接不上先裁掉兩邊 20／50／100 m 再試）；
+補不起來、或繞路被拒絕，就斷成新的 chain，絕不畫直線。
 
-route 端點的容許誤差（legal_route）：要求的位置是原始輸入點（chain 的頭尾、繞路的切點）時可以吸附到
-MAX_SNAP_GAP_RADII 倍搜尋半徑外；要求的位置已經在路上（相鄰 trace 的端點、橋接線兩端）時只容許 JOIN_TOLERANCE_M。
+繞路本身只是候選：route 會自己吸附起訖點，端點可以離要求的位置 MAX_SNAP_GAP_RADII 倍搜尋半徑
+（再遠代表附近沒有路）。它跟前後段接不接得上，一律交給 _link 的 join 判斷。
 """
 
 import math
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from itertools import groupby
 
 from engine.matching.deadline import Deadline
+from engine.matching.join import join
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, legal_route, segment_from
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import MAX_SNAP_GAP_RADII, MIN_LENGTH_RATIO, LonLat, RoutingError
@@ -57,11 +59,9 @@ def densify(points: list[LonLat], step_m: float = DENSIFY_STEP_M) -> list[LonLat
     return out
 
 
-def _route(ctx: _Context, start: LonLat, end: LonLat, start_tolerance_m: float, end_tolerance_m: float) -> Segment | None:
+def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
     # 附近沒有可騎的路時，Valhalla 預設會抓 35 km 內的路：端點檢查擋掉的就是這種遠方繞路，結果是 no_route
-    result = legal_route(
-        ctx.router, ctx.deadline, start, end, start_tolerance_m=start_tolerance_m, end_tolerance_m=end_tolerance_m
-    )
+    result = legal_route(ctx.router, ctx.deadline, start, end, ctx.snap_m)
     return None if result is None else segment_from("detour", ctx.stroke_index, result)
 
 
@@ -78,25 +78,20 @@ def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
     return _solve(ctx, piece[: mid + 1]) + _solve(ctx, piece[mid:])
 
 
-def _detour_run(
-    ctx: _Context, run: list[_Failed], start: LonLat, end: LonLat, start_tolerance_m: float, end_tolerance_m: float
-) -> list[Segment | None]:
+def _detour_run(ctx: _Context, run: list[_Failed], start: LonLat, end: LonLat) -> list[Segment | None]:
     """連續失敗的小段：整串只 route 一次，一次就繞完，不是每小段各繞一圈。
 
     繞路比畫出來的線短太多代表塌縮或切角（合法繞路只會更長），不能收；
     整串繞不出來或被拒絕就對半切，各自重試，直到單一小段為止，保住繞得過去的部分。
-    切點是原始輸入點，兩半在切點那一端都用 ctx.snap_m。
     """
-    whole = _route(ctx, start, end, start_tolerance_m, end_tolerance_m)
+    whole = _route(ctx, start, end)
     if whole is not None and whole.length_m >= MIN_LENGTH_RATIO * sum(failed.drawn_m for failed in run):
         return [whole]
     if len(run) == 1:
         return [None]
     mid = len(run) // 2
     cut = run[mid].start  # 兩半共用的切點，兩邊從同一個輸入點出發，吸附結果會一致
-    return _detour_run(ctx, run[:mid], start, cut, start_tolerance_m, ctx.snap_m) + _detour_run(
-        ctx, run[mid:], cut, end, ctx.snap_m, end_tolerance_m
-    )
+    return _detour_run(ctx, run[:mid], start, cut) + _detour_run(ctx, run[mid:], cut, end)
 
 
 def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | None]:
@@ -117,21 +112,22 @@ def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | Non
             continue
         before = groups[i - 1][1][-1] if i > 0 else None  # 相鄰的一定是 trace 成功的 Segment
         after = groups[i + 1][1][0] if i + 1 < len(groups) else None
-        # 接 trace 端點的那一端已經在路上，必須從那裡出發；只有 chain 頭尾（原始輸入點）可以吸附
-        start, start_tolerance_m = (before.points[-1], JOIN_TOLERANCE_M) if before else (group[0].start, ctx.snap_m)
-        end, end_tolerance_m = (after.points[0], JOIN_TOLERANCE_M) if after else (group[-1].end, ctx.snap_m)
-        pieces.extend(_detour_run(ctx, group, start, end, start_tolerance_m, end_tolerance_m))
+        start = before.points[-1] if before else group[0].start
+        end = after.points[0] if after else group[-1].end
+        pieces.extend(_detour_run(ctx, group, start, end))
     return pieces
 
 
-def _join(ctx: _Context, chain: list[Segment], segment: Segment) -> bool:
-    """segment 能不能直接接在 chain 後面；差超過 JOIN_TOLERANCE_M 就先補一條橋接線（加進 chain），補不起來回傳 False。"""
-    if not chain or haversine_m(chain[-1].points[-1], segment.points[0]) <= JOIN_TOLERANCE_M:
-        return True
-    bridge = _route(ctx, chain[-1].points[-1], segment.points[0], JOIN_TOLERANCE_M, JOIN_TOLERANCE_M)  # 兩端都在路上
-    if bridge is None:
-        return False
-    chain.append(bridge)
+def _append(ctx: _Context, chain: list[Segment], segment: Segment) -> bool:
+    """把 segment 接在 chain 後面；差超過 JOIN_TOLERANCE_M 就補一條橋接線（必要時裁掉 chain 尾巴、segment 開頭）。
+    接不上回傳 False，chain 不變。"""
+    if chain and haversine_m(chain[-1].points[-1], segment.points[0]) > JOIN_TOLERANCE_M:
+        joined = join(ctx.router, ctx.deadline, chain[-1], segment, "detour", ctx.stroke_index)
+        if joined is None:
+            return False
+        chain[-1:] = [joined.before, joined.link]
+        segment = joined.after
+    chain.append(segment)
     return True
 
 
@@ -143,10 +139,10 @@ def _link(ctx: _Context, pieces: list[Segment | None]) -> list[list[Segment]]:
     """
     chains: list[list[Segment]] = [[]]
     for segment in pieces:
-        if segment is None or not _join(ctx, chains[-1], segment):
+        if segment is None:
             chains.append([])
-        if segment is not None:
-            chains[-1].append(segment)
+        elif not _append(ctx, chains[-1], segment):
+            chains.append([segment])
     return [chain for chain in chains if chain]
 
 

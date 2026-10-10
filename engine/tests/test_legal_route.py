@@ -33,33 +33,27 @@ class ShiftRouter:
         raise AssertionError("legal_route 不呼叫 trace")
 
 
-def call(router, start_tolerance_m: float = 1.0, end_tolerance_m: float = 1.0, deadline: Deadline | None = None):
-    return legal_route(
-        router, deadline or Deadline(10), START, END, start_tolerance_m=start_tolerance_m, end_tolerance_m=end_tolerance_m
-    )
+def call(router, tolerance_m: float = 1.0, deadline: Deadline | None = None):
+    return legal_route(router, deadline or Deadline(10), START, END, tolerance_m)
 
 
 @pytest.mark.parametrize(
-    "start_m, end_m, start_tol, end_tol, accepted",
+    "start_m, end_m, tolerance_m, accepted",
     [
-        (0.5, 0.5, 1.0, 1.0, True),
-        (3.0, 0.0, 1.0, 1.0, False),  # 起點在路上（相鄰路段的端點）：差 3 m 就是缺口
-        (0.0, 3.0, 1.0, 1.0, False),
-        (3.0, 0.0, 100.0, 1.0, True),  # 起點是原始輸入點：可以吸附到 2r 內
-        (0.0, 3.0, 1.0, 100.0, True),
-        (0.0, 3.0, 100.0, 1.0, False),  # 容許誤差各端各自算，不能互相借用
-        (101.0, 0.0, 100.0, 1.0, False),
+        (0.5, 0.5, 1.0, True),
+        (3.0, 0.0, 1.0, False),  # 接兩段路（JOIN_TOLERANCE_M）：差 3 m 就是缺口
+        (0.0, 3.0, 1.0, False),
+        (90.0, 90.0, 100.0, True),  # 繞路候選：原始輸入點可以吸附到 2r 內
+        (101.0, 0.0, 100.0, False),
+        (0.0, 101.0, 100.0, False),
     ],
 )
-def test_endpoints_must_be_within_their_own_tolerance(
-    start_m: float, end_m: float, start_tol: float, end_tol: float, accepted: bool
-) -> None:
-    result = call(ShiftRouter(start_m, end_m), start_tol, end_tol)
-    assert (result is not None) == accepted
+def test_endpoints_must_be_within_tolerance(start_m: float, end_m: float, tolerance_m: float, accepted: bool) -> None:
+    assert (call(ShiftRouter(start_m, end_m), tolerance_m) is not None) == accepted
 
 
 def test_collapsed_route_is_rejected() -> None:
-    assert call(ShiftRouter(collapse=True), 100.0, 100.0) is None
+    assert call(ShiftRouter(collapse=True), 100.0) is None
 
 
 def test_routing_error_is_none() -> None:

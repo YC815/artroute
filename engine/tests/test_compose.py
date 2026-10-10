@@ -343,3 +343,32 @@ def test_small_closed_loop_keeps_fifty_metre_candidates() -> None:
     # 周長約 630 m：每 50 m 一個候選（周長 / 24 只有約 26 m，不能比 50 m 更密）
     small = Part([seg(ring(121.50, 0.001, 120))], closed=True)
     assert 10 <= len(_options(small)) <= 13
+
+
+# ---- 控制者補充：connector 接不上時，丟掉部件之前先裁切重試 ----
+
+
+class BlockedStartRouter(StraightRouter):
+    """終點落在 blocked 5 m 內的 route，終點會被吸到 5 m 外（那個部件的開頭落在 route 用不了的 edge 上）。"""
+
+    def __init__(self, blocked) -> None:
+        super().__init__()
+        self.blocked = blocked
+
+    def route(self, start, end):
+        self.calls.append((start, end))
+        if haversine_m(end, self.blocked) <= 5:
+            end = (end[0], end[1] + 5 / 110_574)
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_connector_retries_with_trimmed_head_before_dropping_a_part() -> None:
+    a = Part([seg([(121.50 + 0.0001 * k, LAT) for k in range(101)], index=0)], closed=False)  # 約 1 km
+    b_points = [(121.52 + 0.0001 * k, LAT) for k in range(101)]
+    b = Part([seg(b_points, index=1)], closed=False)
+    result = compose(BlockedStartRouter(blocked=b_points[0]), [a, b], Deadline(10))
+    assert result.dropped == []
+    assert_continuous(result.segments)
+    assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
+    tail = result.segments[2].points
+    assert b_points[len(b_points) - len(tail):] == tail and len(tail) < len(b_points)  # 只裁掉開頭

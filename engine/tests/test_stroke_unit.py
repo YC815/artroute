@@ -264,3 +264,50 @@ def test_split_point_of_a_failed_run_is_an_input_point_and_may_snap() -> None:
     assert_chain_continuous(result.chains[0])
     assert [s.kind for s in result.chains[0]] == ["detour", "detour"]
     assert result.warnings == []
+
+
+class SplitSnapRouter(FakeRouter):
+    """整條 trace 失敗、左右兩半各自成功，但兩半在切點各自吸到不同的位置（北 2 m、南 2 m）；
+    route 的終點若是右半的起點，會被吸到 5 m 外（右半開頭落在 route 用不了的 edge 上）。"""
+
+    MID = 121.51
+    SHIFT = 2 / 110_574
+
+    def trace(self, points, *, search_radius_m):
+        self.trace_calls += 1
+        lons = [lon for lon, _ in points]
+        if min(lons) < self.MID - 1e-9 and max(lons) > self.MID + 1e-9:  # 容許切點本身的浮點誤差
+            raise RoutingError("跨過切點")
+        shift = self.SHIFT if sum(lons) / len(lons) < self.MID else -self.SHIFT
+        snapped = [(lon, lat + shift) for lon, lat in points]
+        return RouteResult(points=snapped, length_km=polyline_length_m(snapped) / 1000)
+
+    def route(self, start, end):
+        self.route_calls += 1
+        right_start = (self.MID, LAT - self.SHIFT)
+        if haversine_m(end, right_start) <= 5:
+            end = (end[0], end[1] - 5 / 110_574)
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_bridge_retries_with_a_trimmed_head_before_breaking_the_chain() -> None:
+    # 補橋到不了右半的起點：先把右半的開頭沿吸附結果裁掉 20 m 再接，接得上就不必斷開
+    result = run(SplitSnapRouter(), line(121.50, 121.52))
+    assert len(result.chains) == 1
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    assert [s.kind for s in chain] == ["stroke", "detour", "stroke"]
+    assert chain[2].points[0][0] > SplitSnapRouter.MID  # 右半的開頭被裁掉了
+    assert result.warnings == []
+
+
+def test_detour_that_cannot_join_the_next_piece_still_ends_the_chain() -> None:
+    # 繞路的終點落在下一段起點 5 m 外（仍在 2r 內），補橋也接不上：繞路照樣收下、當這條 chain 的結尾，
+    # 下一段另起一條 chain。只有接點要 ≤ 1 m；把繞路本身丟掉只會少掉一段合法的路線（hi@taipei_riverside 實測 16 → 10）
+    router = FarSnapRouter(0, 5, bad=(121.509, 121.511))
+    result = run(router, line(121.50, 121.52))
+    assert len(result.chains) == 2
+    for chain in result.chains:
+        assert_chain_continuous(chain)
+    assert result.chains[0][-1].kind == "detour"
+    assert [w.code for w in result.warnings] == ["partial"]

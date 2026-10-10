@@ -41,16 +41,14 @@ def legal_route(
     deadline: Deadline,
     start: LonLat,
     end: LonLat,
-    *,
-    start_tolerance_m: float,
-    end_tolerance_m: float,
+    tolerance_m: float,
 ) -> RouteResult | None:
-    """start 到 end 的合法 route；繞不出來、塌縮、或端點離要求的位置太遠就回傳 None。
+    """start 到 end 的合法 route；繞不出來、塌縮、或端點離要求的位置超過 tolerance_m 就回傳 None。
 
     - 塌縮：起訖吸附到同一處時 route 會成功，但不到 2 個不同的點、長度 0。收下就是零長度的一段，
       後面的路段實際上沒接上（封閉筆畫、單點也會這樣）。
-    - 端點：route 會自己吸附起訖點。要求的位置已經在路上（相鄰路段的端點）時容許誤差要用 JOIN_TOLERANCE_M，
-      否則接點留下缺口、輸出時變成一條直線；要求的是原始輸入點時才容許吸附到幾倍搜尋半徑外。
+    - 端點：route 會自己吸附起訖點。拿來接兩段路（補橋、connector）時 tolerance_m 必須是 JOIN_TOLERANCE_M，
+      否則接點留下缺口、輸出時變成一條直線（join 負責）；繞路候選才容許吸附到幾倍搜尋半徑外，接不接得上由 join 決定。
     """
     deadline.check()
     try:
@@ -59,6 +57,6 @@ def legal_route(
         return None
     if len(set(result.points)) < 2:
         return None
-    if haversine_m(result.points[0], start) > start_tolerance_m or haversine_m(result.points[-1], end) > end_tolerance_m:
+    if haversine_m(result.points[0], start) > tolerance_m or haversine_m(result.points[-1], end) > tolerance_m:
         return None
     return result
