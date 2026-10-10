@@ -42,7 +42,8 @@ export function simplifyPolyline(points: Point[], tolerance: number): Point[] {
  */
 export function simplifyToLimit(points: Point[], tolerance: number, maxPoints: number): Point[] {
   const safeTolerance = tolerance > 0 ? tolerance : 1;
-  const limit = Math.max(2, maxPoints);
+  // NaN 也要落到 2：Math.max(2, NaN) 是 NaN，會讓上限失效
+  const limit = maxPoints >= 2 ? maxPoints : 2;
   let result = simplifyPolyline(points, safeTolerance);
   for (let t = safeTolerance * 2; result.length > limit; t *= 2) {
     result = simplifyPolyline(points, t);

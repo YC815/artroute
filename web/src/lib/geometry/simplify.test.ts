@@ -44,9 +44,9 @@ describe("simplifyToLimit", () => {
     }
   });
 
-  it("maxPoints 小於 2 時當成 2，而且會結束", () => {
+  it("maxPoints 小於 2 或不是數字時當成 2，而且會結束", () => {
     const zigzag: Point[] = Array.from({ length: 101 }, (_, i) => [i, i % 2 === 0 ? 0 : 1]);
-    for (const maxPoints of [1, 0, -3]) {
+    for (const maxPoints of [1, 0, -3, Number.NaN]) {
       const result = simplifyToLimit(zigzag, 0.1, maxPoints);
       expect(result.length).toBeLessThanOrEqual(2);
       expect(result).toEqual([[0, 0], [100, 0]]);
