@@ -21,6 +21,7 @@ PRODUCTION_TIMEOUT_MS = 5000
 # 安全斷言沒過時 CaseResult.error 的值：案例算失敗（不能更新 baseline、原本成功就算退步）
 UNSAFE = "UnsafeRoute"  # 相鄰路段有缺口（會畫成直線），或經過被禁行的 way
 UNDETERMINED = "SafetyUndetermined"  # edges() 配不出經過哪些路段：無法證明安全，不算通過
+SAFETY_ERRORS = frozenset({UNSAFE, UNDETERMINED})  # 安全斷言沒過：一律算退步，也不能寫進 baseline
 
 
 class BenchRouter(MatchRouter, Protocol):
@@ -150,12 +151,20 @@ def _regression(r: CaseResult, base: object, tolerance: int) -> str | None:
 
 
 def compare(results: list[CaseResult], baseline: dict[str, dict], tolerance: int = 3) -> list[str]:
-    """回傳退步說明：overall 或 coverage 比 baseline 低超過 tolerance，或從成功變失敗。新案例不算退步。
+    """回傳退步說明。
 
+    安全斷言沒過（SAFETY_ERRORS）一律算，不看 baseline：新案例、baseline 原本就失敗的案例也算，
+    否則一筆寫進 baseline 的 UnsafeRoute 之後就永遠不會再被抓到。
+    其餘只比 baseline 有的案例：overall 或 coverage 比 baseline 低超過 tolerance，或從成功變失敗。
     只看 overall 會漏掉「cleanliness 上升抵掉 coverage 掉到 0」的退步（ledger L120）。
     """
-    checked = ((r, _regression(r, baseline[r.name], tolerance)) for r in results if r.name in baseline)
-    return [problem for _, problem in checked if problem]
+    problems: list[str] = []
+    for r in results:
+        if r.error in SAFETY_ERRORS:
+            problems.append(f"{r.name}：安全斷言沒過（{r.error}：{r.safety}）")
+        elif r.name in baseline and (problem := _regression(r, baseline[r.name], tolerance)):
+            problems.append(problem)
+    return problems
 
 
 def case_set_changes(results: list[CaseResult], baseline: dict[str, dict]) -> list[str]:

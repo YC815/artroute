@@ -11,6 +11,7 @@ from engine.bench import runner
 from engine.bench.cases import CASES, LOCATIONS, SHAPES, Case, Shape, place
 from engine.bench.runner import (
     PRODUCTION_TIMEOUT_MS,
+    SAFETY_ERRORS,
     UNDETERMINED,
     UNSAFE,
     CaseResult,
@@ -405,7 +406,7 @@ def test_unsafe_case_is_a_failed_case_and_marked(monkeypatch: pytest.MonkeyPatch
     assert res.overall == 75  # 分數照記，但案例算失敗
     assert UNSAFE in format_row(res) and "缺口" in format_row(res)
     assert "失敗 1" in summarize([res]) and "不安全 1" in summarize([res])
-    assert compare([res], {"sq": {"overall": 75, "error": None}}) == ["sq：原本成功，現在失敗（UnsafeRoute）"]
+    assert compare([res], {"sq": {"overall": 75, "error": None}})[0].startswith("sq：安全斷言沒過（UnsafeRoute：")
 
 
 def test_undetermined_case_is_counted_separately(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -490,3 +491,52 @@ def test_safety_splits_a_segment_edge_walk_cannot_match_whole() -> None:
     assert safety_problem(UturnRouter(), [spur], frozenset({9})) is None
     flagged = safety_problem(UturnRouter(split=C[0]), [spur], frozenset({9}))
     assert flagged is not None and flagged[0] == UNSAFE and "9" in flagged[1]
+
+
+# ---- P1.5 Task 1：安全斷言沒過一律算退步，--force 也不能寫進 baseline ----
+
+
+def unsafe(name: str, error: str = UNSAFE) -> CaseResult:
+    return replace(result(name, 80), error=error, safety="第 0、1 段之間缺口 12.0 m")
+
+
+def test_safety_errors_are_exactly_the_two_assertion_outcomes() -> None:
+    assert SAFETY_ERRORS == frozenset({UNSAFE, UNDETERMINED})
+
+
+def test_compare_flags_a_safety_failure_even_when_the_baseline_entry_failed_the_same_way() -> None:
+    baseline = {"a": {"overall": 80, "coverage": 80, "error": UNSAFE}}
+    assert compare([unsafe("a")], baseline) == ["a：安全斷言沒過（UnsafeRoute：第 0、1 段之間缺口 12.0 m）"]
+
+
+def test_compare_flags_a_safety_failure_of_a_case_missing_from_the_baseline() -> None:
+    assert compare([unsafe("fresh", UNDETERMINED)], {}) == [
+        "fresh：安全斷言沒過（SafetyUndetermined：第 0、1 段之間缺口 12.0 m）"
+    ]
+
+
+def test_compare_still_ignores_an_ordinary_failure_the_baseline_already_had() -> None:
+    baseline = {"b": {"overall": 0, "coverage": 0, "error": "AllStrokesFailed"}}
+    assert compare([result("b", 0, error="AllStrokesFailed")], baseline) == []
+
+
+def test_cli_check_fails_on_a_safety_failure_whatever_the_baseline_says(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_run.baseline.write_text(json.dumps({"a": {"overall": 80, "coverage": 80, "error": UNSAFE}}))
+    with pytest.raises(SystemExit) as failed:
+        fake_run([unsafe("a")])
+    assert failed.value.code == 1
+    assert "退步：a：安全斷言沒過" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [UNSAFE, UNDETERMINED])
+def test_cli_update_with_force_refuses_safety_failures(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str], error: str
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80), unsafe("b", error)], "--update-baseline", "--force")
+    assert refused.value.code == 1
+    assert not fake_run.baseline.exists()
+    err = capsys.readouterr().err
+    assert "b" in err and error in err and "--force" in err

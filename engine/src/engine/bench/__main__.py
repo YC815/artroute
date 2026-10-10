@@ -9,6 +9,7 @@ from pathlib import Path
 
 from engine.bench.cases import CASES
 from engine.bench.runner import (
+    SAFETY_ERRORS,
     CaseResult,
     case_set_changes,
     compare,
@@ -38,6 +39,12 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _update_baseline(args: argparse.Namespace, results: list[CaseResult]) -> None:
+    unsafe = [r for r in results if r.error in SAFETY_ERRORS]
+    if unsafe:
+        print("拒絕更新 baseline：安全斷言沒過的案例不能寫進 baseline（加 --force 也一樣）：", file=sys.stderr)
+        for r in unsafe:
+            print(f"  {r.name}：{r.error}（{r.safety}）", file=sys.stderr)
+        sys.exit(1)
     failed = [r for r in results if r.error]
     if failed and not args.force:
         print("拒絕更新 baseline：以下案例失敗（確認是預期的再加 --force）：", file=sys.stderr)
