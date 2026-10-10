@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 
-from engine.matching.compose import Part, compose
+from engine.matching.compose import Part, Rematch, compose
 from engine.matching.deadline import Deadline
 from engine.matching.join import adjacent, connect
 from engine.matching.score import Score, score
@@ -148,9 +148,26 @@ def _match_parts(
         chains, closed = matched.chains, False
         if strokes[index].closed and chains:
             chains, closed = _stitch_closed(router, deadline, chains)
-        parts.extend(Part(chain, closed) for chain in chains)
+        reversible = not strokes[index].closed and len(chains) == 1 and not matched.warnings
+        parts.extend(Part(chain, closed, reversible) for chain in chains)
         owners.extend(index for _ in chains)
     return parts, owners, warnings
+
+
+def _rematcher(
+    router: MatchRouter, targets: list[list[LonLat]], owners: list[int], radius: float, deadline: Deadline
+) -> Rematch:
+    """串接器選了反向時呼叫：把整筆畫的點倒過來重新吸附。只收一條 chain、沒有警告的結果，其餘回傳 None。"""
+
+    def rematch(part_index: int) -> list[Segment] | None:
+        owner = owners[part_index]
+        matched = match_stroke(
+            router, targets[owner][::-1], stroke_index=owner, search_radius_m=radius, min_piece_m=2 * radius,
+            deadline=deadline,
+        )
+        return matched.chains[0] if len(matched.chains) == 1 and not matched.warnings else None
+
+    return rematch
 
 
 def _dropped_warnings(owners: list[int], dropped: list[int]) -> list[MatchWarning]:
@@ -193,7 +210,7 @@ def match_shape(
     if not parts:
         raise AllStrokesFailed(warnings)
 
-    composition = compose(router, parts, deadline)
+    composition = compose(router, parts, deadline, rematch=_rematcher(router, targets, owners, radius, deadline))
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
     _check_continuous(composition.segments)
     route = _route_points(composition.segments)

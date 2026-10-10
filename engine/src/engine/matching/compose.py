@@ -3,9 +3,10 @@
 順序與封閉圈的進出點用直線距離估計（貪婪 + 2-opt），選定後只對實際用到的接點呼叫 route。
 排序是純 Python 的 CPU 計算：貪婪每接一個部件、2-opt 每一列各檢查一次期限與取消。
 組裝從 stroke 長度最長的部件開始往兩端接（見 compose）。
+開放部件可以反向走（Part.reversible）：反向是以倒過來的輸入點重新吸附，不是把現成路線倒過來。
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -21,10 +22,19 @@ MAX_CLOSED_ENTRIES = 24  # 每個封閉圈最多約這麼多個進入點：間�
 
 @dataclass(frozen=True)
 class Part:
-    """一個部件。segments 首尾相接；closed=True 時最後一點與第一點相差 ≤ JOIN_TOLERANCE_M。"""
+    """一個部件。segments 首尾相接；closed=True 時最後一點與第一點相差 ≤ JOIN_TOLERANCE_M。
+    reversible=True 的開放部件可以反向走：串接器選了反向時，用 rematch 以反向的點重新吸附（不是把路線倒過來）。"""
 
     segments: list[Segment]
     closed: bool
+    reversible: bool = False
+
+
+type Rematch = Callable[[int], list[Segment] | None]  # 部件索引 → 反向重新吸附的結果；不完整回傳 None
+
+
+def _no_rematch(index: int) -> None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -78,19 +88,24 @@ def rotate(segments: list[Segment], index: int) -> list[Segment]:
 
 @dataclass(frozen=True)
 class _Option:
-    """部件的一種進出方式。開放部件只有一種（起點進、終點出）；
+    """部件的一種進出方式。開放部件預設只有一種（起點進、終點出）；
+    reverse=True：reversible 的開放部件反向走，從終點進、起點出。
     封閉圈可從全域第 rotation 個點進，繞一圈後從同一點出。"""
 
     rotation: int
     entry: LonLat
     exit: LonLat
+    reverse: bool = False
 
 
 def _options(part: Part) -> list[_Option]:
     """每個部件只算一次：規劃會反覆比較進出點，不能每次都重新攤平整條折線。"""
     flat = _flat(part.segments)
     if not part.closed:
-        return [_Option(0, flat[0].point, part.segments[-1].points[-1])]
+        forward = _Option(0, flat[0].point, part.segments[-1].points[-1])
+        if not part.reversible:
+            return [forward]
+        return [forward, _Option(0, forward.exit, forward.entry, reverse=True)]
     # 封閉圈的進入點：起點，加上沿途每隔 step_m 一個（不含與起點重合的終點）
     step_m = max(CLOSED_ROTATION_STEP_M, sum(s.length_m for s in part.segments) / MAX_CLOSED_ENTRIES)
     picks, walked = [0], 0.0
@@ -201,17 +216,29 @@ def _assemble(
     return Composition(segments=route, dropped=sorted(dropped))
 
 
-def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Composition:
+def _body(part: Part, option: _Option, rematch: Rematch, index: int) -> list[Segment]:
+    """部件實際要騎的路段：封閉圈從選定的點開始；選了反向就重新吸附，吸附不完整時照畫的方向走。"""
+    if part.closed:
+        return rotate(part.segments, option.rotation)
+    if option.reverse:
+        backwards = rematch(index)
+        if backwards is not None:
+            return backwards
+    return part.segments
+
+
+def compose(router: MatchRouter, parts: list[Part], deadline: Deadline, rematch: Rematch = _no_rematch) -> Composition:
     """依規劃的順序串起各部件；順序與封閉圈進出點的規劃不變。
 
     組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），接不上的部件丟棄。
     舊版固定從第 0 個部件往後接：它的尾巴 route 不出去時，其餘部件全部被丟掉（ledger L64）。
     沒有部件被丟掉時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同。
+    開放部件可能反向走（見 Part.reversible）：規劃的進出點本來就從各部件的選項挑最近的，反向選項自動被考慮。
     """
     if not parts:
         return Composition(segments=[], dropped=[])
     options = [_options(part) for part in parts]
     order = _two_opt(options, _greedy(options, deadline), deadline)
     _, chosen = _plan(options, order)
-    bodies = {i: rotate(parts[i].segments, chosen[i].rotation) if parts[i].closed else parts[i].segments for i in order}
+    bodies = {i: _body(parts[i], chosen[i], rematch, i) for i in order}
     return _assemble(router, deadline, bodies, order, _anchor(parts))

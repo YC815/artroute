@@ -478,3 +478,50 @@ def test_anchor_counts_matched_stroke_length_not_detour_length() -> None:
     result = compose(router, [Part([clean], False), inflated], Deadline(10))
     assert result.dropped == [1]  # 總長當錨點會留下 part1、丟掉乾淨的 part0
     assert result.segments == [clean]
+
+
+# ---- P1.5 Task 9：開放筆畫可以反向走（以反向的點重新吸附，不是把路線倒過來） ----
+
+
+class RematchSpy:
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[int] = []
+
+    def __call__(self, index: int):
+        self.calls.append(index)
+        return self.result
+
+
+A_DRAWN = seg([(121.50, LAT), (121.51, LAT)], index=0)
+B_DRAWN = seg([(121.53, LAT), (121.52, LAT)], index=1)  # 畫的方向由東往西
+B_BACK = seg([(121.52, LAT), (121.53, LAT)], index=1)  # 反向重新吸附的結果
+
+
+def test_open_part_is_ridden_backwards_when_that_is_closer() -> None:
+    spy = RematchSpy([B_BACK])
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    result = compose(StraightRouter(), parts, Deadline(10), spy)
+    assert spy.calls == [1]
+    assert result.segments[-1] == B_BACK
+    assert result.segments[1].kind == "connector"
+    assert result.segments[1].length_m == pytest.approx(haversine_m((121.51, LAT), (121.52, LAT)))
+
+
+def test_reverse_falls_back_to_the_drawn_direction_when_rematch_fails() -> None:
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    result = compose(StraightRouter(), parts, Deadline(10), RematchSpy(None))
+    assert result.segments[-1] == B_DRAWN
+    assert_continuous(result.segments)
+
+
+def test_without_rematch_parts_keep_their_drawn_direction() -> None:
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    assert compose(StraightRouter(), parts, Deadline(10)).segments[-1] == B_DRAWN
+
+
+def test_only_reversible_open_parts_get_a_reverse_option() -> None:
+    assert [o.reverse for o in _options(Part([B_DRAWN], False))] == [False]
+    assert [o.reverse for o in _options(Part([B_DRAWN], False, reversible=True))] == [False, True]
+    loop = Part([seg(ring(121.50, 0.001, 120))], closed=True, reversible=True)
+    assert not any(o.reverse for o in _options(loop))
