@@ -244,3 +244,14 @@ def test_connect_accepts_a_short_bent_arm_that_is_not_a_fold_back() -> None:
     right = [seg([corner, east(corner, 100)])]
     connected = connect(TurnBlockRouter(), Deadline(10), left, right, "connector", None)
     assert connected == [*left, *right]
+
+
+def test_neighbour_walk_measures_the_geometry_not_the_recorded_length() -> None:
+    # S 的幾何只有約 7.5 m（往南 4.35 m 再折回北 3.15 m），length_m 卻記 8.0 m（Valhalla 摘要的 km 只有 3 位小數）：
+    # 探針走的是幾何，所以 WEST|S 的往後 8 m 探針會伸進新接上的 R 並折回 NODE，一定要重量
+    corner = north(NODE, -1.2)
+    s = Segment("stroke", 0, [NODE, north(NODE, -4.35), corner], 8.0)
+    assert polyline_length_m(s.points) < 7.6
+    router = TurnBlockRouter()
+    assert every_junction_rideable(router, [WEST, s])  # 前提：原本這條鏈的接點都能騎
+    assert connect(router, Deadline(10), [WEST, s], [seg([corner, north(NODE, 50)])], "connector", None) is None

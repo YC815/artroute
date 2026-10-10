@@ -12,8 +12,8 @@
 """
 
 from collections.abc import Iterator, Sequence
-from itertools import chain
 from dataclasses import dataclass
+from itertools import chain
 
 from engine.matching.deadline import Deadline
 from engine.matching.turns import TURN_PROBE_M, head_points, rideable, tail_points
@@ -55,11 +55,22 @@ def _junction_ok(router: MatchRouter, deadline: Deadline, segments: list[Segment
     return rideable(router, deadline, tail_points(segments[: i + 1]), head_points(segments[i + 1 :]))
 
 
+def _length_upto(points: list[LonLat], cap_m: float) -> float:
+    """折線的幾何長度，累積到 cap_m 就停（長路段不必量完）。跟探針（turns._walk）用同一把尺：
+    Segment.length_m 是 Valhalla 的摘要（km 只有 3 位小數），不是探針走的那條折線。"""
+    total = 0.0
+    for a, b in zip(points, points[1:]):
+        total += haversine_m(a, b)
+        if total >= cap_m:
+            break
+    return total
+
+
 def _before_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
     """接點 junction 之前、沿路線距離不到 TURN_PROBE_M 的既有接點，由近到遠：它們的探針會伸進新接上的幾何。"""
     walked = 0.0
     for i in range(junction - 1, -1, -1):
-        walked += segments[i + 1].length_m
+        walked += _length_upto(segments[i + 1].points, TURN_PROBE_M - walked)
         if walked >= TURN_PROBE_M:
             return
         yield i
@@ -69,7 +80,7 @@ def _after_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
     """接點 junction 之後、沿路線距離不到 TURN_PROBE_M 的既有接點，由近到遠。"""
     walked = 0.0
     for i in range(junction + 1, len(segments) - 1):
-        walked += segments[i].length_m
+        walked += _length_upto(segments[i].points, TURN_PROBE_M - walked)
         if walked >= TURN_PROBE_M:
             return
         yield i

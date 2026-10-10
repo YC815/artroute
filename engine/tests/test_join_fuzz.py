@@ -39,7 +39,9 @@ def walk(rng: random.Random, start: LonLat, heading: int, steps: int) -> tuple[l
 def as_chain(rng: random.Random, points: list[LonLat]) -> list[Segment]:
     cuts = sorted(rng.sample(range(1, len(points) - 1), k=min(len(points) - 2, rng.randint(0, 3))))
     bounds = [0, *cuts, len(points) - 1]
-    return [Segment("stroke", 0, points[a : b + 1], polyline_length_m(points[a : b + 1])) for a, b in zip(bounds, bounds[1:])]
+    # length_m 刻意比幾何長 0–1 m：Valhalla 摘要的 km 只有 3 位小數，記的長度不會剛好是探針走的那條折線
+    pieces = list(zip(bounds, bounds[1:]))
+    return [Segment("stroke", 0, points[a : b + 1], polyline_length_m(points[a : b + 1]) + rng.random()) for a, b in pieces]
 
 
 def blocking(corners: list[LonLat]) -> TurnBlockRouter:
