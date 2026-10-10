@@ -38,19 +38,33 @@ def _oneway_checks(router: RouterLike) -> list[str]:
 def _expressway_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
     if not denied:
         return ["沒有任何快速道路被標記為禁行：資料或標記規則可能壞了"]
-    zhoumei = [d for d in denied if d.name == ZHOUMEI_EXPRESSWAY_NAME]
+    # is_expressway 用子字串比對名稱，這裡也用子字串：真實資料可能叫「洲美快速道路（北上）」
+    zhoumei = [d for d in denied if ZHOUMEI_EXPRESSWAY_NAME in (d.name or "")]
     if not zhoumei:
         return [f"找不到{ZHOUMEI_EXPRESSWAY_NAME}：OSM 資料可能變了，需要更新這項檢查"]
-    # 端點節點不在 pbf 時座標是 None；取第一條兩端都有座標的，都沒有就當失敗，不讓 None 進到 route
-    endpoints = next(((d.first, d.last) for d in zhoumei if d.first is not None and d.last is not None), None)
-    if endpoints is None:
+    # 端點節點不在 pbf 時座標是 None，這種 way 沒辦法查；全都沒座標就當失敗，不讓 None 進到 route
+    checkable = [(d, d.first, d.last) for d in zhoumei if d.first is not None and d.last is not None]
+    if not checkable:
         return [f"{ZHOUMEI_EXPRESSWAY_NAME}的 way 都缺少端點座標：無法驗證自行車路線是否避開快速道路"]
     denied_ids = {d.id for d in denied}
-    route = router.route(*endpoints)
-    used = {e.way_id for e in router.edges(route.points)} & denied_ids
-    if used:
-        return [f"自行車路線使用了被禁行的快速道路 way {sorted(used)}"]
-    return []
+    failures: list[str] = []
+    errors: list[str] = []
+    succeeded = 0
+    for way, first, last in checkable:
+        # 兩個方向都要查：只查 first->last 會漏掉 oneway=-1 這類只在逆向才走上快速道路的情形
+        for label, start, end in (("順向", first, last), ("逆向", last, first)):
+            try:
+                route = router.route(start, end)
+            except RoutingError as error:
+                errors.append(f"way {way.id} {label}：{error}")
+                continue
+            succeeded += 1
+            used = {e.way_id for e in router.edges(route.points)} & denied_ids
+            if used:
+                failures.append(f"自行車路線（{ZHOUMEI_EXPRESSWAY_NAME} way {way.id} {label}）使用了被禁行的快速道路 way {sorted(used)}")
+    if not succeeded:  # 沒有任何一條路線算得出來，就沒有東西能證明路線避開了快速道路
+        raise RoutingError("；".join(errors))
+    return failures
 
 
 def taiwan_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:

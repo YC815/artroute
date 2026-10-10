@@ -56,13 +56,18 @@ def _tags(obj) -> dict[str, str]:
     return {tag.k: tag.v for tag in obj.tags}
 
 
+# 實測（真實 Valhalla）會讓 bicycle=no 的路重新可騎的 tag：oneway:bicycle=no 讓單行路雙向放行；
+# vehicle:forward／backward 會蓋過 bicycle=no（lua：bk_forward = bicycle:forward or vehicle:forward）。
+# access:forward／backward 與其他 conditional 變體實測不影響。引擎只算自行車路線，移除 vehicle 方向 tag 沒有副作用
+REOPENING_KEYS = frozenset({"oneway:bicycle", "vehicle:forward", "vehicle:backward"})
+
+
 def _is_bicycle_tag(key: str) -> bool:
-    # oneway:bicycle=no 會讓單行的快速道路對自行車雙向放行，也要一起移除
-    return key.startswith("bicycle:") or key.startswith("cycleway") or key == "oneway:bicycle"
+    return key.startswith("bicycle:") or key.startswith("cycleway") or key in REOPENING_KEYS
 
 
 def _denied_tags(tags: Mapping[str, str]) -> dict[str, str]:
-    """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track、oneway:bicycle=no 等都會讓 Valhalla 照樣放行。"""
+    """bicycle=no 要蓋過所有讓這條路可騎的 tag：bicycle:forward=yes、cycleway:both=track、oneway:bicycle=no、vehicle:forward=yes 等都會讓 Valhalla 照樣放行。"""
     return {**{k: v for k, v in tags.items() if not _is_bicycle_tag(k)}, "bicycle": "no"}
 
 

@@ -163,6 +163,9 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         "oneway:bicycle": "no",
         "bicycle_road": "yes",
         "cycle_network": "TW:NCN",
+        "vehicle:forward": "yes",
+        "vehicle:backward": "yes",
+        "vehicle": "yes",
     }
     write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(500, [1, 2], tags)])
     patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset()))
@@ -175,6 +178,7 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         "oneway": "yes",
         "bicycle_road": "yes",
         "cycle_network": "TW:NCN",
+        "vehicle": "yes",
         "bicycle": "no",
     }
 
@@ -190,8 +194,21 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
         {"bicycle": "designated"},
         {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
         {"oneway": "yes", "oneway:bicycle": "no"},
+        # Valhalla lua：bk_forward = bicycle:forward or vehicle:forward，會蓋過 bicycle=no
+        {"vehicle:forward": "yes"},
+        {"vehicle:backward": "yes"},
+        {"oneway": "yes", "vehicle:forward": "yes"},
+        {"oneway": "-1", "vehicle:backward": "yes"},
+        # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
+        {"access:forward": "yes"},
+        {"access:backward": "yes"},
+        {"vehicle": "yes", "access": "yes"},
     ],
-    ids=["bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated", "bicycle-yes-conditional", "oneway-bicycle-no"],
+    ids=[
+        "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
+        "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
+        "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "access-forward", "access-backward", "vehicle-access-yes",
+    ],
 )
 def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags) -> None:
     src = tmp_path / "src.osm.pbf"
@@ -199,8 +216,10 @@ def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags
     build_dir = tmp_path / "build"
     build_dir.mkdir()
     router = Router(build_with_patch(src, build_dir))
-    with pytest.raises(RoutingError):
-        router.route(grid_point(X1, 1), grid_point(X1 + 4, 1))
+    west, east = grid_point(X1, 1), grid_point(X1 + 4, 1)
+    for start, end in ((west, east), (east, west)):  # 方向性的 tag 只會重開其中一個方向，兩個方向都要擋住
+        with pytest.raises(RoutingError):
+            router.route(start, end)
 
 
 def missing_node_pbf(path: Path) -> None:
