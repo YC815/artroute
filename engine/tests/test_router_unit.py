@@ -3,7 +3,7 @@
 import pytest
 
 from engine.routing.polyline import encode
-from engine.routing.router import RouteResult, RoutingError, _ensure_matched, _route_result
+from engine.routing.router import RouteResult, Router, RoutingError, _ensure_matched, _route_result
 
 A, B, C = (121.5, 25.05), (121.502, 25.05), (121.504, 25.05)
 FAR = (121.52, 25.05)  # 離 C 約 1.8 km
@@ -49,3 +49,31 @@ def test_ensure_matched_rejects_far_endpoints() -> None:
         _ensure_matched(RouteResult([FAR, C], 0.402), [A, B, C], search_radius_m=50.0)
     with pytest.raises(RoutingError, match="終點"):
         _ensure_matched(RouteResult([A, FAR], 0.402), [A, B, C], search_radius_m=50.0)
+
+
+def _captured_request(monkeypatch: pytest.MonkeyPatch, call) -> tuple[str, dict]:
+    """不載入 Valhalla：攔下 Router 送給 Actor 的 (方法, 請求)。"""
+    router = Router.__new__(Router)
+    seen: list[tuple[str, dict]] = []
+
+    def fake_call(method: str, request: dict) -> dict:
+        seen.append((method, request))
+        return _response([A, B, C])
+
+    monkeypatch.setattr(router, "_call", fake_call)
+    call(router)
+    return seen[0]
+
+
+def test_route_request_disables_node_snap_on_every_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    # route 預設會把 5 m 內的端點拉到路口，接點就和 trace 吸附出來的端點對不上
+    method, request = _captured_request(monkeypatch, lambda router: router.route(A, C))
+    assert method == "route"
+    assert [loc["node_snap_tolerance"] for loc in request["locations"]] == [0, 0]
+    assert [(loc["lon"], loc["lat"]) for loc in request["locations"]] == [A, C]
+
+
+def test_trace_request_has_no_node_snap_tolerance(monkeypatch: pytest.MonkeyPatch) -> None:
+    method, request = _captured_request(monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=50.0))
+    assert method == "trace_route"
+    assert "node_snap_tolerance" not in str(request)

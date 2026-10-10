@@ -17,6 +17,9 @@ COSTING = "bicycle"
 
 MIN_LENGTH_RATIO = 0.7  # 匹配長度至少要有輸入折線的這個比例；P1 benchmark 會調這個值
 LEG_JOIN_TOLERANCE_M = 1.0  # 相鄰 leg 的接點容許誤差，超過代表中間有跳點
+# route 預設 node_snap_tolerance = 5 m：離路口 5 m 內的端點會被拉到路口，而 trace 只吸附 1 m 內的節點。
+# 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
+ROUTE_NODE_SNAP_TOLERANCE_M = 0
 CACHE_SIZE_BYTES = 256 * 1024 * 1024  # 每個 worker 各有一份 tile 快取（Valhalla 預設 1 GB）
 
 
@@ -133,7 +136,8 @@ class Router:
         return result
 
     def route(self, start: LonLat, end: LonLat) -> RouteResult:
-        response = self._call("route", {"locations": _locations([start, end]), "costing": COSTING})
+        locations = [{**loc, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M} for loc in _locations([start, end])]
+        response = self._call("route", {"locations": locations, "costing": COSTING})
         return _route_result(response)
 
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]:

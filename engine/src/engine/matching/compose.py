@@ -5,6 +5,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from engine.matching.deadline import Deadline
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, segment_from
@@ -30,12 +31,20 @@ class Composition:
     dropped: list[int]
 
 
-def _flat(segments: list[Segment]) -> list[tuple[int, LonLat]]:
-    """(所屬段落索引, 點)；相鄰段共用的接點只算一次。"""
-    out: list[tuple[int, LonLat]] = []
+class _Pos(NamedTuple):
+    """全域攤平後的一個點：它在第 segment 段的第 offset 個點。"""
+
+    segment: int
+    offset: int
+    point: LonLat
+
+
+def _flat(segments: list[Segment]) -> list[_Pos]:
+    """依序攤平所有點；相鄰段共用的接點只算一次（歸前一段）。"""
+    out: list[_Pos] = []
     for i, segment in enumerate(segments):
-        points = segment.points if not out else segment.points[1:]
-        out.extend((i, p) for p in points)
+        skip = 1 if out else 0
+        out.extend(_Pos(i, skip + k, p) for k, p in enumerate(segment.points[skip:]))
     return out
 
 
@@ -44,24 +53,22 @@ def _with_points(segment: Segment, points: list[LonLat]) -> Segment:
 
 
 def rotate(segments: list[Segment], index: int) -> list[Segment]:
-    """把封閉圈改從全域第 index 個點開始、繞一圈回到同一點；必要時把跨過該點的段落切成兩半。"""
+    """把封閉圈改從全域第 index 個點開始、繞一圈回到同一點；必要時把跨過該點的段落切成兩半。
+
+    切點由攤平時記下的段內位置決定，不是用座標去找：八字形、來回的路線會重複經過同一個座標，
+    用座標找會切在較早的那一次，繞出另一條路。
+    """
     flat = _flat(segments)
     if index <= 0 or index >= len(flat) - 1:
         return list(segments)
-    pivot_seg, pivot = flat[index]
-    head: list[Segment] = []
-    tail: list[Segment] = []
-    for i, segment in enumerate(segments):
-        if i < pivot_seg:
-            tail.append(segment)
-        elif i > pivot_seg:
-            head.append(segment)
-        else:
-            cut = segment.points.index(pivot)
-            if cut > 0:
-                tail.append(_with_points(segment, segment.points[: cut + 1]))
-            if cut < len(segment.points) - 1:
-                head.insert(0, _with_points(segment, segment.points[cut:]))
+    pivot = flat[index]
+    segment = segments[pivot.segment]
+    tail = segments[: pivot.segment]
+    head = segments[pivot.segment + 1 :]
+    if pivot.offset > 0:
+        tail = tail + [_with_points(segment, segment.points[: pivot.offset + 1])]
+    if pivot.offset < len(segment.points) - 1:
+        head = [_with_points(segment, segment.points[pivot.offset :])] + head
     return head + tail
 
 
@@ -79,15 +86,15 @@ def _options(part: Part) -> list[_Option]:
     """每個部件只算一次：規劃會反覆比較進出點，不能每次都重新攤平整條折線。"""
     flat = _flat(part.segments)
     if not part.closed:
-        return [_Option(0, flat[0][1], part.segments[-1].points[-1])]
+        return [_Option(0, flat[0].point, part.segments[-1].points[-1])]
     # 封閉圈的進入點：起點，加上沿途每隔約 CLOSED_ROTATION_STEP_M 一個（不含與起點重合的終點）
     picks, walked = [0], 0.0
     for k in range(1, len(flat) - 1):
-        walked += haversine_m(flat[k - 1][1], flat[k][1])
+        walked += haversine_m(flat[k - 1].point, flat[k].point)
         if walked >= CLOSED_ROTATION_STEP_M:
             picks.append(k)
             walked = 0.0
-    return [_Option(k, flat[k][1], flat[k][1]) for k in picks]
+    return [_Option(k, flat[k].point, flat[k].point) for k in picks]
 
 
 def _nearest(position: LonLat, options: list[_Option]) -> _Option:
@@ -142,10 +149,11 @@ def _two_opt(options: list[list[_Option]], order: list[int]) -> list[int]:
 
 
 def _connect(router: MatchRouter, deadline: Deadline, start: LonLat, end: LonLat) -> Segment | None:
-    """start 到 end 的合法路線；繞不出來回傳 None。
+    """start 到 end 的合法路線；繞不出來、或結果沒有真的從 start 走到 end 就回傳 None。
 
     起訖吸附到同一處時 route 會成功，但只回傳不到 2 個不同的點、長度 0：那不是連線，
     收下來就是零長度的 connector，後面的部件實際上沒接上。
+    route 的起訖若離要求的位置超過 JOIN_TOLERANCE_M（端點被吸附到別處），接上去就在接點留下缺口。
     """
     deadline.check()
     try:
@@ -154,7 +162,21 @@ def _connect(router: MatchRouter, deadline: Deadline, start: LonLat, end: LonLat
         return None
     if len(set(result.points)) < 2:
         return None
+    if haversine_m(result.points[0], start) > JOIN_TOLERANCE_M or haversine_m(result.points[-1], end) > JOIN_TOLERANCE_M:
+        return None
     return segment_from("connector", None, result)
+
+
+def _append(router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment]) -> bool:
+    """把 body 接在 route 後面，必要時先補 connector。接不上回傳 False，route 不變。"""
+    start = body[0].points[0]
+    if route and haversine_m(route[-1].points[-1], start) > JOIN_TOLERANCE_M:
+        connector = _connect(router, deadline, route[-1].points[-1], start)
+        if connector is None:
+            return False
+        route.append(connector)
+    route.extend(body)
+    return True
 
 
 def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Composition:
@@ -168,12 +190,6 @@ def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Compo
     dropped: list[int] = []
     for i in order:
         body = rotate(parts[i].segments, chosen[i].rotation) if parts[i].closed else parts[i].segments
-        start = body[0].points[0]
-        if segments and haversine_m(segments[-1].points[-1], start) > JOIN_TOLERANCE_M:
-            connector = _connect(router, deadline, segments[-1].points[-1], start)
-            if connector is None:
-                dropped.append(i)
-                continue
-            segments.append(connector)
-        segments.extend(body)
+        if not _append(router, deadline, segments, body):
+            dropped.append(i)
     return Composition(segments=segments, dropped=sorted(dropped))
