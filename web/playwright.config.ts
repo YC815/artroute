@@ -1,14 +1,21 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 3100;
+const CI = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: "e2e",
   timeout: 60_000,
+  expect: { timeout: 10_000 },
   fullyParallel: false,
-  retries: 0,
-  reporter: [["list"]],
-  use: { baseURL: `http://127.0.0.1:${PORT}` },
+  forbidOnly: CI,
+  retries: CI ? 1 : 0,
+  reporter: CI ? [["github"], ["html", { open: "never" }]] : [["list"]],
+  use: {
+    baseURL: `http://127.0.0.1:${PORT}`,
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+  },
   projects: [
     {
       name: "chromium",
@@ -20,10 +27,21 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // 測正式 build；/api/status、/api/match 與地圖 style 都在瀏覽器端攔截，不需要引擎
-    command: `pnpm build && pnpm start --port ${PORT} --hostname 127.0.0.1`,
+    // 測的是部署用的 standalone 產物，不是 `next start`：standalone 不會自己帶 .next/static 與 public/（含 MapLibre 的 worker），
+    // 部署時要複製進去，這裡照做，少複製就會在 e2e 失敗。
+    // /api/status、/api/match 與地圖 style 都在瀏覽器端攔截，不需要引擎。
+    command: [
+      "pnpm build",
+      "mkdir -p .next/standalone/.next/static .next/standalone/public",
+      "cp -R .next/static/. .next/standalone/.next/static/",
+      "cp -R public/. .next/standalone/public/",
+      "node .next/standalone/server.js",
+    ].join(" && "),
+    // server.js 讀 HOSTNAME；Docker／CI 常把它設成容器 id，必須明確指定
+    env: { PORT: String(PORT), HOSTNAME: "127.0.0.1" },
     url: `http://127.0.0.1:${PORT}`,
     timeout: 300_000,
     reuseExistingServer: false,
+    stdout: CI ? "pipe" : "ignore",
   },
 });
