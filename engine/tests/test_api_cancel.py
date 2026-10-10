@@ -7,7 +7,11 @@
 
 import asyncio
 import json
+import logging
+import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -299,3 +303,89 @@ def test_real_uvicorn_disconnect_cancels_the_running_match(tmp_path: Path, monke
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# ---- 最終審查 M7：每個 /match 一行紀錄（狀態、等名額與吸附的時間、筆畫數、段數、是否被取消） ----
+
+LOG_LINE = re.compile(
+    r"^match status=(?P<status>\d+) wait_ms=(?P<wait>\d+) match_ms=(?P<match>\d+) "
+    r"strokes=(?P<strokes>\d+) segments=(?P<segments>\d+|-) cancelled=(?P<cancelled>True|False)$"
+)
+
+
+def match_logs(caplog: pytest.LogCaptureFixture) -> list[dict[str, str]]:
+    lines = [r.getMessage() for r in caplog.records if r.name == "engine.app" and r.levelno == logging.INFO]
+    parsed = [LOG_LINE.match(line) for line in lines]
+    assert all(parsed), lines
+    return [m.groupdict() for m in parsed if m]
+
+
+def test_each_match_logs_one_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    app = make_app(tmp_path, monkeypatch, SteppingMatch(steps=2))
+    with caplog.at_level(logging.INFO, logger="engine.app"):
+        assert asyncio.run(Caller(app).run()) == 200
+    [log] = match_logs(caplog)
+    assert log["status"] == "200" and log["strokes"] == "1" and log["segments"] == "0" and log["cancelled"] == "False"
+    assert int(log["match"]) >= 2 * STEP_S * 1000 - 1
+
+
+def test_cancelled_and_timed_out_requests_are_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    started: list[float] = []
+
+    def until_cancelled(router, strokes, *, search_radius_m, deadline: Deadline) -> MatchResult:
+        """只理會取消、不理會期限：讓它一直佔著名額，直到呼叫端離開。"""
+        started.append(time.monotonic())
+        for _ in range(100):
+            if deadline.cancelled:
+                raise MatchCancelled("呼叫端已離開")
+            time.sleep(STEP_S)
+        return EMPTY
+
+    app = make_app(tmp_path, monkeypatch, until_cancelled, timeout_s=0.6)
+
+    async def scenario() -> None:
+        running, queued, expiring = Caller(app), Caller(app), Caller(app)
+        running_task = asyncio.create_task(running.run())
+        await until(lambda: len(started) == 1)
+        queued_task = asyncio.create_task(queued.run())
+        expiring_task = asyncio.create_task(expiring.run())
+        await asyncio.sleep(0.1)
+        queued.gone()
+        assert await queued_task == 499  # 排隊中離開
+        assert await expiring_task == 504  # 等名額等到期限
+        running.gone()
+        assert await running_task == 499  # 吸附中離開
+
+    with caplog.at_level(logging.INFO, logger="engine.app"):
+        asyncio.run(scenario())
+    logs = match_logs(caplog)
+    assert [(log["status"], log["cancelled"], log["segments"]) for log in logs] == [
+        ("499", "True", "-"),
+        ("504", "False", "-"),
+        ("499", "True", "-"),
+    ]
+    queued_log, expired_log, running_log = logs
+    assert queued_log["match"] == "0" and expired_log["match"] == "0"  # 沒拿到名額就沒有吸附時間
+    assert int(expired_log["wait"]) >= 550
+    assert int(running_log["match"]) >= 500
+
+
+def test_unexpected_error_is_logged_as_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(router, strokes, *, search_radius_m, deadline):
+        raise RuntimeError("bug")
+
+    app = make_app(tmp_path, monkeypatch, broken)
+    with caplog.at_level(logging.INFO, logger="engine.app"), TestClient(app, raise_server_exceptions=False) as api:
+        assert api.post("/match", json=REQUEST).status_code == 500
+    assert [log["status"] for log in match_logs(caplog)] == ["500"]
+
+
+def test_production_import_configures_the_root_logger() -> None:
+    """uvicorn 只設定自己的 logger：engine.* 的 INFO 紀錄要靠 root logger 才會真的輸出。"""
+    code = "import logging, engine.app; logging.getLogger('engine.app').info('hello-from-engine')"
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=True)
+    assert "INFO engine.app: hello-from-engine" in done.stderr

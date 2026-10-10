@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -131,16 +132,44 @@ async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
     return False
 
 
+@dataclass
+class _MatchLog:
+    """一個 /match 的紀錄：結束時寫一行 INFO，拿來確認取消有效、之後調查吸附品質。"""
+
+    strokes: int
+    arrived: float = field(default_factory=time.monotonic)
+    admitted: float | None = None  # 拿到名額的時刻；沒拿到（離開、逾時）就是 None
+    finished: float | None = None
+    segments: int | None = None  # 吸附成功才有
+
+    def emit(self, status: int, cancelled: bool) -> None:
+        now = time.monotonic()
+        if self.admitted is None:
+            wait_ms, match_ms = (now - self.arrived) * 1000, 0.0
+        else:
+            finished = now if self.finished is None else self.finished
+            wait_ms, match_ms = (self.admitted - self.arrived) * 1000, (finished - self.admitted) * 1000
+        segments = "-" if self.segments is None else self.segments
+        logger.info(
+            "match status=%d wait_ms=%.0f match_ms=%.0f strokes=%d segments=%s cancelled=%s",
+            status, wait_ms, match_ms, self.strokes, segments, cancelled,
+        )
+
+
 async def _admitted_match(
-    admission: asyncio.Semaphore, current: CurrentRouter, payload: MatchRequest, deadline: Deadline
+    admission: asyncio.Semaphore, current: CurrentRouter, payload: MatchRequest, deadline: Deadline, log: _MatchLog
 ) -> Any:
     if not await _admit(admission, deadline):
         return Response(status_code=CLIENT_CLOSED)
+    log.admitted = time.monotonic()
     try:
-        return await run_in_threadpool(_match, current, payload, deadline)
+        response = await run_in_threadpool(_match, current, payload, deadline)
+        log.segments = len(response.segments)
+        return response
     except MatchCancelled:
         return Response(status_code=CLIENT_CLOSED)
     finally:
+        log.finished = time.monotonic()
         # run_in_threadpool 不會丟下還在跑的 thread（即使這個 task 被取消也會等它結束），
         # 所以名額一定在吸附真的結束後才釋放，Router 不會被兩個請求同時使用
         admission.release()
@@ -187,13 +216,23 @@ def create_app(
         # 不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
         # 最壞情況：到期（或呼叫端離開）後，最多再多一次進行中的 Valhalla 呼叫，或串接排序（2-opt）的一列。
         # 呼叫端離開（web 拖曳時取消上一筆）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。
+        log, status = _MatchLog(strokes=len(payload.strokes)), 500  # 沒被下面接住的例外會變成 500
         watcher = asyncio.create_task(_watch_disconnect(request, deadline))
         try:
-            return await _admitted_match(admission, current, payload, deadline)
+            response = await _admitted_match(admission, current, payload, deadline, log)
+            status = response.status_code if isinstance(response, Response) else 200
+            return response
+        except HTTPException as error:
+            status = error.status_code
+            raise
         finally:
             watcher.cancel()
+            log.emit(status, deadline.cancelled)
 
     return app
 
 
+# uvicorn 只設定自己的 logger（uvicorn.*），engine.* 的紀錄要經 root logger 才會輸出。
+# root 已經有 handler 時（pytest、自訂的 log config）basicConfig 什麼都不做
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = create_app(Path(os.environ.get("DATA_DIR", "/data")))
