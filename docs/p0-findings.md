@@ -20,11 +20,13 @@
   - 被截斷時丟掉的是「第一個非法路段之後的所有東西」，不只逆向那半：0→2→0 只回傳 0.404 km（輸入 0.806 km），0→2→0→2 也只回傳 0.404 km（輸入 1.209 km），結尾的合法段一起消失
   - 同樣的逆向 trace 改用 `edge_walk`：丟錯誤（`Exact route match algorithm failed to find path`）
   - 對照組：雙向街逆著騎的 trace 正常（0.404 km）
-  - Valhalla 預設 `service_limits.trace.max_search_radius` 只有 100 m，超過會丟 `RoutingError`（`Input trace option is out of bounds`）；`tiles.write_config` 產生的設定檔已調到 150 m（spec §4.3 的上限）
+  - Valhalla 預設的 `service_limits.trace.max_search_radius` 與 `meili.default.max_search_radius` 都是 100 m。有效的半徑上限要**兩個都設成 150 m**（spec §4.3 的上限）：前者決定請求會不會被拒絕（超過會丟 `RoutingError`，`Input trace option is out of bounds`），後者才是 Valhalla 實際使用的半徑上限
+  - 早期版本只設了 `service_limits`，Valhalla 會把請求的 150 m 悄悄壓回 100 m，不報錯也不生效（最終 review 的 probe：軌跡平行於路、偏移 120–140 m 時，radius=150 與 100 一樣失敗；把 `meili.default.max_search_radius` 也設成 150 後，radius=150 成功（0.605 km），radius=100 仍失敗）。現在 `tiles.write_config` 兩個都設，並有測試驗證
+  - m1 上現行的建置是用舊設定產生的，下次重建才會套用 150 m
 - oneway:bicycle=no：允許逆向（route 0.404 km，直接逆著騎）
 - motorway：避開（route 2.101 km，繞下面那條 row 1 的住宅街）
 - `Router.trace()` 的處理：`map_snap` 本身不報錯，所以 Router 在回傳前驗證結果，遇到下列情況丟 `RoutingError`：少於 2 個不同的點；匹配長度低於輸入折線長度的 `MIN_LENGTH_RATIO`（0.7，P1 benchmark 會調）；結果的起點或終點離輸入的起點或終點超過 `2 × search_radius_m`。`_route_result` 遇到相鄰 leg 接點相差超過 1 m 也丟 `RoutingError`，不會串出直線補線。
-- 對 P1 的影響：吸附逆向或被截斷的 trace 現在會丟 `RoutingError`，P1 必須接住這個例外，改用部件端點之間的 `route()` 補段；`MIN_LENGTH_RATIO` 要用真實 GPS 軌跡的 benchmark 調整，GPS 抖動讓匹配長度偏離輸入時可能誤殺。
+- 對 P1 的影響：吸附逆向或被截斷的 trace 現在會丟 `RoutingError`，P1 必須接住這個例外並設計 fallback。只在部件的兩個端點之間用 `route()` 補段會丟掉部件的形狀（例如 L 形會被直接切過去），所以 P1 必須在截斷點把部件切開（例如用 `trace_attributes` 的 matched_points 找出截斷位置），或沿部件取樣 `through` 途經點，再用 `route()` 串起來；確切策略屬於 P1 的設計決策。`MIN_LENGTH_RATIO` 要用真實 GPS 軌跡的 benchmark 調整，GPS 抖動讓匹配長度偏離輸入時可能誤殺。
 
 ## linux arm64（m1 容器）
 - pyvalhalla wheel：可用（`pyvalhalla-3.9.1-cp312-abi3-manylinux_2_28_aarch64`，容器 Python 3.13.11，aarch64，OrbStack kernel 7.0.14）
@@ -75,6 +77,23 @@
   - 內網 → 一般 → 內網的重新部署切換正常（切回內網時路由檔被移除）；`hl rm` 清理成功
   - 機制：`hl` 腳本在 `hl public` 前檢查 `zone.chen.hl.internal` label，是內網 app 就 `die`
 
+## P0 新發現的限制
+最終 review 時另外寫 probe 在合成地圖上實測出來的限制，P1 設計要把它們算進去：
+
+- (a) `trace_route` 配 `map_snap` 不會繞路：輸入有逆向段，或點落在搜尋半徑之外，結果就是退化或被截斷（probe：穿過一個街區的對角線，只匹配到約 16%）。所以「正反兩個方向都計算」救不了一條同時穿過兩段方向相反的單行道的部件，兩個方向都會失敗
+- (b) 有效半徑上限需要 `service_limits.trace.max_search_radius` 與 `meili.default.max_search_radius` 兩個都設成 150 m，細節見上方「bicycle 交通規則」一節；`write_config` 已修正，m1 現行建置要等下次重建才生效
+- (c) `valhalla.Actor` 不是 thread-safe：binding 會釋放 GIL，兩個 thread 同時呼叫同一個 Actor 會 segfault／bus error（probe：macOS arm64）。`Router` 現在用 per-instance 鎖序列化呼叫，並有子行程回歸測試（8 thread × 50 次 `route()`；拿掉鎖時會崩潰）。要平行就開多個 `Router` 實例或多個行程
+- (d) 快速道路避開只在合成的 `highway=motorway` 上驗證過。probe（沒有 admin DB）顯示：單純的 `highway=trunk` 對 bicycle 是**可騎**的（有替代路線時會避開，是唯一通路時會走上去）；`trunk` + `motorroad=yes`、`bicycle=no`、`motorway` 才會禁行。台灣的快速道路常標成 `trunk`，所以真實資料上的快速道路避開（例如洲美快速道路）**還沒有驗證**
+- (e) bicycle 的 `turn_penalty_factor` 在 meili 預設就是 140，不是「開啟」的問題，而是要調：spec §4.3 的「開啟 `turn_penalty_factor`」需要改寫
+
 ## 結論
-- P0 四項（pyvalhalla on m1、台灣 tiles、bicycle 單行道、hl --internal）：全部通過。唯一的修補是 test stage 補 `libexpat1`，與 P0 假設無關
-- 對設計的影響：無，spec 不用改。P1 的參考數字：tiles 建置＋驗證約 41 秒（含下載共 2 分 43 秒）、約 2.1 GiB RAM（重跑 `build_tiles` 量到的 anon 尖峰）、tiles 336 MiB，每次重建都可以直接全量重跑
+- P0 四項門檻全部通過：pyvalhalla on m1、台灣 tiles、bicycle 遵守單行道（合成地圖＋真實洲美街）、hl --internal
+- P0 期間做的修補：test image 補 `libexpat1`；trace 退化／截斷時丟 `RoutingError` 的守門；搜尋半徑設定（兩個 key 都要調）；`Router` 用鎖序列化 Actor 呼叫
+- 對設計的影響：有。spec 以下段落要在 P1 開始前修訂，與使用者一起進行：
+  - §3 架構：「pyvalhalla 在同一程序內呼叫」要補上併發模型——Actor 不是 thread-safe，單一 `Router` 的呼叫是序列化的，要平行就用多個 `Router` 實例或多個行程
+  - §4.2 地圖編輯器：即時吸附會遇到 trace 失敗或被截斷（`RoutingError`），要有該部件的失敗／部分成功的顯示；前端取消舊請求不會中斷引擎已經在跑的 Actor 呼叫，它仍會佔住 `Router` 的鎖（推論，未實測）
+  - §4.3 部件吸附：「正反兩個方向都計算」救不了穿過相反單行道的部件，要改成在截斷點切開部件或用 `through` 途經點；`search_radius` 上限 150 m 需要兩個設定都改；`turn_penalty_factor` 預設已是 140，要改成「調整」而不是「開啟」
+  - §5 錯誤處理：新增「trace 被截斷或吸附失敗」的情況和處理方式（仍然不用直線補）；吸附 5 秒的逾時要把等鎖的時間算進去（推論，未實測）
+  - §6.1 路網資料更新：驗證查詢要加入快速道路（trunk）避開的真實案例（例如洲美快速道路）；熱重載要建新的 `Router` 再切換；半徑設定變更後要重建 tiles 才生效（m1 現行建置要重建）
+  - §7 分期：P0 的完成條件已滿足；P1 增加三項工作——部件被截斷時的切段／途經點策略、真實資料上的快速道路避開驗證、`turn_penalty_factor` 與 `MIN_LENGTH_RATIO` 的 benchmark 調整
+- P1 的參考數字：tiles 建置＋驗證＋啟用約 41 秒（含下載共 2 分 43 秒）、約 2.1 GiB RAM（重跑 `build_tiles` 量到的 anon 尖峰）、tiles 336 MiB，每次重建都可以直接全量重跑
