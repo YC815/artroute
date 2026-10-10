@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,36 @@ def test_broken_current_build_is_503_without_leaking_path(tmp_path: Path) -> Non
     assert "valhalla.json" not in response.text
 
 
+def test_no_data_is_not_logged_as_an_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.ERROR, logger="engine.app"):
+        TestClient(create_app(tmp_path)).post("/match", json=body([(121.5, 25.05), (121.51, 25.05)]))
+    assert caplog.records == []
+
+
+def test_broken_current_build_is_logged_for_operators(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def broken(build: Path) -> Router:
+        raise RoutingError(f"讀不到路網設定 {build}/valhalla.json")
+
+    api = TestClient(create_app(activated(tmp_path), router_factory=broken))
+    with caplog.at_level(logging.ERROR, logger="engine.app"):
+        api.post("/match", json=body([(121.5, 25.05), (121.51, 25.05)]))
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
+
+@pytest.mark.valhalla
+def test_next_match_uses_the_new_build_after_a_switch(tmp_path: Path, grid_config: Path) -> None:
+    api = client(tmp_path, grid_config)
+    request = body(densify(grid_point(0, 1), grid_point(6, 1), n=24))
+    assert api.post("/match", json=request).json()["data_version"] == "20261010T000000Z"
+
+    run_build(DataLayout(tmp_path), tmp_path / "x.pbf", "def", "20261011T000000Z", lambda pbf, d: None, lambda d: [])
+
+    response = api.post("/match", json=request)
+    assert response.status_code == 200
+    assert response.json()["data_version"] == "20261011T000000Z"
+    assert api.get("/status").json()["data"]["build_id"] == "20261011T000000Z"
+
+
 @pytest.mark.valhalla
 def test_outside_taiwan_is_400(tmp_path: Path, grid_config: Path) -> None:
     response = client(tmp_path, grid_config).post("/match", json=body([(130.0, 30.0), (130.1, 30.0)]))
@@ -115,6 +146,16 @@ def test_invalid_input_is_422(tmp_path: Path, payload: dict) -> None:
     response = TestClient(create_app(tmp_path)).post("/match", json=payload)
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], list)
+
+
+def test_validation_errors_are_capped(tmp_path: Path) -> None:
+    """壞點成千上萬時只回前 20 筆，不然一個請求能換回幾十 MB 的回應。"""
+    bad_stroke = {"points": [[121.5, 25.05, 3.0]] * 100}  # 每個點都多一個座標 → 每點一筆錯誤
+    response = TestClient(create_app(tmp_path)).post("/match", json={"strokes": [bad_stroke] * 5})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert len(detail) == 20
+    assert [item["loc"][:5] for item in detail[:2]] == [["body", "strokes", 0, "points", 0], ["body", "strokes", 0, "points", 1]]
 
 
 def test_validation_errors_do_not_echo_input(tmp_path: Path) -> None:

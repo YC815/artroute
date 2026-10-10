@@ -21,20 +21,20 @@ class MatchRequest(BaseModel):
 
 class RouteOut(BaseModel):
     points: list[LonLatPair]
-    length_m: float
+    length_m: float = Field(ge=0)
 
 
 class SegmentOut(BaseModel):
     kind: Literal["stroke", "detour", "connector"]
     stroke_index: int | None
     points: list[LonLatPair]
-    length_m: float
+    length_m: float = Field(ge=0)
 
 
 class ScoreOut(BaseModel):
-    coverage: int
-    cleanliness: int
-    overall: int
+    coverage: int = Field(ge=0, le=100)
+    cleanliness: int = Field(ge=0, le=100)
+    overall: int = Field(ge=0, le=100)
 
 
 class WarningOut(BaseModel):
@@ -47,7 +47,7 @@ class MatchResponse(BaseModel):
     route: RouteOut
     segments: list[SegmentOut]
     score: ScoreOut
-    target_length_m: float
+    target_length_m: float = Field(ge=0)
     warnings: list[WarningOut]
     data_version: str
 
@@ -60,3 +60,27 @@ class BuildInfo(BaseModel):
 
 class StatusResponse(BaseModel):
     data: BuildInfo | None
+
+
+class ErrorDetail(BaseModel):
+    """領域錯誤的 detail；warnings 只有 no_route 會帶。"""
+
+    code: Literal["outside_taiwan", "too_small", "no_route", "no_data", "timeout"]
+    message: str
+    warnings: list[WarningOut] | None = None
+
+
+class ErrorResponse(BaseModel):
+    detail: ErrorDetail
+
+
+class ValidationIssue(BaseModel):
+    type: str
+    loc: list[str | int]
+    msg: str
+
+
+class ValidationErrorResponse(BaseModel):
+    """請求格式錯誤（FastAPI 的 422 陣列形式）；每筆只有 type / loc / msg，最多 20 筆。"""
+
+    detail: list[ValidationIssue]

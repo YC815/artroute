@@ -24,17 +24,56 @@
         "title": "BuildInfo",
         "type": "object"
       },
-      "HTTPValidationError": {
+      "ErrorDetail": {
+        "description": "領域錯誤的 detail；warnings 只有 no_route 會帶。",
         "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
+          "code": {
+            "enum": [
+              "outside_taiwan",
+              "too_small",
+              "no_route",
+              "no_data",
+              "timeout"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WarningOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
           }
         },
-        "title": "HTTPValidationError",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
         "type": "object"
       },
       "MatchRequest": {
@@ -88,6 +127,7 @@
             "type": "array"
           },
           "target_length_m": {
+            "minimum": 0.0,
             "title": "Target Length M",
             "type": "number"
           },
@@ -113,6 +153,7 @@
       "RouteOut": {
         "properties": {
           "length_m": {
+            "minimum": 0.0,
             "title": "Length M",
             "type": "number"
           },
@@ -144,14 +185,20 @@
       "ScoreOut": {
         "properties": {
           "cleanliness": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Cleanliness",
             "type": "integer"
           },
           "coverage": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Coverage",
             "type": "integer"
           },
           "overall": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Overall",
             "type": "integer"
           }
@@ -176,6 +223,7 @@
             "type": "string"
           },
           "length_m": {
+            "minimum": 0.0,
             "title": "Length M",
             "type": "number"
           },
@@ -269,15 +317,25 @@
         "title": "StrokeIn",
         "type": "object"
       },
-      "ValidationError": {
+      "ValidationErrorResponse": {
+        "description": "請求格式錯誤（FastAPI 的 422 陣列形式）；每筆只有 type / loc / msg，最多 20 筆。",
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ValidationErrorResponse",
+        "type": "object"
+      },
+      "ValidationIssue": {
+        "properties": {
           "loc": {
             "items": {
               "anyOf": [
@@ -289,24 +347,24 @@
                 }
               ]
             },
-            "title": "Location",
+            "title": "Loc",
             "type": "array"
           },
           "msg": {
-            "title": "Message",
+            "title": "Msg",
             "type": "string"
           },
           "type": {
-            "title": "Error Type",
+            "title": "Type",
             "type": "string"
           }
         },
         "required": [
+          "type",
           "loc",
-          "msg",
-          "type"
+          "msg"
         ],
-        "title": "ValidationError",
+        "title": "ValidationIssue",
         "type": "object"
       },
       "WarningOut": {
@@ -412,15 +470,53 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "圖形不在台灣範圍內（outside_taiwan）"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Match Match Post"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "圖形太小、找不到路線，或請求格式錯誤"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "路網資料尚未就緒（no_data）"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "吸附超過時間上限（timeout）"
           }
         },
         "summary": "Match"

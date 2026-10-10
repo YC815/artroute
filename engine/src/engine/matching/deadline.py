@@ -16,3 +16,7 @@ class Deadline:
     def check(self) -> None:
         if self._clock() > self._end:
             raise MatchTimeout("吸附超過時間上限")
+
+    def remaining(self) -> float:
+        """距離到期還有幾秒；到期後為 0（給 acquire(timeout=...) 這類不接受負數的等待用）。"""
+        return max(0.0, self._end - self._clock())
