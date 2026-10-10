@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from engine.matching.compose import Part, compose
 from engine.matching.deadline import Deadline
+from engine.matching.join import adjacent, connect
 from engine.matching.score import Score, score
 from engine.matching.stroke import match_stroke
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment
@@ -83,8 +84,28 @@ def _check_inside_taiwan(strokes: list[StrokeInput]) -> None:
         raise OutsideTaiwan("圖形不在台灣範圍內")
 
 
-def _closes(chain: list[Segment]) -> bool:
-    return haversine_m(chain[-1].points[-1], chain[0].points[0]) <= JOIN_TOLERANCE_M
+def _stitch_closed(
+    router: MatchRouter, deadline: Deadline, chains: list[list[Segment]]
+) -> tuple[list[list[Segment]], bool]:
+    """封閉筆畫：照筆畫順序把相鄰的 chain 接起來（connect：相鄰直接串，否則 connector＋裁切重試，與串接器同一套規則）。
+
+    回傳 (chains, closed)。全部接上、而且最後一點與第一點相鄰 → 一條 chain、closed=True。
+    收尾只接受相鄰、不另外補 route：只有一個部件時那段路沒有用，只會讓路線變長。
+    中間有接不上的地方 → 從那裡斷開；最後一條與第一條相鄰就合成一條（最後一條在前），
+    斷點只剩真正接不上的地方，不會在收尾處多出一個部件（star@taipei_daan@r30）。
+    """
+    runs = [chains[0]]
+    for chain in chains[1:]:
+        merged = connect(router, deadline, runs[-1], chain, "connector", None)
+        if merged is None:
+            runs.append(chain)
+        else:
+            runs[-1] = merged
+    if len(runs) == 1:
+        return runs, adjacent(runs[0], runs[0])
+    if adjacent(runs[-1], runs[0]):
+        return [runs[-1] + runs[0], *runs[1:-1]], False
+    return runs, False
 
 
 def _check_continuous(segments: list[Segment]) -> None:
@@ -114,6 +135,7 @@ def _match_parts(
     """逐筆畫吸附。回傳 (部件, 每個部件所屬的筆畫索引, 吸附階段的警告)。
 
     部件一律取自吸附結果的 chain（端點在道路上），不用原始輸入點。
+    封閉筆畫的 chain 先依筆畫順序接回（_stitch_closed）。
     """
     parts: list[Part] = []
     owners: list[int] = []
@@ -123,9 +145,11 @@ def _match_parts(
             router, target, stroke_index=index, search_radius_m=radius, min_piece_m=2 * radius, deadline=deadline
         )
         warnings.extend(matched.warnings)
-        closed = strokes[index].closed and len(matched.chains) == 1 and _closes(matched.chains[0])
-        parts.extend(Part(chain, closed) for chain in matched.chains)
-        owners.extend(index for _ in matched.chains)
+        chains, closed = matched.chains, False
+        if strokes[index].closed and chains:
+            chains, closed = _stitch_closed(router, deadline, chains)
+        parts.extend(Part(chain, closed) for chain in chains)
+        owners.extend(index for _ in chains)
     return parts, owners, warnings
 
 

@@ -11,6 +11,7 @@ from engine.matching.service import (
     OutsideTaiwan,
     StrokeInput,
     TargetTooSmall,
+    _stitch_closed,
     default_search_radius,
     match_shape,
 )
@@ -266,3 +267,99 @@ def test_gap_between_segments_is_an_internal_error_not_a_straight_line(
     with caplog.at_level(logging.ERROR, logger="engine.matching.service"), pytest.raises(DiscontinuousRoute):
         match_shape(FakeRouter(), [StrokeInput(row(121.50, 121.51), False)], search_radius_m=50, deadline=Deadline(30))
     assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
+
+# ---- P1.5 Task 4：封閉筆畫斷成多條 chain 時，照筆畫順序接回 ----
+
+
+def seg(points, kind="stroke", index=0) -> Segment:
+    return Segment(kind, index, points, polyline_length_m(points))
+
+
+class BlockedRouter:
+    """route：起點或終點在 blocked 裡就找不到路，其餘走直線。"""
+
+    def __init__(self, blocked=frozenset()) -> None:
+        self.blocked = blocked
+        self.calls = 0
+
+    def trace(self, points, *, search_radius_m):
+        raise AssertionError("_stitch_closed 不呼叫 trace")
+
+    def route(self, start, end, *, shortest=False):
+        self.calls += 1
+        if start in self.blocked or end in self.blocked:
+            raise RoutingError("blocked")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+SW, SE, NE, NW = (121.52, LAT), (121.53, LAT), (121.53, LAT + 0.01), (121.52, LAT + 0.01)
+BOTTOM = seg([SW, SE])  # 第一條 chain：下緣
+REST = seg([NE, NW, SW])  # 最後一條 chain：上緣與左緣，回到起點（右緣沒吸附到）
+
+
+def test_stitch_merges_the_last_chain_into_the_first_when_the_gap_cannot_be_bridged() -> None:
+    chains, closed = _stitch_closed(BlockedRouter(blocked=frozenset({SE})), Deadline(10), [[BOTTOM], [REST]])
+    assert (chains, closed) == ([[REST, BOTTOM]], False)
+
+
+def test_stitch_bridges_the_gap_and_closes_the_loop() -> None:
+    chains, closed = _stitch_closed(BlockedRouter(), Deadline(10), [[BOTTOM], [REST]])
+    assert closed and len(chains) == 1
+    assert [s.kind for s in chains[0]] == ["stroke", "connector", "stroke"]
+    assert chains[0][1].points == [SE, NE] and chains[0][1].stroke_index is None
+
+
+def test_stitch_leaves_chains_apart_when_nothing_connects() -> None:
+    rest_off = seg([NE, NW, (121.52, LAT + 0.0001)])  # 終點離起點約 11 m：收尾不相鄰
+    chains, closed = _stitch_closed(BlockedRouter(blocked=frozenset({SE})), Deadline(10), [[BOTTOM], [rest_off]])
+    assert (chains, closed) == ([[BOTTOM], [rest_off]], False)
+
+
+def test_stitch_never_adds_a_closing_route_to_a_single_chain() -> None:
+    router = BlockedRouter()
+    loop_off = seg([SW, SE, NE, NW, (121.52, LAT + 0.0001)])
+    assert _stitch_closed(router, Deadline(10), [[loop_off]]) == ([[loop_off]], False)
+    assert router.calls == 0  # 收尾不相鄰時不補 route
+    loop = seg([SW, SE, NE, NW, SW])
+    assert _stitch_closed(router, Deadline(10), [[loop]]) == ([[loop]], True)
+
+
+def test_stitch_merges_only_the_breaks_that_connect() -> None:
+    first, middle, last = seg([SW, SE]), seg([NE, NW]), seg([NW, SW])  # 下緣、上緣、左緣
+    # 右緣（SE → NE）接不上；上緣 → 左緣相鄰；左緣回到起點相鄰
+    chains, closed = _stitch_closed(BlockedRouter(blocked=frozenset({SE})), Deadline(10), [[first], [middle], [last]])
+    assert (chains, closed) == ([[middle, last, first]], False)
+
+
+class RejectingDetourRouter:
+    """trace：有點落在 box（經緯度範圍）裡就失敗，其餘原樣回傳；route：直線，長度一律回 1 m。
+    所以 box 那段的繞路都被 MIN_LENGTH_RATIO 拒絕、筆畫在那裡斷開（ledger L34）；connector 不看長度，接得上。"""
+
+    def __init__(self, box: tuple[float, float, float, float]) -> None:
+        self.box = box
+
+    def _inside(self, point) -> bool:
+        lon0, lat0, lon1, lat1 = self.box
+        return lon0 <= point[0] <= lon1 and lat0 <= point[1] <= lat1
+
+    def trace(self, points, *, search_radius_m):
+        if any(self._inside(p) for p in points):
+            raise RoutingError("box")
+        return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
+
+    def route(self, start, end, *, shortest=False):
+        return RouteResult(points=[start, end], length_km=0.001)
+
+
+def test_closed_stroke_broken_by_a_rejected_detour_is_still_a_loop() -> None:
+    square = [SW, SE, NE, NW]
+    approach = row(121.50, 121.525, LAT - 0.005)  # 終點正對方形下緣中點
+    router = RejectingDetourRouter(box=(121.529, LAT + 0.004, 121.531, LAT + 0.006))  # 右緣中段
+    strokes = [StrokeInput(approach, False), StrokeInput(square, True)]
+    result = match_shape(router, strokes, search_radius_m=50, deadline=Deadline(30))
+    assert [(w.stroke_index, w.code) for w in result.warnings] == [(1, "partial")]
+    assert_joins_within_tolerance(result.segments)
+    loop = [p for s in result.segments if s.stroke_index == 1 for p in s.points]
+    # 接回成圈之後可以旋轉：從離前一段最近的地方進（舊版是兩個開放部件，只能從角落 SW 進，約 505 m 外）
+    assert haversine_m(loop[0], (121.525, LAT)) < 100
