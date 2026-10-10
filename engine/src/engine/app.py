@@ -132,7 +132,8 @@ def create_app(
     def match(request: MatchRequest, deadline: Annotated[Deadline, Depends(start_deadline)]) -> MatchResponse:
         # 期限在請求進 app、排進 threadpool 之前就起算，所以 threadpool 的排隊時間與等名額的時間都算在內。
         # 不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
-        # 最壞情況：到期後最多再等一次進行中的 Valhalla 呼叫。
+        # 最壞情況：到期後再等一次進行中的 Valhalla 呼叫；排隊請求超過 threadpool（預設 40 條）時，
+        # 已完成的回應序列化也要排隊，再多出排隊請求的處理時間（實測 100 並發、1 s 期限約 1.7 s）。
         if not admission.acquire(timeout=deadline.remaining()):
             raise _error(504, "timeout", TIMEOUT_MESSAGE)
         try:
