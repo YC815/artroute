@@ -11,6 +11,7 @@ from engine.matching.service import (
     OutsideTaiwan,
     StrokeInput,
     TargetTooSmall,
+    _rematcher,
     _stitch_closed,
     default_search_radius,
     match_shape,
@@ -390,15 +391,85 @@ def test_open_stroke_drawn_away_from_the_route_is_rematched_backwards() -> None:
     assert result.warnings == []
 
 
+class TracingRouter:
+    """包住真的 Router，記下每一次 trace 的輸入。"""
+
+    def __init__(self, inner: Router) -> None:
+        self.inner = inner
+        self.traced: list[list[tuple[float, float]]] = []
+
+    def trace(self, points, *, search_radius_m):
+        self.traced.append(list(points))
+        return self.inner.trace(points, search_radius_m=search_radius_m)
+
+    def route(self, start, end, *, shortest=False):
+        return self.inner.route(start, end, shortest=shortest)
+
+
 @pytest.mark.valhalla
 def test_reversed_open_stroke_never_rides_a_oneway_backwards(grid_config: Path) -> None:
     # 筆畫 1 沿單行道順向（往東）畫；前一筆停在 (2, 1)，反向（從 (2, 0) 進）比較近，會被選上。
-    # 反向是重新吸附：逆向的 trace 失敗，改成合法繞路，絕不逆騎
+    # 反向只做一次整段 trace：逆向走不通（RoutingError），就照畫的方向騎那條單行道，不改成繞路、不逆騎
     strokes = [
         StrokeInput(densify(grid_point(4, 1), grid_point(2, 1), n=8), closed=False),
         StrokeInput(densify(grid_point(0, 0), grid_point(2, 0), n=8), closed=False),
     ]
-    result = match_shape(Router(grid_config), strokes, search_radius_m=50, deadline=Deadline(30))
-    assert "detour" in {s.kind for s in result.segments if s.stroke_index == 1}  # 確實選了反向
+    router = TracingRouter(Router(grid_config))
+    result = match_shape(router, strokes, search_radius_m=50, deadline=Deadline(30))
+    reverse_tries = [
+        t for t in router.traced if haversine_m(t[0], grid_point(2, 0)) < 5 and haversine_m(t[-1], grid_point(0, 0)) < 5
+    ]
+    assert len(reverse_tries) == 1  # 確實選了反向，而且只試一次
+    second = [s for s in result.segments if s.stroke_index == 1]
+    assert [s.kind for s in second] == ["stroke"]  # 留下乾淨的正向吸附，不被繞路取代
+    assert sum(s.length_m for s in second) == pytest.approx(404, abs=20)
     assert not rides_westward_on_row(result.route_points, row=0, col_min=0, col_max=2)
     assert_joins_within_tolerance(result.segments)
+    assert result.score.coverage >= 90
+
+
+# ---- P1.5 Task 9 fix 1（裁決 A5）：反向重新吸附 = 整段只 trace 一次，失敗就照畫的方向走 ----
+
+
+class RefusesEastward(TraceLog):
+    """121.52 以東是往西的單行道：從 121.52 往東的 trace 一律失敗。"""
+
+    def trace(self, points, *, search_radius_m):
+        if points[0][0] >= 121.52 - 1e-9 and points[0][0] < points[-1][0]:
+            self.traced.append(list(points))
+            raise RoutingError("逆向")
+        return super().trace(points, search_radius_m=search_radius_m)
+
+
+def test_rematch_is_one_whole_trace_of_the_reversed_stroke() -> None:
+    router = TraceLog()
+    targets = [row(121.50, 121.51), row(121.53, 121.52)]
+    result = _rematcher(router, targets, [0, 1], 50, Deadline(30))(1)
+    assert len(router.traced) == 1
+    assert router.traced[0][0] == pytest.approx((121.52, LAT)) and router.traced[0][-1] == pytest.approx((121.53, LAT))
+    assert result is not None and [(s.kind, s.stroke_index) for s in result] == [("stroke", 1)]
+
+
+def test_rematch_gives_up_after_the_single_failed_trace() -> None:
+    router = TraceLog()
+    router.bad = (121.0, 122.0)  # 任何 trace 都失敗：舊版會對半切到底、再補 detour
+    targets = [row(121.50, 121.51), row(121.53, 121.52)]
+    assert _rematcher(router, targets, [0, 1], 50, Deadline(30))(1) is None
+    assert len(router.traced) == 1
+
+
+def test_rematch_does_not_swallow_the_deadline() -> None:
+    targets = [row(121.50, 121.51), row(121.53, 121.52)]
+    with pytest.raises(MatchTimeout):
+        _rematcher(TraceLog(), targets, [0, 1], 50, Deadline(-1))(1)
+
+
+def test_failed_reverse_trace_rides_the_drawn_direction_without_bisecting() -> None:
+    strokes = [StrokeInput(row(121.50, 121.51), False), StrokeInput(row(121.53, 121.52), False)]
+    router = RefusesEastward()
+    result = match_shape(router, strokes, search_radius_m=50, deadline=Deadline(30))
+    second = [s for s in result.segments if s.stroke_index == 1]
+    assert [s.kind for s in second] == ["stroke"]
+    assert second[0].points[0][0] == pytest.approx(121.53) and second[-1].points[-1][0] == pytest.approx(121.52)
+    assert len(router.traced) == 3  # 筆畫 0、筆畫 1 正向各一次，加上被拒絕的那一次反向
+    assert result.warnings == []

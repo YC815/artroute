@@ -510,7 +510,9 @@ def test_open_part_is_ridden_backwards_when_that_is_closer() -> None:
 
 def test_reverse_falls_back_to_the_drawn_direction_when_rematch_fails() -> None:
     parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
-    result = compose(StraightRouter(), parts, Deadline(10), RematchSpy(None))
+    spy = RematchSpy(None)
+    result = compose(StraightRouter(), parts, Deadline(10), spy)
+    assert spy.calls == [1]  # 確實選了反向、重新吸附失敗才照畫的方向走
     assert result.segments[-1] == B_DRAWN
     assert_continuous(result.segments)
 

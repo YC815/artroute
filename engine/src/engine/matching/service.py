@@ -7,7 +7,7 @@ from engine.matching.compose import Part, Rematch, compose
 from engine.matching.deadline import Deadline
 from engine.matching.join import adjacent, connect
 from engine.matching.score import Score, score
-from engine.matching.stroke import match_stroke
+from engine.matching.stroke import match_stroke, trace_whole
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
@@ -157,15 +157,16 @@ def _match_parts(
 def _rematcher(
     router: MatchRouter, targets: list[list[LonLat]], owners: list[int], radius: float, deadline: Deadline
 ) -> Rematch:
-    """串接器選了反向時呼叫：把整筆畫的點倒過來重新吸附。只收一條 chain、沒有警告的結果，其餘回傳 None。"""
+    """串接器選了反向時呼叫：把整筆畫的點倒過來，整段只 trace 一次（trace_whole）。
+    逆向走不通（RoutingError，含錯向保護）就回傳 None，部件照畫的方向走；不對半切、不補繞路，
+    不然反向會用一條沒騎到畫的那條街的繞路，換掉乾淨的正向吸附。每個反向部件最多多 1 次 trace。"""
 
     def rematch(part_index: int) -> list[Segment] | None:
         owner = owners[part_index]
-        matched = match_stroke(
-            router, targets[owner][::-1], stroke_index=owner, search_radius_m=radius, min_piece_m=2 * radius,
-            deadline=deadline,
+        backwards = trace_whole(
+            router, targets[owner][::-1], stroke_index=owner, search_radius_m=radius, deadline=deadline
         )
-        return matched.chains[0] if len(matched.chains) == 1 and not matched.warnings else None
+        return None if backwards is None else [backwards]
 
     return rematch
 

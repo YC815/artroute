@@ -65,6 +65,25 @@ def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
     return None if result is None else segment_from("detour", ctx.stroke_index, result)
 
 
+def _trace(
+    router: MatchRouter, deadline: Deadline, piece: list[LonLat], stroke_index: int, search_radius_m: float
+) -> Segment | None:
+    """piece 整段 trace 一次：成功回傳 stroke 段，RoutingError（含錯向、吸附不完整）回傳 None。先檢查期限。"""
+    deadline.check()
+    try:
+        return segment_from("stroke", stroke_index, router.trace(piece, search_radius_m=search_radius_m))
+    except RoutingError:
+        return None
+
+
+def trace_whole(
+    router: MatchRouter, points: list[LonLat], *, stroke_index: int, search_radius_m: float, deadline: Deadline
+) -> Segment | None:
+    """整個筆畫只 trace 一次（和 match_stroke 的整段 trace 同一條路）：不對半切、不補繞路，失敗回傳 None。
+    串接器反向重新吸附用它：逆向走不通就放棄，不拿繞路換掉畫的那條街。"""
+    return _trace(router, deadline, densify(points), stroke_index, search_radius_m)
+
+
 def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
     """回傳依序排列的結果：trace 成功的 Segment，或切到最小仍失敗的 _Failed。這裡不呼叫 route。
 
@@ -72,11 +91,9 @@ def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
     兩半在切點自然接上，不必補橋（品質調查根因 2：兩半各自吸附，切點兩側常落在不同的路）。
     左半最後是失敗的小段時，右半照原本的輸入點開始。
     """
-    ctx.deadline.check()
-    try:
-        return [segment_from("stroke", ctx.stroke_index, ctx.router.trace(piece, search_radius_m=ctx.search_radius_m))]
-    except RoutingError:
-        pass
+    whole = _trace(ctx.router, ctx.deadline, piece, ctx.stroke_index, ctx.search_radius_m)
+    if whole is not None:
+        return [whole]
     if len(piece) < 3 or polyline_length_m(piece) <= ctx.min_piece_m:
         return [_Failed(piece[0], piece[-1], polyline_length_m(piece))]
     mid = len(piece) // 2
