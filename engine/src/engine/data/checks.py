@@ -50,19 +50,29 @@ def _expressway_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]
     failures: list[str] = []
     errors: list[str] = []
     succeeded = 0
-    for way, first, last in checkable:
-        # 兩個方向都要查：只查 first->last 會漏掉 oneway=-1 這類只在逆向才走上快速道路的情形
-        for label, start, end in (("順向", first, last), ("逆向", last, first)):
-            try:
-                route = router.route(start, end)
-            except RoutingError as error:
-                errors.append(f"way {way.id} {label}：{error}")
-                continue
-            succeeded += 1
-            used = {e.way_id for e in router.edges(route.points)} & denied_ids
-            if used:
-                failures.append(f"自行車路線（{ZHOUMEI_EXPRESSWAY_NAME} way {way.id} {label}）使用了被禁行的快速道路 way {sorted(used)}")
-    if not succeeded:  # 沒有任何一條路線算得出來，就沒有東西能證明路線避開了快速道路
+    # 兩個方向都要查：只查 first->last 會漏掉 oneway=-1 這類只在逆向才走上快速道路的情形
+    directions = [(f"way {way.id} {label}", start, end)
+                  for way, first, last in checkable
+                  for label, start, end in (("順向", first, last), ("逆向", last, first))]
+    for name, start, end in directions:
+        try:
+            route = router.route(start, end)
+        except RoutingError as error:
+            errors.append(f"{name}：{error}")
+            continue
+        try:
+            edges = router.edges(route.points)
+        except RoutingError as error:  # 有路線卻配不出經過哪些路段，就無法證明它避開了快速道路；記成失敗，其他路線照查
+            failures.append(f"{ZHOUMEI_EXPRESSWAY_NAME} {name} 的自行車路線無法判斷經過哪些路段：{error}")
+            continue
+        if not edges:  # 起訖吸附到同一點的零長度路線沒有經過任何路段，不能當成避開快速道路的證據
+            errors.append(f"{name}：路線長度為 0")
+            continue
+        succeeded += 1
+        used = {e.way_id for e in edges} & denied_ids
+        if used:
+            failures.append(f"自行車路線（{ZHOUMEI_EXPRESSWAY_NAME} {name}）使用了被禁行的快速道路 way {sorted(used)}")
+    if not succeeded and not failures:  # 沒有任何一條路線能證明避開了快速道路
         raise RoutingError("；".join(errors))
     return failures
 

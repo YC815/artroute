@@ -67,6 +67,19 @@ def test_edges_report_way_ids_and_heading(router: Router) -> None:
     assert all(e.way_id not in (CONTRAFLOW_WAY_ID, MOTORWAY_WAY_ID) for e in edges)
 
 
+def test_edges_tolerate_repeated_vertex(router: Router) -> None:
+    # edge_walk 逐點比對路段形狀：重複一個點（route 端點落在路口時會出現）就整條配不上
+    along = router.route(grid_point(0, 1), grid_point(6, 1)).points
+    assert router.edges([along[0], *along]) == router.edges(along)
+
+
+def test_edges_of_zero_length_route_is_empty(router: Router) -> None:
+    # 兩端都在不能騎的快速道路上，吸附到同一個路口：零長度路線，沒有經過任何路段
+    route = router.route(grid_point(1, 3), grid_point(2, 3))
+    assert len(set(route.points)) == 1
+    assert router.edges(route.points) == []
+
+
 def test_trace_far_from_roads_raises(router: Router) -> None:
     with pytest.raises(RoutingError):
         router.trace(densify((121.0, 24.0), (121.001, 24.0)))

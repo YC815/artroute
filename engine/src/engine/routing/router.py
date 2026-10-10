@@ -141,10 +141,16 @@ class Router:
         return _route_result(response)
 
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]:
+        # edge_walk 把折線的點逐一對上路段形狀的點，多一個重複點整條就配不上。
+        # route 在 node_snap_tolerance=0 時，端點剛好落在路口會重複路口那個點；兩端吸附到同一點時整條只剩一個點。
+        # 重複點沒有任何幾何資訊，去掉不影響結果；只剩一個點代表沒有經過任何路段
+        shape = [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
+        if len(shape) < 2:
+            return []
         response = self._call(
             "trace_attributes",
             {
-                "shape": _locations(points),
+                "shape": _locations(shape),
                 "costing": COSTING,
                 "shape_match": "edge_walk",
                 "filters": {"attributes": ["edge.way_id", "edge.begin_heading"], "action": "include"},

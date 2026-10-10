@@ -77,3 +77,34 @@ def test_trace_request_has_no_node_snap_tolerance(monkeypatch: pytest.MonkeyPatc
     method, request = _captured_request(monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=50.0))
     assert method == "trace_route"
     assert "node_snap_tolerance" not in str(request)
+
+
+def _edges_requests(monkeypatch: pytest.MonkeyPatch, points: list[tuple[float, float]]) -> tuple[list, list[dict]]:
+    """不載入 Valhalla：回傳 edges() 的結果與它送出的所有 trace_attributes 請求。"""
+    router = Router.__new__(Router)
+    seen: list[dict] = []
+
+    def fake_call(method: str, request: dict) -> dict:
+        assert method == "trace_attributes"
+        seen.append(request)
+        return {"edges": [{"way_id": 7, "begin_heading": 90.0}]}
+
+    monkeypatch.setattr(router, "_call", fake_call)
+    return router.edges(points), seen
+
+
+def test_edges_drops_consecutive_repeated_vertices(monkeypatch: pytest.MonkeyPatch) -> None:
+    # route 的端點落在路口時，折線會重複路口那個點；edge_walk 遇到重複點就整條配不上
+    _, seen = _edges_requests(monkeypatch, [A, A, B, B, C, C])
+    assert [(p["lon"], p["lat"]) for p in seen[0]["shape"]] == [A, B, C]
+
+
+def test_edges_keeps_non_consecutive_revisits(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, seen = _edges_requests(monkeypatch, [A, B, A])
+    assert [(p["lon"], p["lat"]) for p in seen[0]["shape"]] == [A, B, A]
+
+
+def test_edges_of_zero_length_polyline_is_empty_without_calling_valhalla(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 起訖吸附到同一點的零長度路線沒有經過任何路段；edge_walk 對這種折線會直接失敗
+    edges, seen = _edges_requests(monkeypatch, [A, A])
+    assert edges == [] and seen == []
