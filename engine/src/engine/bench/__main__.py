@@ -31,7 +31,9 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR", "/data")))
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--force", action="store_true", help="搭配 --update-baseline：有案例失敗時仍寫入")
+    parser.add_argument(
+        "--force", action="store_true", help="搭配 --update-baseline：有案例失敗時仍寫入（安全斷言沒過的案例除外）"
+    )
     args = parser.parse_args(argv)
     if args.force and not args.update_baseline:
         parser.error("--force 只能搭配 --update-baseline")

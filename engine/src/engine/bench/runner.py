@@ -18,7 +18,7 @@ from engine.routing.router import EdgeInfo, LonLat, RoutingError
 # 超過的案例在表格標 SLOW，僅供參考，不算退步。
 PRODUCTION_TIMEOUT_MS = 5000
 
-# 安全斷言沒過時 CaseResult.error 的值：案例算失敗（不能更新 baseline、原本成功就算退步）
+# 安全斷言沒過時 CaseResult.error 的值：一律算退步（不看 baseline），也不能寫進 baseline（--force 也一樣）
 UNSAFE = "UnsafeRoute"  # 相鄰路段有缺口（會畫成直線），或經過被禁行的 way
 UNDETERMINED = "SafetyUndetermined"  # edges() 配不出經過哪些路段：無法證明安全，不算通過
 SAFETY_ERRORS = frozenset({UNSAFE, UNDETERMINED})  # 安全斷言沒過：一律算退步，也不能寫進 baseline
