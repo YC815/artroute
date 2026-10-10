@@ -8,6 +8,7 @@ import type { MatchResponse, MatchWarning } from "@/lib/engine/contract";
 import { buildGpx, gpxFileName } from "@/lib/export/gpx";
 import { formatDataVersion, formatDistance } from "@/lib/format";
 import type { LonLat } from "@/lib/shape/types";
+import { canRetry } from "@/lib/studio/state";
 
 type Props = {
   targetLengthM: number | null;
@@ -19,6 +20,8 @@ type Props = {
   downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
   warnings: readonly MatchWarning[];
+  /** 重送目前的請求（錯誤旁的「重新吸附」）。 */
+  onRetry: () => void;
   /** 圖形不能吸附的原因（例如筆畫太多）。 */
   problem: string | null;
   dataVersion: string | null;
@@ -62,7 +65,8 @@ const LEGEND = [
 ];
 
 export function InfoPanel(props: Props) {
-  const { targetLengthM, response, error, pending, downloadable, warnings, problem, dataVersion, workName } = props;
+  const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion, workName } =
+    props;
   const score = response?.score;
   const headingId = useId();
   return (
@@ -88,6 +92,11 @@ export function InfoPanel(props: Props) {
           {problem && <p>{problem}</p>}
           {error && <p>{error.message}</p>}
         </div>
+        {canRetry(error) && (
+          <Button size="sm" variant="outline" className="self-start" disabled={pending} onClick={onRetry}>
+            重新吸附
+          </Button>
+        )}
         <div aria-live="polite">
           {warnings.length > 0 && (
             <ul className="flex flex-col gap-1">

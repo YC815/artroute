@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchMatch, type MatchError } from "@/lib/engine/client";
 import type { MatchRequest, MatchResponse } from "@/lib/engine/contract";
 import { requestKey } from "@/lib/match/request";
@@ -16,8 +16,11 @@ export type LiveMatch = {
   appliedKey: string | null;
 };
 
-/** useLiveMatch 的回傳值：多一個「目前請求的 key」，和 appliedKey 相等才代表結果是目前這個擺放的。 */
-export type LiveMatchResult = LiveMatch & { currentKey: string | null };
+/**
+ * useLiveMatch 的回傳值：多一個「目前請求的 key」，和 appliedKey 相等才代表結果是目前這個擺放的；
+ * retry 重送目前的請求（見 useLiveMatch）。
+ */
+export type LiveMatchResult = LiveMatch & { currentKey: string | null; retry: () => void };
 
 /** request 為 null（輸入被清空、圖形不合法）時不能再顯示上一次的路線或錯誤。 */
 export function matchForRequest(state: LiveMatch, request: MatchRequest | null): LiveMatch {
@@ -34,6 +37,8 @@ export function matchForRequest(state: LiveMatch, request: MatchRequest | null):
  * - 引擎離線橫幅請看 useEngineStatus().status，不要用這裡的 error 判斷。
  * - tag 跟著 request 送出，結果回來時成為 appliedTag（例如圖形的 key）：呼叫端用它判斷結果屬於哪個圖形，
  *   不能用「結果回來時目前是哪個圖形」推斷（圖形換了、新請求還沒送出時，舊結果可能剛好回來）。
+ * - retry 重送目前的請求：request 沒變，effect 不會重跑，所以用 nonce 觸發；排程器允許失敗的請求再送，
+ *   成功套用過的不會重送（按了也不會白打一次引擎）。
  * - appliedKey 是結果所屬請求的 key，currentKey 是目前請求的 key：兩者相等才代表結果是目前這個擺放的路線。
  *   同一個圖形換了擺放位置，tag 不變、key 會變，所以「能不能下載 GPX」要比 key，不能只看 pending（取消會把 pending 清掉）。
  */
@@ -51,6 +56,7 @@ export function useLiveMatch(
     appliedTag: null,
     appliedKey: null,
   });
+  const [retryNonce, setRetryNonce] = useState(0);
   const schedulerRef = useRef<MatchScheduler | null>(null);
   const onEngineDownRef = useRef(onEngineDown);
 
@@ -79,9 +85,11 @@ export function useLiveMatch(
     const scheduler = schedulerRef.current;
     if (request && enabled) scheduler?.schedule(request, dragging, tag);
     else scheduler?.cancel();
-  }, [request, dragging, enabled, tag]);
+  }, [request, dragging, enabled, tag, retryNonce]);
+
+  const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
 
   // 每個 request 序列化一次（最大的請求約 3 ms），拖曳中也是每次 pointermove 一次
   const currentKey = useMemo(() => (request ? requestKey(request) : null), [request]);
-  return { ...matchForRequest(state, request), currentKey };
+  return { ...matchForRequest(state, request), currentKey, retry };
 }

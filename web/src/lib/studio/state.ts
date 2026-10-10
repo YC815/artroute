@@ -54,6 +54,14 @@ export function visibleOutcome(outcome: Outcome, appliedTag: string | null, key:
   return key !== null && appliedTag === key ? outcome : NOTHING;
 }
 
+/**
+ * 錯誤旁要不要放「重新吸附」：引擎離線（連不上、503）由橫幅的「重試」處理（重新查狀態、恢復後自動重送），
+ * 其他錯誤（504、422、400、502…）停用吸附的橫幅不會出現，只能靠這個按鈕重送同一個請求。
+ */
+export function canRetry(error: MatchError | null): boolean {
+  return error !== null && !error.engineDown;
+}
+
 // 固定的空陣列：沒有 warnings 時每次 render 回傳同一個物件，useMemo 才不會白白重算
 const NO_WARNINGS: readonly MatchWarning[] = [];
 

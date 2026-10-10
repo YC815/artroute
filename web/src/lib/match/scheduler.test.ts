@@ -147,6 +147,28 @@ describe("createMatchScheduler", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("非離線錯誤（例如 504）之後，再排程同一個 request 會重送一次，成功後不再重送（「重新吸附」靠這個）", async () => {
+    const { scheduler, calls, onOutcome } = setup();
+    const timeout: MatchOutcome = {
+      ok: false,
+      error: { status: 504, message: "吸附超過時間上限", warnings: [], engineDown: false },
+    };
+    const r = req(1);
+    scheduler.schedule(r, false);
+    calls[0].resolve(timeout);
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(1));
+
+    scheduler.schedule(r, false); // 重新吸附
+    expect(calls).toHaveLength(2);
+    expect(calls[1].request).toBe(r);
+    calls[1].resolve(OK);
+    await vi.waitFor(() => expect(onOutcome).toHaveBeenCalledTimes(2));
+    expect(onOutcome).toHaveBeenLastCalledWith(OK, null, requestKey(r));
+
+    scheduler.schedule(r, false); // 已成功：再按也不重送
+    expect(calls).toHaveLength(2);
+  });
+
   it("pending：送出時 true，最新的結果套用後 false", async () => {
     const { scheduler, calls, onPendingChange } = setup();
     scheduler.schedule(req(1), false);

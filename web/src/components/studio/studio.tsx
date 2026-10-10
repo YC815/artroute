@@ -61,7 +61,7 @@ export function Studio() {
     [shape, problem, transform],
   );
   // 每個請求送出時帶著圖形的 key：結果只在屬於目前圖形時顯示（圖形換了、新結果回來前不顯示舊圖形的路線）
-  const { response, error, pending, appliedTag, appliedKey, currentKey } = useLiveMatch(
+  const { response, error, pending, appliedTag, appliedKey, currentKey, retry } = useLiveMatch(
     request,
     dragging,
     engine.status === "ok",
@@ -122,6 +122,7 @@ export function Studio() {
           error={visible.error}
           pending={pending}
           downloadable={downloadable}
+          onRetry={retry}
           warnings={warnings}
           problem={problem}
           dataVersion={engine.dataVersion}

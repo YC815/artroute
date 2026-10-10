@@ -257,6 +257,38 @@ test("圖片抽不到輪廓：顯示說明，調整後恢復", async ({ page }) 
   await expect(page.getByTestId("target-stroke").first()).toBeAttached();
 });
 
+test("吸附失敗（504）：錯誤旁有「重新吸附」，按了重送同一個請求並畫出路線", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/status of 504.*\/api\/match/);
+  await mockMapAndStatus(page);
+  const bodies: string[] = [];
+  await page.route("**/api/match", async (route) => {
+    bodies.push(route.request().postData() ?? "");
+    if (bodies.length === 1) {
+      return route.fulfill({
+        status: 504,
+        json: { detail: { code: "timeout", message: "吸附超過時間上限，請縮小圖形或減少筆畫" } },
+      });
+    }
+    await route.fulfill({ json: matchResponseFor(matchRequestSchema.parse(route.request().postDataJSON())) });
+  });
+
+  await page.goto("/");
+  // 預設文字的第一次吸附就逾時：顯示錯誤，沒有路線，不能下載；引擎沒有離線，橫幅不出現
+  await expect(page.getByText("吸附超過時間上限，請縮小圖形或減少筆畫")).toBeVisible();
+  await expect(page.getByTestId("map")).toHaveAttribute("data-route-segments", "0");
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeDisabled();
+  await expect(page.getByText("路線引擎暫時無法使用")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "重新吸附" }).click();
+  await expect(page.getByTestId("map")).not.toHaveAttribute("data-route-segments", "0");
+  await expect(page.getByText("吸附超過時間上限，請縮小圖形或減少筆畫")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重新吸附" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+  // 重送的是同一個請求，而且只多送一次
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toBe(bodies[0]);
+});
+
 test("引擎離線：顯示橫幅、停用吸附，不送 /api/match", async ({ page, allowedErrors }) => {
   // 不 mock /api/status：走真的 standalone 代理，playwright.config.ts 把 ENGINE_URL 設成空字串，代理回 503
   allowedErrors.push(/status of 503.*\/api\/status/);

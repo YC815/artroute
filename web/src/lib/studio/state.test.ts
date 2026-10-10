@@ -9,6 +9,7 @@ import { createMatchScheduler } from "@/lib/match/scheduler";
 import type { Point, Shape, Stroke } from "@/lib/shape/types";
 import {
   canDownloadGpx,
+  canRetry,
   gpxName,
   isSavable,
   outcomeWarnings,
@@ -136,6 +137,29 @@ describe("canDownloadGpx", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("canRetry", () => {
+  const failure = (status: number, engineDown: boolean): MatchError => ({
+    status,
+    message: "失敗",
+    warnings: [],
+    engineDown,
+  });
+
+  it("非離線錯誤（504、422、400、502）可以重新吸附", () => {
+    for (const status of [504, 422, 400, 502]) expect(canRetry(failure(status, false))).toBe(true);
+    expect(canRetry(ERROR)).toBe(true);
+  });
+
+  it("引擎離線（503、連不上）由橫幅的重試處理，不放這個按鈕", () => {
+    expect(canRetry(failure(503, true))).toBe(false);
+    expect(canRetry(failure(0, true))).toBe(false);
+  });
+
+  it("沒有錯誤時沒有按鈕", () => {
+    expect(canRetry(null)).toBe(false);
   });
 });
 
