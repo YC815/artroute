@@ -121,11 +121,20 @@ class FailingRouter(BlockingRouter):
         raise RoutingError("no path")
 
 
-def test_every_trim_combination_is_tried_at_most_once() -> None:
+def test_only_the_side_that_missed_is_trimmed() -> None:
+    # 起點沒接上：只裁前段尾巴，不去試後段開頭（每次 route 都要時間，接不上的部件會把所有組合試完）
+    router = BlockingRouter(blocked_start=BEFORE.points[-1])
+    joined = join(router, Deadline(10), BEFORE, AFTER, "connector", None)
+    assert joined is not None and joined.after == AFTER
+    assert len(router.calls) == 2
+    assert all(end == AFTER.points[0] for _, end in router.calls)
+
+
+def test_no_path_trims_both_sides_one_step_at_a_time() -> None:
+    # 找不到路時看不出是哪一端的問題：兩端一起往內裁，裁到底就放棄
     router = FailingRouter()
     assert join(router, Deadline(10), BEFORE, AFTER, "connector", None) is None
-    steps = len(TRIM_STEPS_M)
-    assert len(router.calls) == (steps + 1) ** 2  # 直接接＋只裁開頭＋只裁尾巴＋兩邊都裁
+    assert len(router.calls) == 1 + len(TRIM_STEPS_M)
     assert len(set(router.calls)) == len(router.calls)
 
 
