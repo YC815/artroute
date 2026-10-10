@@ -134,7 +134,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 
 在地圖階段，把各部件的吸附結果串成**一條連續路線**：
 
-- 決策變數：部件的順序、每個部件的方向、封閉圈的進出點（沿圈每隔約 50m 一個候選點）。
+- 決策變數：部件的順序、每個部件的方向、封閉圈的進出點（沿圈每隔 max(50 m, 周長 / 24) 一個候選點，所以大圈最多約 24 個）。
 - 連接線：用 Valhalla 算兩點之間的合法自行車路線，並取 `alternates` 增加選擇。
 - 目標函數：最小化「**多出來的可見線條長度**」，也就是連接線中沒有和已畫路線重疊的部分（以 15m 緩衝區判定），總長度只當次要權重。
 - 起點限制：自動搜尋時，起點必須落在圈內，而且越靠近中心越好。
@@ -142,7 +142,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 - **P1 的範圍（v1）**：
   - 開放筆畫只吸出一條完整的 chain（單一 chain、沒有警告）時可以反向走：串接器選了反向，就把整筆畫的點倒過來重新吸附（不是把現成路線倒過來，所以單行道照樣遵守）。重新吸附只對整段 trace 一次，不對半切、不補繞路，每個被選上反向的部件最多多 1 次 trace；這一次 trace 失敗（含逆向被截斷、吸附不完整）就照畫的方向走。第 0 個部件（規劃的起點）固定正向；封閉筆畫、斷成多個部件的開放筆畫不反向。
   - 組裝從錨點開始：錨點是吸附後 `stroke` 段長度（貼著畫線騎的公尺數）合計最長的部件，繞路（`detour`）與連接線不算，長度差不到 0.1 m 視為一樣長、取索引小的。排在錨點後面的部件依規劃順序接在尾端，前面的由近到遠接在開頭；原定那一端接不上就試另一端，兩端都接不上才丟。順序與進出點的規劃不變。
-  - 封閉部件可以從圈上任一點進出：沿吸附後的圈每 50 m 一個候選點，進出點相同（騎完一圈回到原點）。
+  - 封閉部件可以從圈上任一點進出：沿吸附後的圈每隔 max(50 m, 周長 / 24) 一個候選點（大圈的 2-opt 才不會失控），進出點相同（騎完一圈回到原點）。
   - 封閉筆畫斷成多條 chain 時，先依筆畫順序把相鄰的 chain 接起來（與 connector 相同的規則）；全部接上、而且首尾相鄰（≤ 1 m，接縫的轉彎能直接騎）才是圈；收尾不另外補路。中間有接不上的地方就從那裡斷開，最後一條與第一條相鄰時合成一條（斷點只剩真正接不上的地方）。
   - 順序與進出點的選擇用直線距離估計（貪婪＋2-opt），選定後才對實際採用的接點呼叫 `route()` 取得連接線（`kind=connector`）。
   - 「與已畫路線重疊」的連接線成本折減、`alternates` 留到基準測試證明有需要時再做（YAGNI）；`connector` 長度照實計入評分的「乾淨」指標。
@@ -229,12 +229,15 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
    - `name` 含「快速道路」「快速公路」「快速路」或「高架」；
    - `ref` 是快速公路編號：台61、台61甲、台62、台62甲、台64、台65、台66、台68、台72、台74、台76、台78、台82、台84、台86、台88（含 `;` 分隔的多值）。OSM 實際多寫成不帶「台」的 `61`、`62甲`，兩種寫法（含「臺」）都算。
    - 另有 `engine/src/engine/data/bicycle_overrides.toml`：`deny`／`allow` 兩個 way id 清單，最後套用，供人工修正誤判。
-   - 修補過的 way id 清單存在 build 目錄（`bicycle_denied_ways.json`），供驗證查詢使用。
+   - 修補過的 way id 清單存在 build 目錄（`bicycle_denied_ways.json`，每筆帶 `highway`），供驗證查詢與 bench 的安全斷言使用；樓梯（下一條）也在這份清單裡。
+   - **樓梯**（使用者決定「禁走樓梯」）：所有 `highway=steps` 一律加上 `bicycle=no`，沒有例外（有牽引道的樓梯、`allow` 清單也不例外）。移除會重新放行的 tag，做法同快速道路（`bicycle:*`、`cycleway*`、`oneway:bicycle`、`vehicle:forward／backward`，另加實測會蓋過 `bicycle=no` 的 `service=driveway`）。
+   - **人行道**（使用者決定「盡量避免」）：Valhalla 3.9.1 對沒有自行車 tag 的 `footway`／`pedestrian`（含 `footway=sidewalk`）本來就禁止自行車，不處理；已經放行的（`bicycle=yes`／`designated` 等，或 `cycleway` 放行）標成 `bicycle=dismount`，仍可通行，但預設成本以牽車速度計價。`dismount` 只影響預設成本的 `route`；shortest 與 `trace`（map_snap）都不看，所以吸附實際上避不開人行道，政策見 §8 第 19 列。
 3. 在 `/data/builds/<日期>/` 建出 Valhalla tiles 和可騎道路 FlatGeobuf。建圖在子程序中以低優先權執行，同一時間只允許一個建圖。
 4. 執行固定的驗證查詢：
    - 洲美街單行段不可逆向（P0 已有）；
    - 快速道路不可騎：取被標記的 way 中名稱為「洲美快速道路」者的首尾節點，bicycle `route` 必須存在、而且不得使用任何被標記的 way；
-   - 標記數量合理：被標記的 way 數必須大於 0（資料或規則壞掉時明確失敗）。
+   - 樓梯不可騎：被標記的樓梯數必須大於 0；依 way id 等距抽 20 條，樓梯兩端各往外延伸 15 m 當起訖（`route` 的起訖不會吸附到樓梯上，從樓梯端點出發即使沒修補也不會走樓梯），兩個方向的 bicycle `route` 都不得使用任何被標記的 way；
+   - 標記數量合理：被標記的快速道路 way 數必須大於 0（資料或規則壞掉時明確失敗）。
    - 以上查詢對預設的 bicycle route 與吸附實際使用的 shortest 設定（§4.3）各跑一次；shortest 的失敗訊息前綴「（shortest）」。
 5. 通過後，原子切換 `/data/current` symlink；各 worker 在下一個請求時自動換用新 `Router`（§3）；保留兩版以便回滾。任何一步失敗，舊資料照常服務。
 
@@ -252,7 +255,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 - 同時量測粗篩排名和精算排名的相關性，作為調整 K 值的依據（P2）。
 - 真實路網太大，不進 CI：基準測試在 m1 的引擎容器內執行（`python -m engine.bench`），結果與 repo 內的 `engine/src/engine/bench/baseline.json` 比較，分數退步超過門檻（預設 3 分）即以非零狀態結束。CI 只跑合成地圖上的同一套流程，確保基準測試程式本身沒壞。
 - 每個案例都檢查安全不變式：相鄰路段 ≤ 1 m、不經過被禁行的 way、每個接點的轉彎 Valhalla 會直接騎。沒過（`UnsafeRoute`／`SafetyUndetermined`）一律算退步、以非零狀態結束，不論 baseline 怎麼寫；`--update-baseline --force` 也不會寫入。
-- 另外記錄每個案例走在 footway、steps、parking_aisle 上的公尺數（只量測，不影響路線；數字是 Valhalla edge 全長的加總，起訖的路段與切點會略為高估）。
+- 另外記錄每個案例走在 footway、steps、parking_aisle 上的公尺數。這是量測值，不是門檻：數字是 Valhalla edge 全長的加總，起訖的路段與切點會略為高估，edge_walk 遇到兩條 way 共用同一對端點時也可能配錯 way。steps 必須是 0（樓梯在禁行清單裡，經過就違反安全斷言）；footway 的政策見 §8 第 19 列，目前不設上限；parking_aisle 只量測。
 
 ## 7. 分期
 
@@ -284,7 +287,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 
 ### P1.5 吸附品質（2026-10-11）
 
-由使用者決定；執行中遇到的問題，在使用者授權 Claude 自行決策的期間以裁決 A1、A3、A4、A5 處理（下表標明），都可以被推翻。理由的數字：「原型」是品質調查在 `b436026` 上的實測（`.superpowers/sdd/2026-10-11-p1-engine/quality-investigation-report.md`），「檢查點 A」是正式程式在 m1 上的實測（`docs/p1-5-quality-findings.md`；T2–T7 是依序累加各項修訂的量測階段，T3 錨點、T4 封閉筆畫縫合、T5 shortest、T6 半徑、T7 串接，T7+fix 是 T7 加上錨點改取 `stroke` 長度；分數寫成 overall/coverage）。檢查點 A 在反向吸附（V）與接點轉彎檢查之前量，這兩項還沒有正式程式的實測，只列原型數字。最終部署後的前後對照見 findings。
+由使用者決定；執行中遇到的問題，在使用者授權 Claude 自行決策的期間以裁決 A1、A3、A4、A5 處理（下表標明），都可以被推翻。理由的數字：「原型」是品質調查在 `b436026` 上的實測（`docs/p1-quality-investigation.md`），「檢查點 A」是正式程式在 m1 上的實測（`docs/p1-5-quality-findings.md`；T2–T7 是依序累加各項修訂的量測階段，T3 錨點、T4 封閉筆畫縫合、T5 shortest、T6 半徑、T7 串接，T7+fix 是 T7 加上錨點改取 `stroke` 長度；分數寫成 overall/coverage）。檢查點 A 在反向吸附（V）與接點轉彎檢查之前量，這兩項沒有各自的前後對照，只列原型數字；第 19 列量測表的 base 已經含這兩項，是它們的累積結果。最終部署後的前後對照見 findings。
 
 | # | 修訂 | 理由（量測） | 被否決的替代方案 |
 |---|---|---|---|
@@ -296,6 +299,25 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 | 12 | 開放筆畫可以反向走（重新吸附）（§4.4） | 開放筆畫只能照畫的方向走：品質調查 base 的 `hi@taipei_daan` connector 3 條共 5231 m，佔多出長度的 49%；C＋R035＋S 再加 V 平均 54.0 → 54.4。檢查點 A 之前沒有 V，正式程式的實測在部署後 | 把現成路線倒過來：會逆騎單行道 |
 | 13 | 反向重新吸附只對整段 trace 一次，失敗就照畫的方向走（§4.4；裁決 A5） | 計畫原案是用 `match_stroke` 重新吸附（可對半切、補繞路），反向結果沒有任何檢查。審查在合成的單行道網格上量到：反向 trace 失敗 → 對半切 → 一條全是 `detour` 的反向本體換掉乾淨的正向 `stroke`，被反向的部件是錨點時 coverage/overall 100/50 → 0/0，最壞 trace 2 → 17 次。改成單次 trace 後保留正向（`stroke` 約 404 m），trace 2 → 3 次；每個反向部件最多多 1 次 trace。限制：反向結果與正向用同一個門檻接受，近平手時仍多花 1 次 trace | 反向也走完整分治（含繞路）：上述退步 |
 | 14 | 接點轉角 > 30° 時用 Valhalla 確認能直接騎，不能騎視同沒接上；探針跨過路段邊界，新接點 8 m 內的既有接點一併重量（§4.3） | 接點轉彎沒人檢查：品質調查 base 的 855 個接點中 57 個轉角 > 30°、2 個 Valhalla 不會直接騎（`match_rect`）；立體交叉在平面上是同一點。只看新接點兩側時，儲存庫的 10,000 組固定種子 fuzz 有 201 組輸出 Valhalla 不會直接騎的接點，加上跨段探針、鄰近接點重量與折回規則後 0 組。本機網格一次檢查約 0.85 ms；台灣路網上的延遲與 bench 的不能騎接點數在部署後量 | 只在 bench 量、不在引擎擋：會輸出不能騎的轉彎。不先看轉角、每個接點都 route：route 呼叫多一倍，轉角小的接點量不出差別。輸出前對整條路線再驗一遍：多 N 次 route，違反延遲預算，改由 bench 驗每個接點 |
-| 15 | bench：安全斷言沒過一律失敗（`--force` 也不寫）、接點轉彎計數、量 footway／steps／parking_aisle（§6.3） | P1 重新審查：寫進 baseline 的 `UnsafeRoute` 之後永遠抓不到。品質調查 base 的 `square@taipei_riverside` 走了 footway 1255 m、steps 16 m、parking_aisle 573 m；檢查點 A 的 25 案例合計（只量測）：footway／steps／parking_aisle 34447／53／2807 m（T2）→ 30423／316／1428 m（T7+fix） | 安全斷言併進 baseline 比較（舊行為）：baseline 裡的失敗不會再被抓到 |
+| 15 | bench：安全斷言沒過一律失敗（`--force` 也不寫）、接點轉彎計數、量 footway／steps／parking_aisle（§6.3） | P1 重新審查：寫進 baseline 的 `UnsafeRoute` 之後永遠抓不到。品質調查 base 的 `square@taipei_riverside` 走了 footway 1255 m、steps 16 m、parking_aisle 573 m；檢查點 A 的 25 案例合計（量測值，不是門檻）：footway／steps／parking_aisle 34447／53／2807 m（T2）→ 30423／316／1428 m（T7+fix）。steps 必須是 0，由第 18 列的樓梯禁行保證；footway 的政策是第 19 列 | 安全斷言併進 baseline 比較（舊行為）：baseline 裡的失敗不會再被抓到 |
 | 16 | 拖曳中最多一筆吸附請求在途，不取消；回來後才補送最新位置，放開或微調時才取消（§4.2；裁決 A4） | 檢查點 A（T7+fix）：bench 單次吸附 ms 中位數 282、最大 1118，預設文字 median 290–298 ms，離舊做法每 300 ms 取消前一筆的節奏只差 2–10 ms。單次吸附超過 300 ms 的圖形，每一筆都會在回來前被下一筆取消，拖曳整段看不到更新（由節奏推論，沒有用真實瀏覽器實測；單元測試用假時鐘，另有 1500 組隨機序列的不變式測試） | 維持每 300 ms 取消舊請求（原 §4.2） |
 | 17 | 檢查點 A 的驗收規則（裁決 A1）：重現原型已知取捨的 coverage 下降直接接受；`letter_l@taipei_daan` overall 44 → 34 是明確例外（裁決 A3） | A1：安全斷言全過、單案例 overall 下降 ≤ 3 且 coverage 下降 ≤ 8、整體 overall 中位數與平均都高於 baseline、`star@taipei_daan@r30` coverage ≥ 50、延遲在預算內（預設文字 median ≤ 300 ms、最慢案例 ≤ 2500 ms）。T7+fix 的下降清單 13 條（11 個案例）全部被接受，一條依 A3 例外、其餘符合 A1：overall 中位數 46 → 60、平均 48.1 → 53.6，`star@taipei_daan@r30` coverage 69，預設文字 median 290–298 ms，最慢 1118 ms，安全斷言不安全 0、無法判斷 0。例外：`letter_l@taipei_daan` baseline 的 coverage 是 0（只畫了片段），現在畫出完整的 L（coverage 0 → 67），代價是 overall 44 → 34（cleanliness 87 → 0）和一條 3027 m 的 connector：part0 終點 → part1 起點 14.7 m 的缺口正向 route 無解、反向有 603 m（推測是單行道，沒有查道路屬性）；這個案例 overall 最多可降 10 | 每次 coverage 下降都停下來等使用者決定（計畫原案；使用者不在時改由規則裁決）。退回 T3 之前只接原定那端的做法：這個案例只畫片段（coverage 0）。把斷成多個部件的開放筆畫整條反向：才是根本做法，延到 P2 |
+| 18 | 樓梯一律標成 `bicycle=no`，沒有例外；`validate_build` 加樓梯檢查（§6.1） | 使用者決定（2026-10-11）：「禁走樓梯」。Valhalla 3.9.1 預設讓自行車走樓梯：品質調查 base 的 `square@taipei_riverside` 走了 steps 16 m，bench 25 案例合計 307 m。台灣資料共 16,359 條樓梯被標記。m1 上量測（scratch build，不啟用）：25 案例 overall 與禁行前完全相同（coverage 只有 2 案差 1），steps 307 → 0 m（改走別條路），安全斷言不安全 0、無法判斷 0；`validate_build` 回 `[]`（0.7 s）。檢查不是空洞的：同一份禁行清單拿到未修補的正式 build 上，預設成本 0 項、shortest 抓到 4 項（20 條抽樣裡 3 條的路線經過樓梯） | 只靠成本：預設成本本來就重罰樓梯（0.2 km 樓梯對 2.4 km 繞路仍繞路），但繞路用的 shortest 只看長度，會直接走樓梯。留例外（有牽引道的樓梯、`allow` 清單）：使用者說禁走，不留例外 |
+| 19 | 人行道盡量避免，但不禁止：資料只把 Valhalla 本來就放行的 `footway`／`pedestrian`（4,994 條）標成 `bicycle=dismount`；吸附維持 (a)，繞路、橋接、connector 仍用 shortest（§6.1；裁決 A6）。使用者仍可改選禁止（S） | 使用者決定（2026-10-11）：「人行道盡量避免」。實測（Valhalla 3.9.1，m1 同一份 pbf，量測表見下）：① 沒有自行車 tag 的 `footway`／`pedestrian`（120,429 條）本來就不能騎；bench 走到的 30.6 km 人行道全是明確放行自行車的共用人行道（`footway=sidewalk`＋`bicycle=yes` 21.1 km、`designated` 5.1 km，其餘約 4.3 km），都合法。② `dismount` 只有預設成本會看，shortest 與 trace（map_snap）都不看；人行道公尺數的 76% 來自 trace（stroke 23.4 km、detour 4.1 km、connector 3.1 km），繞路的成本設定最多只能影響約 7 km。③ (b) 繞路改回預設成本只減 12.4%，卻讓 A1 不通過；(b2) 同樣不通過。④ (S) 禁止可減 86%，但 overall 中位數 62 → 58、平均 53.6 → 51.0，`square@taipei_daan@r30` 72 → 55，預設文字約慢 10%，而且是禁止，不是「盡量避免」。選 (a)：不合法的人行道本來就不會走，剩下的是明確允許自行車的人行道；要再避開只剩禁止，要付品質的代價 | (b) 繞路、橋接、connector 改回預設成本，(b2) 再加 `use_roads=1.0`：A1 不通過。(S) 禁止自行車本來能走的人行道：品質與延遲的代價，而且尚未評估連通性（例如橋上只有人行道可騎、車道又是 `bicycle=no`）；使用者想禁止時再做（`docs/backlog.md`）。照字面規則（沒有明確允許的都標 `dismount`）：會把約 12 萬條本來不能騎的人行道打開，而真正被走的人行道都有明確的允許 tag，一條也不會被避開 |
+
+#### 第 19 列的量測：人行道的四種做法
+
+m1、同一份 pbf（build `20261010T183449Z`）上建 scratch build（不啟用，量完刪除）。base 是樓梯與人行道處理之前的程式，跑在正式 build 上。(a)：資料修補＋繞路、橋接、connector 維持 shortest；(b)：資料修補＋繞路、橋接、connector 改回預設 bicycle 成本（接點轉彎的探針仍用 shortest）；(b2)：(b) 再加 `use_roads=1.0`；(S)：`footway=sidewalk` 且自行車本來能走的改標 `bicycle=no`，其餘同 (a)。
+
+| 變體 | footway m | steps m | overall 中位數／平均 | A1 | 對 committed baseline 的最大降幅 | 預設文字 median（4 次） | bench 最慢 |
+|---|---|---|---|---|---|---|---|
+| base | 30,580 | 307 | 62／53.6 | 通過 | −10（`letter_l@taipei_daan`，A3 例外） | 291–299 ms | 1134 ms |
+| (a) | 30,766 | 0 | 62／53.6 | 通過 | 同 base | 303–309 ms | 1114 ms |
+| (b) | 26,801（−12.4%） | 0 | 59／52.4 | 不通過 | −5（`square@taipei_daan@r30`）、`hi@taipei_daan@r30` −4 | 310–315 ms | 1128 ms |
+| (b2) | 26,301（−14.0%） | 0 | 59／51.8 | 不通過 | −10（`hi@taipei_daan`）、`hi@taipei_daan@r30` −4 | 306–312 ms | 1123 ms |
+| (S) | 4,167（−86.4%） | 0 | 58／51.0 | 不通過 | −17（`square@taipei_daan@r30`），另有 2 案 coverage −9 | 319–331 ms | 1045 ms |
+
+- committed baseline 的 overall 中位數 46、平均 48.1；5 個變體的安全斷言都是 25/25 成功、不安全 0、無法判斷 0。
+- (a) 對 base：25 案例 overall 完全相同，人行道沒有下降（+186 m：樓梯禁行後改道）。
+- (a) 的預設文字 median 比 base 多約 4%，程式的吸附部分相同，差異來自路網（樓梯禁行改道）或 tile 快取狀態（推測）；已高於 300 ms 的預算，部署後以最終程式重量。
+- (S) 只量了 bench，沒有評估連通性。
