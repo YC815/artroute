@@ -19,6 +19,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13.1",
     "osmium>=4.3.1",
     "pytest>=9.1.1",
 ]
