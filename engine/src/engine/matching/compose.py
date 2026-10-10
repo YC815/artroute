@@ -2,6 +2,7 @@
 
 順序與封閉圈的進出點用直線距離估計（貪婪 + 2-opt），選定後只對實際用到的接點呼叫 route。
 排序是純 Python 的 CPU 計算：貪婪每接一個部件、2-opt 每一列各檢查一次期限與取消。
+組裝從最長的部件開始往兩端接（見 compose）。
 """
 
 from collections.abc import Iterator
@@ -9,8 +10,8 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from engine.matching.deadline import Deadline
-from engine.matching.join import join
-from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment
+from engine.matching.join import connect
+from engine.matching.types import MatchRouter, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 
@@ -160,30 +161,56 @@ def _two_opt(options: list[list[_Option]], order: list[int], deadline: Deadline)
     return order
 
 
-def _append(router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment]) -> bool:
-    """把 body 接在 route 後面，必要時先補 connector（join：兩端都是部件端點，已經在路上，容許誤差 JOIN_TOLERANCE_M；
-    接不上先裁掉 route 尾巴、body 開頭再試）。接不上回傳 False，route 不變。"""
-    if route and haversine_m(route[-1].points[-1], body[0].points[0]) > JOIN_TOLERANCE_M:
-        joined = join(router, deadline, route[-1], body[0], "connector", None)
+ANCHOR_TIE_M = 0.1  # 部件長度差不到這麼多視為一樣長（浮點誤差）
+
+
+def _anchor(parts: list[Part]) -> int:
+    """錨點：吸附後最長的部件，路線從它開始組裝，所以它一定不會被丟掉。
+    一樣長的取索引小的：部件都一樣長時維持舊版以第 0 個部件為準。"""
+    lengths = [sum(s.length_m for s in part.segments) for part in parts]
+    longest = max(lengths)
+    return next(i for i, length in enumerate(lengths) if longest - length < ANCHOR_TIE_M)
+
+
+def _attach(
+    router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment], at_end: bool
+) -> list[Segment] | None:
+    """body 接在 route 的尾端（at_end）或開頭；騎乘方向不變，接不上回傳 None。"""
+    if at_end:
+        return connect(router, deadline, route, body, "connector", None)
+    return connect(router, deadline, body, route, "connector", None)
+
+
+def _assemble(
+    router: MatchRouter, deadline: Deadline, bodies: dict[int, list[Segment]], order: list[int], anchor: int
+) -> Composition:
+    """從錨點開始組裝：order 裡排在錨點後面的依序接在尾端，排在前面的由近到遠接在開頭。
+    原定那一端接不上就試另一端，兩端都接不上才丟：一個出不去的端點只擋住接在它後面的那一次。"""
+    k = order.index(anchor)
+    route, dropped = bodies[anchor], []
+    sides = [(i, True) for i in order[k + 1 :]] + [(i, False) for i in reversed(order[:k])]
+    for i, at_end in sides:
+        joined = _attach(router, deadline, route, bodies[i], at_end)
         if joined is None:
-            return False
-        route[-1:] = [joined.before, joined.link]
-        body = [joined.after, *body[1:]]
-    route.extend(body)
-    return True
+            joined = _attach(router, deadline, route, bodies[i], not at_end)
+        if joined is None:
+            dropped.append(i)
+        else:
+            route = joined
+    return Composition(segments=route, dropped=sorted(dropped))
 
 
 def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Composition:
-    """依序串起各部件；兩端相距超過 JOIN_TOLERANCE_M 就用 route 補 connector，補不起來的部件丟棄。"""
+    """依規劃的順序串起各部件；順序與封閉圈進出點的規劃不變。
+
+    組裝從錨點（最長的部件）開始往兩端接（_assemble），接不上的部件丟棄。
+    舊版固定從第 0 個部件往後接：它的尾巴 route 不出去時，其餘部件全部被丟掉（ledger L64）。
+    沒有部件被丟掉時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同。
+    """
     if not parts:
         return Composition(segments=[], dropped=[])
     options = [_options(part) for part in parts]
     order = _two_opt(options, _greedy(options, deadline), deadline)
     _, chosen = _plan(options, order)
-    segments: list[Segment] = []
-    dropped: list[int] = []
-    for i in order:
-        body = rotate(parts[i].segments, chosen[i].rotation) if parts[i].closed else parts[i].segments
-        if not _append(router, deadline, segments, body):
-            dropped.append(i)
-    return Composition(segments=segments, dropped=sorted(dropped))
+    bodies = {i: rotate(parts[i].segments, chosen[i].rotation) if parts[i].closed else parts[i].segments for i in order}
+    return _assemble(router, deadline, bodies, order, _anchor(parts))

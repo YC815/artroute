@@ -1,4 +1,4 @@
-"""把兩段吸附結果接起來：吸附（補橋）與串接（connector）共用。
+"""把兩段吸附結果接起來：吸附（補橋）、串接（connector）與封閉筆畫收尾共用。
 
 接點只容許 JOIN_TOLERANCE_M。直接接不上時（常見原因：端點落在 route 用不了的 edge 上，route 會把它改吸到別處），
 沿既有路段把沒接上的那一端往內裁一級（20／50／100 m）再接：起點沒接上就裁前段尾巴、終點沒接上就裁後段開頭，
@@ -68,3 +68,29 @@ def join(
         if step == (t, h):  # 沒接上的那一端已經裁到底
             return None
         t, h = step
+
+
+def adjacent(left: list[Segment], right: list[Segment]) -> bool:
+    """left 的終點與 right 的起點相距 ≤ JOIN_TOLERANCE_M：可以直接串，不補 link。"""
+    return haversine_m(left[-1].points[-1], right[0].points[0]) <= JOIN_TOLERANCE_M
+
+
+def connect(
+    router: MatchRouter,
+    deadline: Deadline,
+    left: list[Segment],
+    right: list[Segment],
+    kind: SegmentKind,
+    stroke_index: int | None,
+) -> list[Segment] | None:
+    """把 right 接在 left 後面，回傳新的 list（不改動傳入的 list）。
+
+    相鄰就直接串；否則用 join 補一段 kind 的 link（必要時裁 left 的尾巴、right 的開頭）。接不上回傳 None。
+    吸附（補橋）、串接（connector）、封閉筆畫收尾都走這裡：接點規則只有這一份。
+    """
+    if adjacent(left, right):
+        return [*left, *right]
+    joined = join(router, deadline, left[-1], right[0], kind, stroke_index)
+    if joined is None:
+        return None
+    return [*left[:-1], joined.before, joined.link, joined.after, *right[1:]]

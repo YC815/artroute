@@ -18,14 +18,11 @@ def seg(points, kind="stroke", index=0) -> Segment:
 
 
 class StraightRouter:
-    def __init__(self, fail_to=None) -> None:
-        self.fail_to = fail_to
+    def __init__(self) -> None:
         self.calls: list[tuple] = []
 
     def route(self, start, end):
         self.calls.append((start, end))
-        if self.fail_to is not None and end == self.fail_to:
-            raise RoutingError("no path")
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
 
     def trace(self, points, *, search_radius_m):
@@ -66,9 +63,9 @@ def test_closed_part_entered_at_point_nearest_previous_end() -> None:
 
 
 def test_unconnectable_part_is_dropped() -> None:
-    a = Part([seg([(121.50, LAT), (121.51, LAT)], index=0)], closed=False)
+    a = Part([seg([(121.48, LAT), (121.51, LAT)], index=0)], closed=False)
     b = Part([seg([(121.52, LAT), (121.53, LAT)], index=1)], closed=False)
-    result = compose(StraightRouter(fail_to=(121.52, LAT)), [a, b], Deadline(10))
+    result = compose(IslandStraightRouter(island=frozenset(b.segments[0].points)), [a, b], Deadline(10))
     assert result.dropped == [1]
     assert [s.stroke_index for s in result.segments] == [0]
 
@@ -207,10 +204,10 @@ def test_collapsed_route_is_failed_connection_not_zero_length_connector() -> Non
 
 
 def test_dropped_part_does_not_break_following_connections() -> None:
-    a = Part([seg([(121.50, LAT), (121.51, LAT)], index=0)], closed=False)
+    a = Part([seg([(121.48, LAT), (121.51, LAT)], index=0)], closed=False)
     bad = Part([seg([(121.52, LAT), (121.53, LAT)], index=1)], closed=False)
     c = Part([seg([(121.60, LAT), (121.61, LAT)], index=2)], closed=False)
-    result = compose(StraightRouter(fail_to=(121.52, LAT)), [a, bad, c], Deadline(10))
+    result = compose(IslandStraightRouter(island=frozenset(bad.segments[0].points)), [a, bad, c], Deadline(10))
     assert result.dropped == [1]
     assert_continuous(result.segments)
     assert [s.stroke_index for s in result.segments if s.kind == "stroke"] == [0, 2]
@@ -372,3 +369,89 @@ def test_connector_retries_with_trimmed_head_before_dropping_a_part() -> None:
     assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
     tail = result.segments[2].points
     assert b_points[len(b_points) - len(tail):] == tail and len(tail) < len(b_points)  # 只裁掉開頭
+
+
+# ---- P1.5 Task 3：錨點改成最長的部件、兩端往外接、接不上原定那一端就試另一端（ledger L64） ----
+
+
+class IslandStraightRouter(StraightRouter):
+    """起點或終點在 island 裡的 route 一律找不到路（那個部件兩頭都出不去、也進不來）；其餘走直線。"""
+
+    def __init__(self, island=frozenset()) -> None:
+        super().__init__()
+        self.island = island
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if start in self.island or end in self.island:
+            raise RoutingError("island")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+class NoExitRouter(StraightRouter):
+    """從 stuck 出發的 route 一律找不到路（像 star@taipei_daan@r30 那條 chain 的尾巴）；其餘走直線。"""
+
+    def __init__(self, stuck) -> None:
+        super().__init__()
+        self.stuck = stuck
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if start == self.stuck:
+            raise RoutingError("no exit")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def strokes_in(result) -> list[int]:
+    return [s.stroke_index for s in result.segments if s.kind == "stroke"]
+
+
+def test_longest_part_is_kept_when_part_zero_is_an_island() -> None:
+    small = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    big = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    router = IslandStraightRouter(island=frozenset(small.points))
+    result = compose(router, [Part([small], False), Part([big], False)], Deadline(10))
+    assert result.dropped == [0]  # 舊版從第 0 個部件往後接：丟掉的是 2 km 的 big
+    assert result.segments == [big]
+
+
+def test_part_that_cannot_be_reached_on_its_planned_side_is_attached_at_the_other_end() -> None:
+    # 第 0 個部件的尾巴出不去（star@taipei_daan@r30）：舊版會把其餘部件全部丟掉
+    first = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    rest = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    result = compose(NoExitRouter(stuck=first.points[-1]), [Part([first], False), Part([rest], False)], Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [1, 0]  # 錨點（最長）先騎，接不上它開頭的部件改接在它後面
+    assert_continuous(result.segments)
+
+
+def test_a_stuck_tail_after_the_anchor_does_not_drop_the_parts_after_it() -> None:
+    anchor = seg([(121.50, LAT), (121.53, LAT)], index=0)
+    stuck = seg([(121.54, LAT), (121.55, LAT)], index=1)
+    after = seg([(121.56, LAT), (121.57, LAT)], index=2)
+    parts = [Part([anchor], False), Part([stuck], False), Part([after], False)]
+    result = compose(NoExitRouter(stuck=stuck.points[-1]), parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [2, 0, 1]
+    assert_continuous(result.segments)
+
+
+def test_parts_before_the_anchor_are_joined_in_riding_order() -> None:
+    # 特性測試（舊版也會過）：沒有部件被丟掉時，順序與接點都跟舊版相同
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    b = seg([(121.52, LAT), (121.55, LAT)], index=1)  # 最長：錨點
+    c = seg([(121.56, LAT), (121.57, LAT)], index=2)
+    result = compose(StraightRouter(), [Part([a], False), Part([b], False), Part([c], False)], Deadline(10))
+    assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke", "connector", "stroke"]
+    assert strokes_in(result) == [0, 1, 2]
+    connector = result.segments[1]
+    assert connector.points[0] == a.points[-1] and connector.points[-1] == b.points[0]  # 方向仍是 a → b
+
+
+def test_parts_of_equal_length_keep_part_zero_as_anchor() -> None:
+    # 兩段的長度只差浮點誤差：視為一樣長，取索引小的
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    b = seg([(121.60, LAT), (121.61, LAT)], index=1)
+    router = IslandStraightRouter(island=frozenset(b.points))
+    result = compose(router, [Part([a], False), Part([b], False)], Deadline(10))
+    assert result.dropped == [1]

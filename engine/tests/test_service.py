@@ -89,7 +89,7 @@ def test_all_strokes_failing_raises_with_warnings(grid_config: Path) -> None:
 
 
 class FakeRouter:
-    """trace：落在 bad 經度區間的點就失敗；route：直接回兩端點，但終點落在 dead 區間就失敗。"""
+    """trace：落在 bad 經度區間的點就失敗；route：直接回兩端點，但起點或終點落在 dead 區間就失敗（孤島：出不去也進不來）。"""
 
     def __init__(self, bad: tuple[float, float] | None = None, dead: tuple[float, float] | None = None) -> None:
         self.bad, self.dead = bad, dead
@@ -102,7 +102,7 @@ class FakeRouter:
         return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
 
     def route(self, start, end):
-        if self.dead and self.dead[0] <= end[0] <= self.dead[1]:
+        if self.dead and any(self.dead[0] <= lon <= self.dead[1] for lon, _ in (start, end)):
             raise RoutingError("dead")
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
 
@@ -113,7 +113,7 @@ def row(lon_from: float, lon_to: float, lat: float = LAT, n: int = 8) -> list[tu
 
 def test_dropped_stroke_warns_no_route_with_its_own_index() -> None:
     # 第 1 筆畫（121.52 一帶）trace 成功，但串接器的 route 到不了它：整筆畫被丟掉
-    strokes = [StrokeInput(row(121.50, 121.51), False), StrokeInput(row(121.52, 121.53), False)]
+    strokes = [StrokeInput(row(121.46, 121.51), False), StrokeInput(row(121.52, 121.53), False)]
     result = match_shape(FakeRouter(dead=(121.52, 121.53)), strokes, search_radius_m=50, deadline=Deadline(30))
     assert [(w.stroke_index, w.code) for w in result.warnings] == [(1, "no_route")]
     assert {s.stroke_index for s in result.segments} == {0}
@@ -159,7 +159,7 @@ def test_expired_deadline_propagates_match_timeout() -> None:
 
 def test_stroke_with_skipped_piece_and_all_chains_dropped_reports_only_no_route() -> None:
     # 筆畫 1 中間有一段找不到路（吸附階段記 partial），剩下的 chain 又全被串接器丟掉：只留最嚴重的 no_route
-    strokes = [StrokeInput(row(121.50, 121.51), False), StrokeInput(row(121.52, 121.56, n=40), False)]
+    strokes = [StrokeInput(row(121.46, 121.51), False), StrokeInput(row(121.52, 121.56, n=40), False)]
     router = FakeRouter(bad=(121.535, 121.545), dead=(121.52, 121.56))
     result = match_shape(router, strokes, search_radius_m=50, deadline=Deadline(30))
     assert [(w.stroke_index, w.code) for w in result.warnings] == [(1, "no_route")]

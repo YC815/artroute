@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from itertools import groupby
 
 from engine.matching.deadline import Deadline
-from engine.matching.join import join
-from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, legal_route, segment_from
+from engine.matching.join import connect
+from engine.matching.types import MatchRouter, MatchWarning, Segment, legal_route, segment_from
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import MAX_SNAP_GAP_RADII, MIN_LENGTH_RATIO, LonLat, RoutingError
 
@@ -118,21 +118,8 @@ def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | Non
     return pieces
 
 
-def _append(ctx: _Context, chain: list[Segment], segment: Segment) -> bool:
-    """把 segment 接在 chain 後面；差超過 JOIN_TOLERANCE_M 就補一條橋接線（必要時裁掉 chain 尾巴、segment 開頭）。
-    接不上回傳 False，chain 不變。"""
-    if chain and haversine_m(chain[-1].points[-1], segment.points[0]) > JOIN_TOLERANCE_M:
-        joined = join(ctx.router, ctx.deadline, chain[-1], segment, "detour", ctx.stroke_index)
-        if joined is None:
-            return False
-        chain[-1:] = [joined.before, joined.link]
-        segment = joined.after
-    chain.append(segment)
-    return True
-
-
 def _link(ctx: _Context, pieces: list[Segment | None]) -> list[list[Segment]]:
-    """依序串成 chain；接不上就斷開，斷開的部分交給串接器。
+    """依序串成 chain（connect：相鄰直接串，否則補橋＋裁切重試）；接不上就斷開，斷開的部分交給串接器。
 
     None（繞不出來或被拒絕的繞路）一律斷開，不能改用橋接線補同一個缺口：
     否則被 MIN_LENGTH_RATIO 拒絕的塌縮、切角繞路會換個名字被收下（ledger L34）。
@@ -141,8 +128,13 @@ def _link(ctx: _Context, pieces: list[Segment | None]) -> list[list[Segment]]:
     for segment in pieces:
         if segment is None:
             chains.append([])
-        elif not _append(ctx, chains[-1], segment):
+            continue
+        chain = chains[-1]
+        joined = connect(ctx.router, ctx.deadline, chain, [segment], "detour", ctx.stroke_index) if chain else [segment]
+        if joined is None:
             chains.append([segment])
+        else:
+            chains[-1] = joined
     return [chain for chain in chains if chain]
 
 
