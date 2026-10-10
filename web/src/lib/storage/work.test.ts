@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { STORAGE_KEY, loadWork, saveWork, type SavedWork } from "@/lib/storage/work";
 import type { Point, Stroke } from "@/lib/shape/types";
+import { MAX_SIZE_M, MIN_SIZE_M } from "@/lib/shape/transform";
 
 function memoryStore(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -139,6 +140,68 @@ describe("有限數字", () => {
       const store = memoryStore();
       saveWork(store, { ...TEXT_WORK, transform });
       expect(loadWork(store)).toBeNull();
+    }
+  });
+});
+
+describe("文字來源的內容限制（與 validateText 相同）", () => {
+  it("超長、超過行數、含不支援字元或只有空白的文字回傳 null", () => {
+    for (const text of ["A".repeat(5000), "ABCDEFGHIJK", "A\nB\nC", "A$B", "  "]) {
+      const store = memoryStore();
+      saveWork(store, { ...TEXT_WORK, source: { kind: "text", text, font: "futural" } });
+      expect(loadWork(store)).toBeNull();
+    }
+  });
+
+  it("2 行、每行 10 字以內的文字可以讀回", () => {
+    const work: SavedWork = { ...TEXT_WORK, source: { kind: "text", text: "ABCDEFGHIJ\nKLMNOPQRST", font: "scripts" } };
+    const store = memoryStore();
+    saveWork(store, work);
+    expect(loadWork(store)).toEqual(work);
+  });
+});
+
+describe("擺放的範圍（MapLibre 對緯度超出 ±90 會丟錯）", () => {
+  it("中心點經緯度超出範圍回傳 null", () => {
+    for (const center of [
+      [999, 999],
+      [181, 25],
+      [-181, 25],
+      [121.5, 91],
+      [121.5, -91],
+    ] as const) {
+      const store = memoryStore();
+      saveWork(store, { ...TEXT_WORK, transform: { ...TEXT_WORK.transform, center: [...center] } });
+      expect(loadWork(store)).toBeNull();
+    }
+  });
+
+  it("經緯度剛好在邊界上可以讀回", () => {
+    for (const center of [
+      [180, 90],
+      [-180, -90],
+    ] as const) {
+      const work: SavedWork = { ...TEXT_WORK, transform: { ...TEXT_WORK.transform, center: [...center] } };
+      const store = memoryStore();
+      saveWork(store, work);
+      expect(loadWork(store)).toEqual(work);
+    }
+  });
+
+  it("sizeM 超出 MIN_SIZE_M..MAX_SIZE_M 回傳 null", () => {
+    for (const sizeM of [1e300, MIN_SIZE_M - 1, MAX_SIZE_M + 1]) {
+      const store = memoryStore();
+      saveWork(store, { ...TEXT_WORK, transform: { ...TEXT_WORK.transform, sizeM } });
+      expect(loadWork(store)).toBeNull();
+    }
+  });
+
+  it("sizeM 剛好在 MIN_SIZE_M、MAX_SIZE_M 上可以讀回", () => {
+    for (const sizeM of [MIN_SIZE_M, MAX_SIZE_M]) {
+      const work: SavedWork = { ...TEXT_WORK, transform: { ...TEXT_WORK.transform, sizeM } };
+      const store = memoryStore();
+      saveWork(store, work);
+      expect(loadWork(store)).toEqual(work);
     }
   });
 });

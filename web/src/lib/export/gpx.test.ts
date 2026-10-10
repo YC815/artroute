@@ -61,6 +61,47 @@ describe("buildGpx", () => {
   });
 });
 
+/** XML 1.0 不允許的字元：U+0000–U+0008、U+000B、U+000C、U+000E–U+001F、U+FFFE、U+FFFF（用碼位比對，避免控制字元 regex）。 */
+function hasIllegalXmlChar(text: string): boolean {
+  return [...text].some((c) => {
+    const code = c.codePointAt(0)!;
+    const isControl = code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d;
+    return isControl || code === 0xfffe || code === 0xffff;
+  });
+}
+
+describe("buildGpx 名稱清理", () => {
+  it("去掉 XML 1.0 不允許的控制字元（U+0001 不可原樣輸出）", () => {
+    const gpx = buildGpx([], "A\u0001B");
+    expect(gpx).toContain("<name>AB</name>");
+    expect(hasIllegalXmlChar(gpx)).toBe(false);
+  });
+
+  it("U+0000、U+0008、U+000B、U+000C、U+000E、U+001F、U+FFFE、U+FFFF 都去掉", () => {
+    const illegal = "\u0000\u0008\u000B\u000C\u000E\u001F￾￿";
+    const gpx = buildGpx([], `X${illegal}Y`);
+    expect(gpx).toContain("<name>XY</name>");
+    expect(hasIllegalXmlChar(gpx)).toBe(false);
+  });
+
+  it("換行收成一個空白（兩行文字）", () => {
+    expect(buildGpx([], "A\nB")).toContain("<name>A B</name>");
+  });
+
+  it("所有空白連續出現時收成一個空白，並去掉頭尾", () => {
+    expect(buildGpx([], "  A \t\r\n  B  ")).toContain("<name>A B</name>");
+  });
+
+  it("清理後是空字串就用 artroute", () => {
+    expect(buildGpx([], "\u0001 \n")).toContain("<name>artroute</name>");
+    expect(buildGpx([], "")).toContain("<name>artroute</name>");
+  });
+
+  it("非 ASCII 名稱原樣輸出，不跳脫", () => {
+    expect(buildGpx([], "台北")).toContain("<name>台北</name>");
+  });
+});
+
 describe("gpxFileName", () => {
   it("轉成小寫英數字與 -", () => {
     expect(gpxFileName("I ♥ TAIPEI")).toBe("artroute-i-taipei.gpx");
