@@ -28,10 +28,10 @@ LAT = 25.05
 def test_default_radius_is_clamped() -> None:
     tiny = [StrokeInput([(121.5, LAT), (121.501, LAT)], closed=False)]
     huge = [StrokeInput([(121.0, LAT), (121.5, LAT)], closed=False)]
-    mid = [StrokeInput([(121.50, LAT), (121.52, LAT)], closed=False)]  # 約 2016 m → 40 m
+    mid = [StrokeInput([(121.50, LAT), (121.52, LAT)], closed=False)]  # 約 2016 m × 0.035 → 約 71 m
     assert default_search_radius(tiny) == 30
     assert default_search_radius(huge) == 150
-    assert default_search_radius(mid) == pytest.approx(40, abs=1)
+    assert default_search_radius(mid) == pytest.approx(70.6, abs=1)
 
 
 def test_outside_taiwan_rejected() -> None:

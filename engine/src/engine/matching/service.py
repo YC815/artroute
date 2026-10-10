@@ -16,7 +16,7 @@ from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
 TAIWAN_BBOX = (118.1, 21.8, 122.1, 26.4)  # (min_lon, min_lat, max_lon, max_lat)，含金門、馬祖
 MIN_TARGET_LENGTH_M = 50.0
 MIN_DIAGONAL_M = 2.0  # 範圍太小 score() 無法評分（它的下限是 1 m，量法不同，多留一倍餘裕）
-RADIUS_RATIO = 0.02  # 自動半徑 = 圖形對角線 × 這個比例，夾在 MIN_SEARCH_RADIUS_M–MAX_SEARCH_RADIUS_M
+RADIUS_RATIO = 0.035  # 自動半徑 = 圖形對角線 × 這個比例，夾在 MIN_SEARCH_RADIUS_M–MAX_SEARCH_RADIUS_M（品質調查：0.02 太小，trace 大量斷段）
 
 logger = logging.getLogger(__name__)
 
