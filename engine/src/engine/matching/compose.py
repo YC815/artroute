@@ -126,25 +126,29 @@ def _greedy(options: list[list[_Option]]) -> list[int]:
     return order
 
 
-def _neighbours(order: list[int]) -> Iterator[list[int]]:
-    """2-opt 的鄰居：反轉 order[i..j]；第 0 個部件固定。"""
-    for i in range(1, len(order) - 1):
-        for j in range(i + 1, len(order)):
-            yield order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
+def _reversals(size: int) -> Iterator[tuple[int, int]]:
+    """2-opt 要試的反轉區間 (i, j)，反轉 order[i..j]；第 0 個部件固定。"""
+    for i in range(1, size - 1):
+        for j in range(i + 1, size):
+            yield i, j
 
 
-def _improve(options: list[list[_Option]], order: list[int], cost: float) -> tuple[list[int], float] | None:
-    for candidate in _neighbours(order):
+def _sweep(options: list[list[_Option]], order: list[int], cost: float) -> tuple[list[int], float, bool]:
+    """掃過所有反轉區間一輪：找到改善就立刻換掉 order，掃描接著往下走（不從頭再來）。"""
+    improved = False
+    for i, j in _reversals(len(order)):
+        candidate = order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
         candidate_cost, _ = _plan(options, candidate)
         if candidate_cost < cost - 1e-6:
-            return candidate, candidate_cost
-    return None
+            order, cost, improved = candidate, candidate_cost, True
+    return order, cost, improved
 
 
 def _two_opt(options: list[list[_Option]], order: list[int]) -> list[int]:
     cost, _ = _plan(options, order)
-    while (better := _improve(options, order, cost)) is not None:
-        order, cost = better
+    improved = True
+    while improved:
+        order, cost, improved = _sweep(options, order, cost)
     return order
 
 

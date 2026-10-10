@@ -1,9 +1,10 @@
 import math
+import random
 from pathlib import Path
 
 import pytest
 
-from engine.matching.compose import Part, compose, rotate
+from engine.matching.compose import Part, _greedy, _options, _plan, _two_opt, compose, rotate
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
@@ -104,6 +105,41 @@ def test_rotate_repeated_coordinate_in_later_segment() -> None:
     flat = [p for s in rotated for p in s.points]
     assert flat == [(1.0, 0.0), (1.0, -1.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (1.0, 1.0), (1.0, 0.0)]
     assert_continuous(rotated)
+
+
+def _random_parts(seed: int) -> list[Part]:
+    rng = random.Random(seed)
+    parts = []
+    for i in range(rng.randint(3, 9)):
+        cx, cy = 121.5 + rng.random() * 0.05, 25.0 + rng.random() * 0.05
+        if rng.random() < 0.5:
+            ring = [(cx + 0.002 * math.cos(2 * math.pi * k / 60), cy + 0.002 * math.sin(2 * math.pi * k / 60)) for k in range(60)]
+            parts.append(Part([seg(ring + ring[:1], index=i)], closed=True))
+        else:
+            parts.append(Part([seg([(cx, cy), (cx + 0.003, cy + 0.001 * rng.random())], index=i)], closed=False))
+    return parts
+
+
+def _continue_scan_two_opt(options, order):
+    """2-opt 的參考實作：找到改善就換掉 order，掃描接著從原本的 (i, j) 往下走，掃完一輪沒有改善才停。"""
+    best_cost, _ = _plan(options, order)
+    improved = True
+    while improved:
+        improved = False
+        for i in range(1, len(order) - 1):
+            for j in range(i + 1, len(order)):
+                candidate = order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
+                cost, _ = _plan(options, candidate)
+                if cost < best_cost - 1e-6:
+                    order, best_cost, improved = candidate, cost, True
+    return order
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_two_opt_matches_continue_scan_reference(seed: int) -> None:
+    options = [_options(part) for part in _random_parts(seed)]
+    start = _greedy(options)
+    assert _two_opt(options, list(start)) == _continue_scan_two_opt(options, list(start))
 
 
 def test_empty_parts() -> None:
