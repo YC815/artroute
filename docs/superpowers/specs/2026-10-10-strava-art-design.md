@@ -245,7 +245,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 
 - 固定一組「圖形 × 地點」案例（台北棋盤區、台中、河濱等），記錄覆蓋、乾淨、公里數、耗時。
 - 同時量測粗篩排名和精算排名的相關性，作為調整 K 值的依據（P2）。
-- 真實路網太大，不進 CI：基準測試在 m1 的引擎容器內執行（`python -m engine.bench`），結果與 repo 內的 `engine/bench/baseline.json` 比較，分數退步超過門檻（預設 3 分）即以非零狀態結束。CI 只跑合成地圖上的同一套流程，確保基準測試程式本身沒壞。
+- 真實路網太大，不進 CI：基準測試在 m1 的引擎容器內執行（`python -m engine.bench`），結果與 repo 內的 `engine/src/engine/bench/baseline.json` 比較，分數退步超過門檻（預設 3 分）即以非零狀態結束。CI 只跑合成地圖上的同一套流程，確保基準測試程式本身沒壞。
 
 ## 7. 分期
 
