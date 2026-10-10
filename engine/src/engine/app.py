@@ -1,16 +1,17 @@
 """HTTP 介面。只在 hl 內網提供服務，由 web 轉發請求。"""
 
+import asyncio
 import logging
 import os
-import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from engine.api.models import (
     BuildInfo,
@@ -22,7 +23,7 @@ from engine.api.models import (
 )
 from engine.data.layout import DataLayout
 from engine.data.pipeline import read_meta
-from engine.matching.deadline import Deadline, MatchTimeout
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.service import AllStrokesFailed, MatchResult, OutsideTaiwan, StrokeInput, TargetTooSmall, match_shape
 from engine.routing.router import Router, RoutingError
 from engine.service.current import CurrentRouter, NoDataError
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 NO_DATA_MESSAGE = "路網資料尚未就緒，請稍後再試"  # 固定字串：RoutingError 的訊息含 build 路徑，不能回給呼叫端
 TIMEOUT_MESSAGE = "吸附超過時間上限，請縮小圖形或減少部件"
 MAX_VALIDATION_ISSUES = 20
+DISCONNECT_POLL_S = 0.05  # 多久看一次呼叫端還在不在（也是等名額時重新檢查的間隔）
+CLIENT_CLOSED = 499  # nginx 的慣例：呼叫端已經離開，這個回應不會有人收到（uvicorn 也不會送出）
 
 MATCH_ERRORS: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "圖形不在台灣範圍內（outside_taiwan）"},
@@ -79,11 +82,11 @@ def _get_router(current: CurrentRouter) -> tuple[Any, str]:
         raise _error(503, "no_data", NO_DATA_MESSAGE) from error
 
 
-def _match(current: CurrentRouter, request: MatchRequest, deadline: Deadline) -> MatchResponse:
+def _match(current: CurrentRouter, payload: MatchRequest, deadline: Deadline) -> MatchResponse:
     router, version = _get_router(current)
-    strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in request.strokes]
+    strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
     try:
-        result = match_shape(router, strokes, search_radius_m=request.search_radius_m, deadline=deadline)
+        result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline)
     except OutsideTaiwan as error:
         raise _error(400, "outside_taiwan", str(error)) from error
     except TargetTooSmall as error:
@@ -93,6 +96,54 @@ def _match(current: CurrentRouter, request: MatchRequest, deadline: Deadline) ->
     except MatchTimeout as error:
         raise _error(504, "timeout", TIMEOUT_MESSAGE) from error
     return _response(result, version)
+
+
+async def _watch_disconnect(request: Request, deadline: Deadline) -> None:
+    """唯一的斷線來源：排隊與吸附兩個階段共用。呼叫端一離開就取消 deadline。
+
+    is_disconnected 不會吃掉別的訊息：body 在解依賴前就讀完了，uvicorn 之後的 receive 只會是 http.disconnect。
+    """
+    while not await request.is_disconnected():
+        await asyncio.sleep(DISCONNECT_POLL_S)
+    deadline.cancel()
+
+
+async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
+    """等名額：拿到回傳 True；等待中呼叫端離開回傳 False；到期丟 504。
+
+    以 DISCONNECT_POLL_S 為單位重試，每次之間檢查取消與期限，所以不保證先到先得：
+    即時吸附只在乎最新的請求，每個等待者又各有期限，可以接受。
+    acquire 被 timeout 取消時，若名額其實已經交到手上，asyncio.Semaphore 會自己還回去。
+    """
+    while not deadline.cancelled:
+        remaining = deadline.remaining()
+        if remaining <= 0:
+            raise _error(504, "timeout", TIMEOUT_MESSAGE)
+        try:
+            async with asyncio.timeout(min(DISCONNECT_POLL_S, remaining)):
+                await admission.acquire()
+        except TimeoutError:
+            continue
+        if deadline.cancelled:  # 拿到名額的同一刻呼叫端離開了
+            admission.release()
+            return False
+        return True
+    return False
+
+
+async def _admitted_match(
+    admission: asyncio.Semaphore, current: CurrentRouter, payload: MatchRequest, deadline: Deadline
+) -> Any:
+    if not await _admit(admission, deadline):
+        return Response(status_code=CLIENT_CLOSED)
+    try:
+        return await run_in_threadpool(_match, current, payload, deadline)
+    except MatchCancelled:
+        return Response(status_code=CLIENT_CLOSED)
+    finally:
+        # run_in_threadpool 不會丟下還在跑的 thread（即使這個 task 被取消也會等它結束），
+        # 所以名額一定在吸附真的結束後才釋放，Router 不會被兩個請求同時使用
+        admission.release()
 
 
 def create_app(
@@ -106,14 +157,14 @@ def create_app(
     layout = DataLayout(data_root)
     current = CurrentRouter(layout, router_factory)
     # 每個 worker 同時只進行一個吸附：Router 本來就把 Valhalla 呼叫序列化，所以不損失吞吐量；
-    # 多出來的請求在這裡限時等待，不會各自卡在 Router 鎖上，到期後還各多跑一次 Valhalla 呼叫
-    admission = threading.Semaphore(1)
+    # 多出來的請求在事件迴圈上限時等待（不佔 thread），不會各自卡在 Router 鎖上，到期後還各多跑一次 Valhalla 呼叫
+    admission = asyncio.Semaphore(1)
 
     async def start_deadline() -> Deadline:
         # 必須是 async：同步的依賴會自己先去排 threadpool 的隊，起算點就太晚了
         return Deadline(match_timeout_s)
 
-    # 以下兩個不碰 I/O，用 async 直接在事件迴圈上回應：threadpool 被等名額的請求佔滿時，健康檢查仍能即時回
+    # 以下兩個不碰 I/O，用 async 直接在事件迴圈上回應
     @app.get("/")
     async def root() -> dict[str, str]:
         return {"service": "artroute-engine"}
@@ -128,18 +179,18 @@ def create_app(
         meta = read_meta(build) if build else None
         return StatusResponse(data=BuildInfo.model_validate(asdict(meta)) if meta else None)
 
-    @app.post("/match", responses=MATCH_ERRORS)
-    def match(request: MatchRequest, deadline: Annotated[Deadline, Depends(start_deadline)]) -> MatchResponse:
-        # 期限在請求進 app、排進 threadpool 之前就起算，所以 threadpool 的排隊時間與等名額的時間都算在內。
+    @app.post("/match", response_model=MatchResponse, responses=MATCH_ERRORS)
+    async def match(
+        request: Request, payload: MatchRequest, deadline: Annotated[Deadline, Depends(start_deadline)]
+    ) -> Any:
+        # 期限在解依賴時起算（請求本文已讀完），等名額與吸附的時間都算在內；等名額不佔 thread。
         # 不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
-        # 最壞情況：到期後再等一次進行中的 Valhalla 呼叫；排隊請求超過 threadpool（預設 40 條）時，
-        # 已完成的回應序列化也要排隊，再多出排隊請求的處理時間（實測 100 並發、1 s 期限約 1.7 s）。
-        if not admission.acquire(timeout=deadline.remaining()):
-            raise _error(504, "timeout", TIMEOUT_MESSAGE)
+        # 呼叫端離開（web 拖曳時取消上一筆）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。
+        watcher = asyncio.create_task(_watch_disconnect(request, deadline))
         try:
-            return _match(current, request, deadline)
+            return await _admitted_match(admission, current, payload, deadline)
         finally:
-            admission.release()
+            watcher.cancel()
 
     return app
 
