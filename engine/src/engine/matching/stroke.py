@@ -15,6 +15,7 @@ from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import MIN_LENGTH_RATIO, LonLat, RoutingError
 
 DENSIFY_STEP_M = 25.0
+MAX_SNAP_GAP_RADII = 2  # route 端點離要求位置的上限（搜尋半徑的倍數），與 Router.trace 的檢查一致
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,9 @@ def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
         return None
     if len(set(result.points)) < 2:
         return None  # 起訖相同（封閉筆畫、單點）會塌縮成同一點：不能當成功，否則整段無聲消失
+    max_gap_m = MAX_SNAP_GAP_RADII * ctx.search_radius_m
+    if haversine_m(result.points[0], start) > max_gap_m or haversine_m(result.points[-1], end) > max_gap_m:
+        return None  # 附近沒有可騎的路：Valhalla 預設會抓 35 km 內的路，收下就是一條遠方繞路，而不是 no_route
     return segment_from("detour", ctx.stroke_index, result)
 
 

@@ -190,3 +190,33 @@ def test_single_point_stroke_warns_no_route() -> None:
     result = run(FakeRouter(bad=(121.0, 122.0)), [(121.5, LAT)])
     assert result.chains == []
     assert [w.code for w in result.warnings] == ["no_route"]
+
+
+class FarSnapRouter(FakeRouter):
+    """route 的起點、終點分別被吸附到往北 start_m、end_m 之外：模擬附近沒有可騎道路，Valhalla 抓到遠處的路。"""
+
+    def __init__(self, start_m: float, end_m: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.start_deg, self.end_deg = start_m / 110_574, end_m / 110_574
+
+    def route(self, start, end):
+        result = super().route(start, end)
+        (lon0, lat0), (lon1, lat1) = result.points[0], result.points[-1]
+        return RouteResult(
+            points=[(lon0, lat0 + self.start_deg), (lon1, lat1 + self.end_deg)], length_km=result.length_km
+        )
+
+
+@pytest.mark.parametrize(
+    "start_m, end_m, accepted",
+    [(90, 90, True), (110, 0, False), (0, 110, False), (110, 110, False)],
+)
+def test_route_snapped_beyond_twice_the_search_radius_is_a_failure(start_m: float, end_m: float, accepted: bool) -> None:
+    # search_radius_m=50 → 容許 100 m；起點或終點離要求的位置更遠，代表附近沒有路，不能收下遠處的繞路
+    result = run(FarSnapRouter(start_m, end_m, bad=(121.0, 122.0)), line(121.50, 121.51))
+    if accepted:
+        assert [s.kind for c in result.chains for s in c] == ["detour"]
+        assert result.warnings == []
+    else:
+        assert result.chains == []
+        assert [w.code for w in result.warnings] == ["no_route"]

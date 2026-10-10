@@ -12,6 +12,7 @@ from engine.routing.router import LonLat
 
 TAIWAN_BBOX = (118.1, 21.8, 122.1, 26.4)  # (min_lon, min_lat, max_lon, max_lat)，含金門、馬祖
 MIN_TARGET_LENGTH_M = 50.0
+MIN_DIAGONAL_M = 2.0  # 範圍太小 score() 無法評分（它的下限是 1 m，量法不同，多留一倍餘裕）
 RADIUS_RATIO, MIN_RADIUS_M, MAX_RADIUS_M = 0.02, 30.0, 150.0
 
 
@@ -59,6 +60,14 @@ def default_search_radius(strokes: list[StrokeInput]) -> float:
     return min(MAX_RADIUS_M, max(MIN_RADIUS_M, _diagonal_m(strokes) * RADIUS_RATIO))
 
 
+def _resolve_radius(search_radius_m: float | None, strokes: list[StrokeInput]) -> float:
+    if search_radius_m is None:
+        return default_search_radius(strokes)
+    if not MIN_RADIUS_M <= search_radius_m <= MAX_RADIUS_M:  # NaN 的比較恆為 False，也會被擋下
+        raise ValueError(f"搜尋半徑必須在 {MIN_RADIUS_M:.0f}–{MAX_RADIUS_M:.0f} m 之間：{search_radius_m}")
+    return search_radius_m
+
+
 def _check_inside_taiwan(strokes: list[StrokeInput]) -> None:
     min_lon, min_lat, max_lon, max_lat = TAIWAN_BBOX
     points = [point for stroke in strokes for point in stroke.points]
@@ -74,7 +83,8 @@ def _route_points(segments: list[Segment]) -> list[LonLat]:
     points: list[LonLat] = []
     for segment in segments:
         points.extend(segment.points if not points else segment.points[1:])
-    return points
+    # connector 可能有 3 個點卻只有 2 個不同：不留零長度的一步
+    return [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
 
 
 def _match_parts(
@@ -134,9 +144,9 @@ def match_shape(
     _check_inside_taiwan(strokes)
     targets = [_target(s) for s in strokes]
     target_length = sum(polyline_length_m(t) for t in targets)
-    if target_length < MIN_TARGET_LENGTH_M:
-        raise TargetTooSmall(f"圖形總長不到 {MIN_TARGET_LENGTH_M:.0f} m")
-    radius = search_radius_m or default_search_radius(strokes)
+    if target_length < MIN_TARGET_LENGTH_M or _diagonal_m(strokes) < MIN_DIAGONAL_M:
+        raise TargetTooSmall(f"圖形太小：總長須至少 {MIN_TARGET_LENGTH_M:.0f} m，且範圍須至少 {MIN_DIAGONAL_M:.0f} m")
+    radius = _resolve_radius(search_radius_m, strokes)
 
     parts, owners, warnings = _match_parts(router, strokes, targets, radius, deadline)
     if not parts:

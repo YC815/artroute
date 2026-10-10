@@ -14,7 +14,7 @@ from engine.matching.service import (
 from engine.matching.types import JOIN_TOLERANCE_M
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
-from grid_helpers import densify
+from grid_helpers import densify, rides_westward_on_row
 from osm_fixture import grid_point
 
 LAT = 25.05
@@ -39,6 +39,13 @@ def test_any_point_outside_taiwan_rejects_whole_shape(outlier: tuple[float, floa
     strokes = [StrokeInput([(121.5, LAT), (121.51, LAT)], False), StrokeInput([(121.5, LAT), outlier], False)]
     with pytest.raises(OutsideTaiwan):
         match_shape(None, strokes, search_radius_m=None, deadline=Deadline(5))
+
+
+def test_tiny_extent_with_long_path_is_too_small() -> None:
+    # 在 0.5 m 內來回抖 200 次：總長夠，但對角線太短，score() 無法評分；要在入口擋下，不能變成 ValueError
+    jitter = [(121.5 + 0.000005 * (i % 2), LAT) for i in range(201)]
+    with pytest.raises(TargetTooSmall):
+        match_shape(FakeRouter(), [StrokeInput(jitter, False)], search_radius_m=50, deadline=Deadline(5))
 
 
 def test_too_small_rejected() -> None:
@@ -160,3 +167,66 @@ def test_search_radius_is_explicit_or_derived_from_shape() -> None:
     match_shape(derived, strokes, search_radius_m=None, deadline=Deadline(30))
     assert set(explicit.radii) == {77}
     assert set(derived.radii) == {default_search_radius(strokes)}
+
+
+@pytest.mark.parametrize("radius", [0, -5, 29.9, 150.1, float("nan"), float("inf")])
+def test_invalid_search_radius_is_rejected(radius: float) -> None:
+    strokes = [StrokeInput(row(121.50, 121.51), False)]
+    with pytest.raises(ValueError):
+        match_shape(FakeRouter(), strokes, search_radius_m=radius, deadline=Deadline(30))
+
+
+@pytest.mark.parametrize("radius", [30, 150])
+def test_search_radius_bounds_are_inclusive(radius: float) -> None:
+    router = FakeRouter()
+    match_shape(router, [StrokeInput(row(121.50, 121.51), False)], search_radius_m=radius, deadline=Deadline(30))
+    assert set(router.radii) == {radius}
+
+
+class ThreePointConnectorRouter(FakeRouter):
+    """route 回傳 [start, start, end]：3 個點、2 個不同的點（Valhalla 的 connector 可能長這樣）。"""
+
+    def route(self, start, end):
+        return RouteResult(points=[start, start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_route_points_have_no_consecutive_duplicates() -> None:
+    strokes = [StrokeInput(row(121.50, 121.51), False), StrokeInput(row(121.52, 121.53), False)]
+    result = match_shape(ThreePointConnectorRouter(), strokes, search_radius_m=50, deadline=Deadline(30))
+    assert "connector" in [s.kind for s in result.segments]
+    assert all(a != b for a, b in zip(result.route_points, result.route_points[1:]))
+
+
+@pytest.mark.valhalla
+def test_stroke_far_from_any_road_is_reported_and_left_out_of_route(grid_config: Path) -> None:
+    # 第 6 列離最近的可騎道路約 660 m：不能被 Valhalla 抓到遠處的路當成一條繞路
+    strokes = [
+        StrokeInput(densify(grid_point(0, 1), grid_point(2, 1), n=8), closed=False),
+        StrokeInput(densify(grid_point(3, 6), grid_point(5, 6), n=8), closed=False),
+    ]
+    result = match_shape(Router(grid_config), strokes, search_radius_m=50, deadline=Deadline(30))
+    assert [(w.stroke_index, w.code) for w in result.warnings] == [(1, "no_route")]
+    assert {s.stroke_index for s in result.segments} == {0}
+    assert result.route_length_m == pytest.approx(404, abs=40)
+
+
+@pytest.mark.valhalla
+def test_mixed_shape_legal_wrong_way_and_closed_loop(grid_config: Path) -> None:
+    strokes = [
+        StrokeInput(densify(grid_point(0, 1), grid_point(2, 1), n=8), closed=False),  # 合法
+        StrokeInput(densify(grid_point(2, 0), grid_point(0, 0), n=8), closed=False),  # 逆向單行道
+        StrokeInput(  # 右下街區的封閉圈，起點在遠離其他筆畫的右下角
+            [grid_point(5, 0), grid_point(4, 0), grid_point(4, 1), grid_point(5, 1)], closed=True
+        ),
+    ]
+    result = match_shape(Router(grid_config), strokes, search_radius_m=50, deadline=Deadline(30))
+    assert result.warnings == []
+    for a, b in zip(result.segments, result.segments[1:]):
+        assert haversine_m(a.points[-1], b.points[0]) <= JOIN_TOLERANCE_M
+    assert not rides_westward_on_row(result.route_points, row=0, col_min=0, col_max=2)
+    wrong_way = [s for s in result.segments if s.stroke_index == 1]
+    assert "detour" in {s.kind for s in wrong_way}  # 逆向那筆改用合法繞路
+    assert "connector" in {s.kind for s in result.segments}
+    loop = [p for s in result.segments if s.stroke_index == 2 for p in s.points]
+    assert haversine_m(loop[0], loop[-1]) <= JOIN_TOLERANCE_M  # 封閉圈繞一圈回到進入點
+    assert haversine_m(loop[0], grid_point(5, 0)) > 100  # 已旋轉：從離前一段最近的地方進，不是畫的起點

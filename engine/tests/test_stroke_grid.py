@@ -73,6 +73,13 @@ def test_far_from_roads_warns_no_route(router: Router) -> None:
     assert [w.code for w in result.warnings] == ["no_route"]
 
 
+def test_stroke_hundreds_of_metres_from_any_road_warns_no_route(router: Router) -> None:
+    # 第 6 列離最近的可騎道路約 660 m：Valhalla 的 route 會抓到遠處的路，不能收成一條遠方繞路
+    result = run(router, densify(grid_point(3, 6), grid_point(5, 6), n=16))
+    assert result.chains == []
+    assert [w.code for w in result.warnings] == ["no_route"]
+
+
 def test_shifted_stroke_still_has_a_single_detour(router: Router) -> None:
     # 整條線偏離道路約 10 m：trace 的端點被吸附到道路上，跟輸入點不同。
     # 繞路必須接在鄰段實際端點之間，不能再補一條往回的橋（單行道上會多繞一整圈）
