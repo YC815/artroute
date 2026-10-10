@@ -21,3 +21,11 @@ export function shapeProblem(shape: Shape): string | null {
 export function buildMatchRequest(shape: Shape, t: Transform): MatchRequest {
   return { strokes: transformStrokes(shape.strokes, t) };
 }
+
+/**
+ * 請求的 key：內容相同的請求（不論是不是同一個物件）key 相同。排程器用它判斷不重送；
+ * 結果回來時也帶著它（onOutcome 的第三個參數），所以「結果屬於哪個請求」可以直接和目前請求的 key 比對。
+ */
+export function requestKey(request: MatchRequest): string {
+  return JSON.stringify(request);
+}

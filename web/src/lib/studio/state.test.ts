@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MatchError } from "@/lib/engine/client";
-import type { MatchResponse } from "@/lib/engine/contract";
+import type { MatchOutcome } from "@/lib/engine/client";
+import type { MatchRequest, MatchResponse } from "@/lib/engine/contract";
 import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import { buildGpx, gpxFileName } from "@/lib/export/gpx";
+import { requestKey } from "@/lib/match/request";
+import { createMatchScheduler } from "@/lib/match/scheduler";
 import type { Point, Shape, Stroke } from "@/lib/shape/types";
 import {
   canDownloadGpx,
@@ -78,22 +81,61 @@ describe("isSavable", () => {
 });
 
 describe("canDownloadGpx", () => {
-  it("有路線、至少 2 點、沒有在吸附中才能下載", () => {
-    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, false)).toBe(true);
-    expect(canDownloadGpx(withPoints(2), false)).toBe(true);
+  it("有路線、至少 2 點、結果的請求就是目前的請求才能下載", () => {
+    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, "K", "K")).toBe(true);
+    expect(canDownloadGpx(withPoints(2), "K", "K")).toBe(true);
   });
 
   it("沒有路線不能下載", () => {
-    expect(canDownloadGpx(null, false)).toBe(false);
+    expect(canDownloadGpx(null, "K", "K")).toBe(false);
   });
 
   it("路線不到 2 點不能下載", () => {
-    expect(canDownloadGpx(withPoints(1), false)).toBe(false);
-    expect(canDownloadGpx(withPoints(0), false)).toBe(false);
+    expect(canDownloadGpx(withPoints(1), "K", "K")).toBe(false);
+    expect(canDownloadGpx(withPoints(0), "K", "K")).toBe(false);
   });
 
-  it("吸附中（顯示的路線可能還是舊擺放的）不能下載", () => {
-    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, true)).toBe(false);
+  it("結果屬於上一個擺放（請求的 key 不同）不能下載，不論有沒有在吸附中", () => {
+    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, "K1", "K2")).toBe(false);
+  });
+
+  it("沒有目前請求（圖形不合法、輸入被清空）或結果沒有 key 時不能下載，兩邊都是 null 也不行", () => {
+    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, "K", null)).toBe(false);
+    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, null, "K")).toBe(false);
+    expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, null, null)).toBe(false);
+  });
+
+  it("排程器取消（pending 回到 false）之後，上一個擺放的路線仍不能下載", async () => {
+    vi.useFakeTimers();
+    try {
+      const at = (lon: number): MatchRequest => ({ strokes: [{ points: [[lon, 25], [lon + 0.01, 25]], closed: false }] });
+      const placedA = at(121.5);
+      const placedB = at(121.6); // 同一個圖形，拖到別處
+      let appliedKey: string | null = null;
+      let pending = false;
+      const resolvers: ((outcome: MatchOutcome) => void)[] = [];
+      const scheduler = createMatchScheduler({
+        send: () => new Promise<MatchOutcome>((resolve) => resolvers.push(resolve)),
+        onOutcome: (_outcome, _tag, key) => {
+          appliedKey = key;
+        },
+        onPendingChange: (next) => {
+          pending = next;
+        },
+      });
+      scheduler.schedule(placedA, false);
+      resolvers[0]({ ok: true, response: SAMPLE_MATCH_RESPONSE });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, appliedKey, requestKey(placedA))).toBe(true);
+
+      scheduler.schedule(placedB, true); // 拖到 B：新請求在途，目前請求的 key 已經是 B
+      expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, appliedKey, requestKey(placedB))).toBe(false);
+      scheduler.cancel(); // 例如拖曳途中引擎狀態翻成離線：pending 回到 false，A 的結果還留著
+      expect(pending).toBe(false);
+      expect(canDownloadGpx(SAMPLE_MATCH_RESPONSE, appliedKey, requestKey(placedB))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

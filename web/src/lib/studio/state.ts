@@ -23,9 +23,17 @@ export function isSavable(source: SavedSource): boolean {
     : shapeProblem({ kind: "image", strokes: source.strokes }) === null;
 }
 
-/** 有路線、至少 2 點，而且不在吸附中（吸附中顯示的路線可能還是上一個擺放的）才能下載 GPX。 */
-export function canDownloadGpx(response: MatchResponse | null, pending: boolean): boolean {
-  return !pending && response !== null && response.route.points.length >= 2;
+/**
+ * 有路線、至少 2 點，而且路線屬於「目前的請求」才能下載 GPX：結果所屬請求的 key（resultKey）必須等於目前請求的 key。
+ * 同一個圖形換了擺放位置，圖形的 tag 不變、請求的 key 會變，所以舊擺放的路線不會被下載。
+ * 不靠 pending：cancel 會把 pending 清掉，結果卻還留著，任何取消路徑都不能因此放行舊路線。
+ */
+export function canDownloadGpx(
+  response: MatchResponse | null,
+  resultKey: string | null,
+  currentKey: string | null,
+): boolean {
+  return response !== null && response.route.points.length >= 2 && resultKey !== null && resultKey === currentKey;
 }
 
 /** 圖形內容的識別字：內容相同的圖形（即使是不同物件）key 相同。 */

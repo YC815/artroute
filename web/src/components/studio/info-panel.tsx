@@ -8,7 +8,6 @@ import type { MatchResponse, MatchWarning } from "@/lib/engine/contract";
 import { buildGpx, gpxFileName } from "@/lib/export/gpx";
 import { formatDataVersion, formatDistance } from "@/lib/format";
 import type { LonLat } from "@/lib/shape/types";
-import { canDownloadGpx } from "@/lib/studio/state";
 
 type Props = {
   targetLengthM: number | null;
@@ -16,6 +15,8 @@ type Props = {
   response: MatchResponse | null;
   error: MatchError | null;
   pending: boolean;
+  /** 路線是目前這個擺放的、可以下載 GPX（見 canDownloadGpx）。 */
+  downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
   warnings: readonly MatchWarning[];
   /** 圖形不能吸附的原因（例如筆畫太多）。 */
@@ -61,9 +62,8 @@ const LEGEND = [
 ];
 
 export function InfoPanel(props: Props) {
-  const { targetLengthM, response, error, pending, warnings, problem, dataVersion, workName } = props;
+  const { targetLengthM, response, error, pending, downloadable, warnings, problem, dataVersion, workName } = props;
   const score = response?.score;
-  const downloadable = canDownloadGpx(response, pending);
   const headingId = useId();
   return (
     <section className="flex flex-col gap-3" aria-labelledby={headingId}>

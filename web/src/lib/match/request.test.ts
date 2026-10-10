@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
+import { buildMatchRequest, requestKey, shapeProblem } from "@/lib/match/request";
 import { transformPoint, type Transform } from "@/lib/shape/transform";
 import type { Shape, Stroke } from "@/lib/shape/types";
 
@@ -46,5 +46,20 @@ describe("buildMatchRequest", () => {
     expect(buildMatchRequest(shape([closed]), t)).toEqual({
       strokes: [{ points: closed.points.map((p) => transformPoint(p, t)), closed: true }],
     });
+  });
+});
+
+describe("requestKey", () => {
+  const t: Transform = { center: [121.5654, 25.033], sizeM: 1000, rotationDeg: 30 };
+
+  it("內容相同的請求（各自建立的物件）key 相同", () => {
+    expect(requestKey(buildMatchRequest(shape([line]), t))).toBe(requestKey(buildMatchRequest(shape([line]), { ...t })));
+  });
+
+  it("同一個圖形換了擺放位置（平移、縮放、旋轉）key 就不同", () => {
+    const base = requestKey(buildMatchRequest(shape([line]), t));
+    expect(requestKey(buildMatchRequest(shape([line]), { ...t, center: [121.57, 25.033] }))).not.toBe(base);
+    expect(requestKey(buildMatchRequest(shape([line]), { ...t, sizeM: 1200 }))).not.toBe(base);
+    expect(requestKey(buildMatchRequest(shape([line]), { ...t, rotationDeg: 31 }))).not.toBe(base);
   });
 });

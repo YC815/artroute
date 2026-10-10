@@ -16,7 +16,7 @@ import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
 import { shapeLengthM, type Transform } from "@/lib/shape/transform";
 import type { Shape, Stroke } from "@/lib/shape/types";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
-import { gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
+import { canDownloadGpx, gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
 import type { HersheyFontId } from "@/lib/text/hershey";
 import { textShape, validateText } from "@/lib/text/layout";
 
@@ -61,7 +61,7 @@ export function Studio() {
     [shape, problem, transform],
   );
   // 每個請求送出時帶著圖形的 key：結果只在屬於目前圖形時顯示（圖形換了、新結果回來前不顯示舊圖形的路線）
-  const { response, error, pending, appliedTag } = useLiveMatch(
+  const { response, error, pending, appliedTag, appliedKey, currentKey } = useLiveMatch(
     request,
     dragging,
     engine.status === "ok",
@@ -72,6 +72,8 @@ export function Studio() {
     () => visibleOutcome({ response, error }, appliedTag, currentShapeKey),
     [response, error, appliedTag, currentShapeKey],
   );
+  // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key
+  const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
   const warnings = outcomeWarnings(visible);
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
 
@@ -119,6 +121,7 @@ export function Studio() {
           response={visible.response}
           error={visible.error}
           pending={pending}
+          downloadable={downloadable}
           warnings={warnings}
           problem={problem}
           dataVersion={engine.dataVersion}

@@ -1,5 +1,6 @@
 import type { MatchOutcome } from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
+import { requestKey } from "@/lib/match/request";
 
 /** 拖曳中送出吸附請求的最小間隔（spec §4.2）。 */
 export const THROTTLE_MS = 300;
@@ -9,8 +10,9 @@ export type SchedulerOptions = {
   /**
    * 只會收到「比已套用的更新」且未被取消的結果，舊結果永遠不會覆蓋新結果。
    * tag 是產生這個結果的請求在 schedule 時帶的標記（送出當下就綁定，之後排定的新 tag 不會套到舊結果上）。
+   * key 是產生這個結果的請求的 requestKey：和「目前請求的 key」相等，結果才是目前這個擺放的路線。
    */
-  onOutcome: (outcome: MatchOutcome, tag: string | null) => void;
+  onOutcome: (outcome: MatchOutcome, tag: string | null, key: string) => void;
   /** 有請求排定（節流計時器）或進行中時為 true，結果套用或取消後為 false。值不變時不呼叫。 */
   onPendingChange: (pending: boolean) => void;
   intervalMs?: number;
@@ -71,11 +73,11 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     onPendingChange(next);
   }
 
-  function apply(seq: number, tag: string | null, outcome: MatchOutcome) {
+  function apply(seq: number, tag: string | null, key: string, outcome: MatchOutcome) {
     applied = seq;
     // 最新的請求失敗了：允許同一個 request 重送（例如引擎恢復後重試）
     if (!outcome.ok && seq === issued) forgetLastSent();
-    onOutcome(outcome, tag);
+    onOutcome(outcome, tag, key);
     syncPending();
   }
 
@@ -90,7 +92,7 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     if (latest === null || latest === lastSent) return;
     const request = latest;
     const tag = latestTag;
-    const key = JSON.stringify(request);
+    const key = requestKey(request);
     if (key === lastSentKey) {
       lastSent = request;
       return;
@@ -108,7 +110,7 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
         // 被取消的結果一律丟掉（fetchMatch 取消時會立刻回「已取消」的錯誤，序號卻可能比已套用的大）；
         // 其餘比已套用的還舊的結果也丟掉（序號單調遞增）。
         if (current.signal.aborted || seq <= applied) return;
-        apply(seq, tag, outcome);
+        apply(seq, tag, key, outcome);
       });
   }
 
