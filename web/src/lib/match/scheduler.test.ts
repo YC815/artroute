@@ -76,6 +76,7 @@ describe("createMatchScheduler", () => {
     calls[0].resolve(OK); // 前一筆已回來，下一筆才會排節流計時器（在途時不排計時器，見「拖曳中在途」那組）
     await vi.advanceTimersByTimeAsync(50);
     scheduler.schedule(req(2), true);
+    expect(vi.getTimerCount()).toBe(1); // 放開前確實排了節流計時器，下面的 0 才不是空洞斷言
     const released = req(3);
     scheduler.schedule(released, false);
     expect(calls).toHaveLength(2);
@@ -209,7 +210,7 @@ describe("createMatchScheduler", () => {
     expect(onOutcome).toHaveBeenLastCalledWith(OK, null, expect.any(String));
   });
 
-  it("cancel：引擎在 trailing 計時器排定後回 503，取消後不會再送出（停用吸附）", async () => {
+  it("cancel：在途那筆回 503、補送的計時器排定後取消，不會再送出（停用吸附）", async () => {
     const { scheduler, calls, onOutcome, onPendingChange } = setup();
     scheduler.schedule(req(1), true); // t=0 送出 R1
     await vi.advanceTimersByTimeAsync(100);
@@ -604,7 +605,7 @@ describe("createMatchScheduler", () => {
       expect(calls).toHaveLength(2);
     });
 
-    it("dispose：清掉補送用的計時器，在途那筆回來也不會補送", async () => {
+    it("dispose：清掉已排定的補送計時器", async () => {
       const { scheduler, calls, onOutcome } = setup();
       scheduler.schedule(req(1), true);
       await vi.advanceTimersByTimeAsync(100);
@@ -617,6 +618,22 @@ describe("createMatchScheduler", () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(calls).toHaveLength(1);
       expect(onOutcome).toHaveBeenCalledTimes(1);
+    });
+
+    it("dispose：在途時有待補送的 latest，dispose 後在途那筆回來也不補送、不回呼", async () => {
+      const { scheduler, calls, onOutcome, onPendingChange } = setup();
+      scheduler.schedule(req(1), true);
+      await vi.advanceTimersByTimeAsync(400); // 已超過 intervalMs：回來時會立刻補送，所以這裡能證明是 dispose 擋下的
+      scheduler.schedule(req(2), true); // 被記著，等 R1 回來
+      expect(calls).toHaveLength(1);
+      scheduler.dispose();
+      expect(calls[0].signal.aborted).toBe(true);
+      calls[0].resolve(OK);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(calls).toHaveLength(1);
+      expect(onOutcome).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(onPendingChange).not.toHaveBeenCalledWith(false); // dispose 之後不再回呼
     });
   });
 
