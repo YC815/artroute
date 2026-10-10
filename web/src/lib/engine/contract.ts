@@ -4,7 +4,7 @@
 // zod schema 負責執行期驗證；matchRequestSchema、matchResponseSchema、statusResponseSchema
 // 以 `satisfies z.ZodType<產生的型別>` 在編譯期對齊，引擎改了形狀而 web 沒跟上時 tsc 會失敗。
 // errorDetailSchema 刻意不綁：它是引擎錯誤 detail 的超集，另外涵蓋代理自己的 code
-// （too_large／validation／engine_unreachable）。
+// （too_large／validation／engine_unreachable／timeout；timeout 與引擎同名）。
 // 其他模組一律只從這裡 import 契約型別與 schema。
 import { z } from "zod";
 import type { components } from "@/lib/engine/openapi";
@@ -65,7 +65,7 @@ export const matchResponseSchema = z.object({
 
 /**
  * 引擎的領域錯誤（outside_taiwan／too_small／no_route／no_data／timeout）與代理自己的錯誤
- * （validation／engine_unreachable／timeout）共用的 detail 形狀。
+ * （too_large／validation／engine_unreachable／timeout）共用的 detail 形狀。
  * 「所有部件都吸附失敗」的 no_route 另附 warnings。
  */
 export const errorDetailSchema = z.object({
