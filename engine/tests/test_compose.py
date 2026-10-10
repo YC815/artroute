@@ -464,3 +464,17 @@ def test_a_single_part_is_returned_as_a_new_list() -> None:
     part = Part([a], False)
     result = compose(StraightRouter(), [part], Deadline(10))
     assert result.segments == [a] and result.segments is not part.segments
+
+
+def test_anchor_counts_matched_stroke_length_not_detour_length() -> None:
+    # letter_l@taipei_riverside：part1 因為一段繞路總長比較長，但貼著畫線的部分比 part0 短；
+    # 錨點要選最能代表圖形的 part0，不是被繞路灌水的 part1
+    clean = seg([(121.50, LAT), (121.51, LAT)], index=0)  # 約 1 km，全是 stroke
+    short_stroke = seg([(121.60, LAT), (121.603, LAT)], index=1)  # 約 0.3 km
+    detour = seg([(121.603, LAT), (121.603, LAT + 0.009), (121.6031, LAT)], kind="detour", index=1)  # 約 2 km，兩端相距約 10 m
+    inflated = Part([short_stroke, detour], False)
+    assert sum(s.length_m for s in inflated.segments) > clean.length_m > short_stroke.length_m
+    router = IslandStraightRouter(island=frozenset(p for s in inflated.segments for p in s.points))
+    result = compose(router, [Part([clean], False), inflated], Deadline(10))
+    assert result.dropped == [1]  # 總長當錨點會留下 part1、丟掉乾淨的 part0
+    assert result.segments == [clean]

@@ -2,7 +2,7 @@
 
 順序與封閉圈的進出點用直線距離估計（貪婪 + 2-opt），選定後只對實際用到的接點呼叫 route。
 排序是純 Python 的 CPU 計算：貪婪每接一個部件、2-opt 每一列各檢查一次期限與取消。
-組裝從最長的部件開始往兩端接（見 compose）。
+組裝從 stroke 長度最長的部件開始往兩端接（見 compose）。
 """
 
 from collections.abc import Iterator
@@ -165,9 +165,10 @@ ANCHOR_TIE_M = 0.1  # 部件長度差不到這麼多視為一樣長（浮點誤�
 
 
 def _anchor(parts: list[Part]) -> int:
-    """錨點：吸附後最長的部件，路線從它開始組裝，所以它一定不會被丟掉。
+    """錨點：吸附後 stroke 長度（貼著畫線騎的公尺數）最長的部件，路線從它開始組裝，所以它一定不會被丟掉。
+    detour／connector 不算：繞路會把總長灌大，卻不代表圖形（letter_l@taipei_riverside 的 2088 m 繞路）。
     一樣長的取索引小的：部件都一樣長時維持舊版以第 0 個部件為準。"""
-    lengths = [sum(s.length_m for s in part.segments) for part in parts]
+    lengths = [sum(s.length_m for s in part.segments if s.kind == "stroke") for part in parts]
     longest = max(lengths)
     return next(i for i, length in enumerate(lengths) if longest - length < ANCHOR_TIE_M)
 
@@ -203,7 +204,7 @@ def _assemble(
 def compose(router: MatchRouter, parts: list[Part], deadline: Deadline) -> Composition:
     """依規劃的順序串起各部件；順序與封閉圈進出點的規劃不變。
 
-    組裝從錨點（最長的部件）開始往兩端接（_assemble），接不上的部件丟棄。
+    組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），接不上的部件丟棄。
     舊版固定從第 0 個部件往後接：它的尾巴 route 不出去時，其餘部件全部被丟掉（ledger L64）。
     沒有部件被丟掉時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同。
     """
