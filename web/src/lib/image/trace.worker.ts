@@ -1,18 +1,10 @@
 // 圖片描邊的 Web Worker：解碼、縮圖、灰階、Otsu、抽輪廓都在這裡做，不卡住畫面。
-// 解碼後的灰階影像留在 worker 裡，調門檻時不用重新解碼。
+// 解碼後的灰階影像留在 worker 裡，調門檻時不用重新解碼；請求的排隊與狀態在 tracer.ts。
 import { decodeWithinLimit } from "@/lib/image/decode";
-import { extractRings, type Ring } from "@/lib/image/rings";
-import { otsuThreshold, toGray } from "@/lib/image/threshold";
+import { createTracer, type GrayImage, type TraceRequest } from "@/lib/image/tracer";
+import { toGray } from "@/lib/image/threshold";
 
-/** file 有值時重新載入圖片；threshold 為 null 時用 Otsu 自動決定。 */
-export type TraceRequest = { id: number; file?: Blob; threshold: number | null; invert: boolean };
-
-export type TraceResponse =
-  | { id: number; ok: true; width: number; height: number; threshold: number; rings: Ring[] }
-  | { id: number; ok: false; message: string };
-
-type GrayImage = { gray: Uint8Array; width: number; height: number };
-let image: GrayImage | null = null;
+export type { TraceRequest, TraceResponse } from "@/lib/image/tracer";
 
 /** 瀏覽器的解碼錯誤訊息是英文，換成給使用者看的說明。 */
 function createBitmap(file: Blob, options: ImageBitmapOptions): Promise<ImageBitmap> {
@@ -36,20 +28,8 @@ async function decode(file: Blob): Promise<GrayImage> {
   }
 }
 
-async function trace(request: TraceRequest): Promise<TraceResponse> {
-  if (request.file) image = await decode(request.file);
-  if (!image) throw new Error("還沒有載入圖片");
-  const threshold = request.threshold ?? otsuThreshold(image.gray);
-  const rings = extractRings(image.gray, image.width, image.height, threshold, request.invert);
-  return { id: request.id, ok: true, width: image.width, height: image.height, threshold, rings };
-}
+const trace = createTracer(decode);
 
 self.onmessage = (event: MessageEvent<TraceRequest>) => {
-  const { id } = event.data;
-  trace(event.data)
-    .then((response) => self.postMessage(response))
-    .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "圖片處理失敗";
-      self.postMessage({ id, ok: false, message } satisfies TraceResponse);
-    });
+  void trace(event.data).then((response) => self.postMessage(response));
 };

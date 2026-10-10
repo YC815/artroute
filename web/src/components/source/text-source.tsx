@@ -30,12 +30,17 @@ export function TextSource({ text, font, onChange }: Props) {
           rows={2}
           value={text}
           aria-invalid={problem !== null}
+          aria-describedby={problem ? "source-text-error" : undefined}
           onChange={(e) => onChange(e.target.value, font)}
         />
         <p className="text-xs text-muted-foreground">
           英文字母、數字與 ♥ ! ? &amp; . -，最多 {MAX_LINES} 行、每行 {MAX_LINE_CHARS} 字（空白也算）。
         </p>
-        {problem && <p className="text-sm text-destructive">{problem}</p>}
+        {problem && (
+          <p id="source-text-error" role="alert" className="text-sm text-destructive">
+            {problem}
+          </p>
+        )}
       </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="source-font">字型</Label>
