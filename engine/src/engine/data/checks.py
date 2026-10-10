@@ -30,4 +30,4 @@ def taiwan_checks(router: RouterLike) -> list[str]:
 
 
 def validate_build(build_dir: Path) -> list[str]:
-    return taiwan_checks(Router(build_dir / "valhalla.json"))
+    return taiwan_checks(Router.from_build(build_dir))
