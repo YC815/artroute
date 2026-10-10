@@ -18,6 +18,7 @@ from engine.bench.runner import (
     run_cases,
     summarize,
 )
+from engine.data.build import DENIED_FILE, load_denied
 from engine.data.layout import DataLayout
 from engine.routing.router import Router
 
@@ -69,11 +70,16 @@ def main(argv: list[str] | None = None) -> None:
     build = DataLayout(args.data_dir).current()
     if build is None:
         sys.exit("沒有可用的路網資料")
+    try:
+        denied_ids = frozenset(d.id for d in load_denied(build))
+    except (OSError, ValueError, KeyError, TypeError) as error:  # 沒有禁行清單就無法檢查安全：不跑，不能空洞通過
+        sys.exit(f"讀不到 {build / DENIED_FILE}，無法檢查路線是否經過禁行路段：{error}")
     router = Router.from_build(build)
 
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)
+    print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way；沒過的案例算失敗。", flush=True)
     print(format_header(), flush=True)
-    results = run_cases(router, CASES, on_result=lambda r: print(format_row(r), flush=True))
+    results = run_cases(router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True))
     print(summarize(results), flush=True)
 
     if args.update_baseline:

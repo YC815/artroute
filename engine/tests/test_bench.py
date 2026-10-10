@@ -11,21 +11,29 @@ from engine.bench import runner
 from engine.bench.cases import CASES, LOCATIONS, SHAPES, Case, Shape, place
 from engine.bench.runner import (
     PRODUCTION_TIMEOUT_MS,
+    UNDETERMINED,
+    UNSAFE,
     CaseResult,
     case_set_changes,
     compare,
     format_row,
     load_baseline,
     run_cases,
+    safety_problem,
     summarize,
 )
+from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.data.layout import DataLayout
 from engine.matching.deadline import MatchTimeout
 from engine.matching.score import Score
-from engine.matching.service import AllStrokesFailed, MatchResult
-from engine.routing.geo import haversine_m
-from engine.routing.router import Router
-from osm_fixture import grid_point
+from engine.matching.deadline import Deadline
+from engine.matching.service import AllStrokesFailed, MatchResult, StrokeInput, match_shape
+from engine.matching.types import JOIN_TOLERANCE_M, Segment
+from engine.routing.geo import haversine_m, polyline_length_m
+from engine.routing.router import EdgeInfo, Router, RoutingError
+from engine.routing.tiles import build_tiles
+from grid_helpers import densify
+from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, grid_point, write_grid_pbf
 
 UNIT_SQUARE = Shape("square", [([(0, 0), (1, 0), (1, 1), (0, 1)], True)])
 LINE = Shape("line", [([(0, 0.5), (1, 0.5)], False)])
@@ -97,8 +105,8 @@ def test_compare_flags_regression_and_new_failure_only() -> None:
 def test_run_cases_on_grid(grid_config: Path) -> None:
     lon, lat = grid_point(3, 1)
     case = Case("grid-line", Shape("line", [([(0, 0.5), (1, 0.5)], False)]), (lon, lat), 1000.0, 0.0)
-    (res,) = run_cases(Router(grid_config), [case])
-    assert res.error is None
+    (res,) = run_cases(Router(grid_config), [case], denied_ids=frozenset())
+    assert res.error is None and res.safety is None
     assert res.overall >= 80
     assert res.length_m == pytest.approx(1000, rel=0.15)
 
@@ -130,8 +138,30 @@ def test_load_baseline_rejects_garbage_with_readable_errors(tmp_path: Path) -> N
     assert load_baseline(path) == {"a": {"overall": 1}}
 
 
-def fake_match_result() -> MatchResult:
-    return MatchResult([], 900.0, [], Score(80, 70, 75), 1000.0, [])
+A, B, C = (121.50, 25.05), (121.51, 25.05), (121.52, 25.05)
+
+
+def seg(points, kind="stroke") -> Segment:
+    return Segment(kind, 0, points, polyline_length_m(points))
+
+
+class EdgesRouter:
+    """edges() 回傳固定的 way；error 不是 None 時丟 RoutingError（edge_walk 配不出路段）。"""
+
+    def __init__(self, ways: tuple[int, ...] = (1, 2), error: str | None = None) -> None:
+        self.ways, self.error = ways, error
+        self.calls = 0
+
+    def edges(self, points):
+        self.calls += 1
+        if self.error is not None:
+            raise RoutingError(self.error)
+        return [EdgeInfo(way, 0.0) for way in self.ways]
+
+
+def fake_match_result(segments: list[Segment] | None = None) -> MatchResult:
+    segments = [seg([A, B])] if segments is None else segments
+    return MatchResult([], 900.0, segments, Score(80, 70, 75), 1000.0, [])
 
 
 def test_run_cases_warms_up_each_location_once_then_streams_each_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,12 +175,12 @@ def test_run_cases_warms_up_each_location_once_then_streams_each_result(monkeypa
     here, there = (121.50, 25.05), (121.60, 25.10)
     cases = [Case("a1", LINE, here, 1000.0, 0.0), Case("a2", LINE, here, 1000.0, 30.0), Case("b1", LINE, there, 1000.0, 0.0)]
 
-    results = run_cases(object(), cases, on_result=lambda r: events.append(f"result:{r.name}"))
+    results = run_cases(EdgesRouter(), cases, denied_ids=frozenset(), on_result=lambda r: events.append(f"result:{r.name}"))
     assert [r.name for r in results] == ["a1", "a2", "b1"]
     assert events == ["match", "match", "match", "result:a1", "match", "result:a2", "match", "result:b1"]
 
     events.clear()
-    run_cases(object(), cases, warm_up=False, on_result=lambda r: events.append(f"result:{r.name}"))
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), warm_up=False, on_result=lambda r: events.append(f"result:{r.name}"))
     assert events == ["match", "result:a1", "match", "result:a2", "match", "result:b1"]
 
 
@@ -161,7 +191,7 @@ def test_failed_case_keeps_the_real_target_length(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(runner, "match_shape", boom)
     case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
-    (res,) = run_cases(object(), [case])  # 預熱階段的失敗也不能讓整個跑分中斷
+    (res,) = run_cases(EdgesRouter(), [case], denied_ids=frozenset())  # 預熱階段的失敗也不能讓整個跑分中斷
     assert res.error == type(error).__name__
     assert (res.coverage, res.cleanliness, res.overall, res.length_m) == (0, 0, 0, 0.0)
     assert res.target_length_m == pytest.approx(4000, rel=0.01)  # 封閉方框：四邊都算
@@ -193,8 +223,9 @@ class FakeRun:
         self.crash = False
         monkeypatch.setattr(bench_cli, "Router", SimpleNamespace(from_build=lambda build: object()))
         monkeypatch.setattr(bench_cli, "run_cases", self._run_cases)
+        (layout.current() / DENIED_FILE).write_text("[]")
 
-    def _run_cases(self, router, cases, timeout_s=30.0, *, warm_up=True, on_result=None):
+    def _run_cases(self, router, cases, timeout_s=30.0, *, denied_ids, warm_up=True, on_result=None):
         for r in self.results:
             on_result(r)
         if self.crash:
@@ -295,8 +326,12 @@ def test_cli_without_any_build_exits_with_message(tmp_path: Path) -> None:
 @pytest.mark.valhalla
 def test_cli_on_grid_layout(grid_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     data = tmp_path / "data"
-    data.mkdir()
-    DataLayout(data).current_link.symlink_to(grid_config.parent)
+    layout = DataLayout(data)
+    build = layout.new_build_dir("grid")
+    for name in (grid_config.name, "tiles"):  # 共用整個測試的 tiles，另外放一份空的禁行清單
+        (build / name).symlink_to(grid_config.parent / name)
+    (build / DENIED_FILE).write_text("[]")
+    layout.activate(build)
     lon, lat = grid_point(3, 1)
     ok = Case("grid-line", LINE, (lon, lat), 1000.0, 0.0)
     far = Case("far", LINE, LOCATIONS["taipei_daan"], 1000.0, 0.0)  # 不在網格上，必定失敗
@@ -320,3 +355,117 @@ def test_cli_on_grid_layout(grid_config: Path, tmp_path: Path, monkeypatch: pyte
         bench_cli.main(argv)
     assert regressed.value.code == 1
     assert "退步：far：原本成功，現在失敗（AllStrokesFailed）" in capsys.readouterr().out
+
+
+# ---- 最終審查 M2：每個案例都檢查安全不變式（相鄰路段 ≤ 1 m、不經過被禁行的 way） ----
+
+
+def test_safety_passes_a_continuous_route_off_denied_ways() -> None:
+    assert safety_problem(EdgesRouter(ways=(1, 2)), [seg([A, B]), seg([B, C], "detour")], frozenset({9})) is None
+
+
+def test_safety_flags_a_gap_between_segments() -> None:
+    off = (B[0] + 0.0001, B[1])  # 約 10 m
+    problem = safety_problem(EdgesRouter(), [seg([A, B]), seg([off, C])], frozenset())
+    assert problem is not None and problem[0] == UNSAFE and "缺口" in problem[1]
+
+
+def test_safety_flags_a_denied_way() -> None:
+    problem = safety_problem(EdgesRouter(ways=(1, 9)), [seg([A, B])], frozenset({9}))
+    assert problem is not None and problem[0] == UNSAFE and "9" in problem[1]
+
+
+def test_safety_cannot_pass_when_edges_cannot_be_matched() -> None:
+    problem = safety_problem(EdgesRouter(error="edge_walk failed"), [seg([A, B])], frozenset({9}))
+    assert problem is not None and problem[0] == UNDETERMINED
+
+
+def test_safety_cannot_pass_a_segment_that_matches_no_edges() -> None:
+    problem = safety_problem(EdgesRouter(ways=()), [seg([A, B])], frozenset({9}))
+    assert problem is not None and problem[0] == UNDETERMINED
+
+
+def test_safety_cannot_pass_an_empty_route() -> None:
+    problem = safety_problem(EdgesRouter(), [], frozenset())
+    assert problem is not None and problem[0] == UNDETERMINED
+
+
+def test_safety_skips_zero_length_fragments() -> None:
+    # 封閉圈旋轉時切出的 [p, p] 片段沒有經過任何路段，不是無法判斷
+    router = EdgesRouter(ways=(1,))
+    assert safety_problem(router, [seg([A, B]), seg([B, B]), seg([B, C])], frozenset({9})) is None
+    assert router.calls == 2
+
+
+def test_unsafe_case_is_a_failed_case_and_marked(monkeypatch: pytest.MonkeyPatch) -> None:
+    gap = [seg([A, B]), seg([(B[0] + 0.0001, B[1]), C])]
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result(gap))
+    (res,) = run_cases(EdgesRouter(), [Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)], denied_ids=frozenset())
+    assert res.error == UNSAFE and "缺口" in res.safety
+    assert res.overall == 75  # 分數照記，但案例算失敗
+    assert UNSAFE in format_row(res) and "缺口" in format_row(res)
+    assert "失敗 1" in summarize([res]) and "不安全 1" in summarize([res])
+    assert compare([res], {"sq": {"overall": 75, "error": None}}) == ["sq：原本成功，現在失敗（UnsafeRoute）"]
+
+
+def test_undetermined_case_is_counted_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result())
+    (res,) = run_cases(EdgesRouter(error="boom"), [Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)], denied_ids=frozenset())
+    assert res.error == UNDETERMINED
+    assert "無法判斷 1" in summarize([res])
+
+
+def test_cli_refuses_to_run_without_the_denied_list(fake_run: FakeRun) -> None:
+    (DataLayout(fake_run.data).current() / DENIED_FILE).unlink()
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80)])
+    assert DENIED_FILE in str(refused.value.code)
+
+
+@pytest.mark.valhalla
+def test_grid_safety_detects_a_way_the_route_really_uses(grid_config: Path) -> None:
+    """非空洞：把路線真的經過的 way 當成被禁行，真實 Valhalla 的 edges() 必須抓得到。"""
+    router = Router(grid_config)
+    lon, lat = grid_point(3, 1)
+    case = Case("grid-line", LINE, (lon, lat), 1000.0, 0.0)
+    strokes = place(case.shape, case.center, case.size_m, case.rotation_deg)
+    result = match_shape(router, strokes, search_radius_m=None, deadline=Deadline(30))
+    used = {e.way_id for s in result.segments for e in router.edges(s.points)}
+    assert used
+    (res,) = run_cases(router, [case], denied_ids=frozenset(used))
+    assert res.error == UNSAFE and str(min(used)) in res.safety
+
+
+@pytest.mark.valhalla
+def test_stroke_along_a_marked_expressway_becomes_a_legal_detour(tmp_path: Path) -> None:
+    """服務層真實 Valhalla 回歸：沿被標記的快速道路畫一筆 → 合法 detour、接點連續、不經過被禁行的 way。
+
+    對照組（未修補的 tiles）同一筆會沿快速道路吸附，同一個安全檢查必須抓到：證明檢查不是空洞通過。
+    """
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, EXPRESSWAY_MAP)
+    build = tmp_path / "build"
+    build.mkdir()
+    router = Router(build_with_patch(src, build))
+    denied = frozenset(d.id for d in load_denied(build))
+    assert EXPRESSWAY_WAY_ID in denied
+    along = [StrokeInput(densify(grid_point(X0, 1), grid_point(X0 + 4, 1), n=40), False)]
+
+    for radius in (None, 150):
+        result = match_shape(router, along, search_radius_m=radius, deadline=Deadline(30))
+        assert "detour" in {s.kind for s in result.segments}
+        for a, b in zip(result.segments, result.segments[1:]):
+            assert haversine_m(a.points[-1], b.points[0]) <= JOIN_TOLERANCE_M
+        assert safety_problem(router, result.segments, denied) is None
+
+    control = Router(build_tiles(src, tmp_path / "control"))
+    unsafe = match_shape(control, along, search_radius_m=None, deadline=Deadline(30))
+    problem = safety_problem(control, unsafe.segments, denied)
+    assert problem is not None and problem[0] == UNSAFE and str(EXPRESSWAY_WAY_ID) in problem[1]
+
+
+def test_compare_flags_coverage_drop_even_when_overall_holds() -> None:
+    # ledger L120：overall 可能因 cleanliness 上升而持平，覆蓋率卻掉到 0（例如部件被整段丟掉）
+    base = {"a": {"overall": 50, "coverage": 66, "error": None}, "old": {"overall": 50, "error": None}}
+    results = [CaseResult("a", 0, 100, 50, 1.0, 1.0, 1, None), CaseResult("old", 0, 100, 50, 1.0, 1.0, 1, None)]
+    assert compare(results, base) == ["a：coverage 66 → 0"]  # 沒有 coverage 的舊條目只比 overall
