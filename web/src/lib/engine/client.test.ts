@@ -169,6 +169,16 @@ describe("toMatchError", () => {
     expect(toMatchError(418, "teapot").message).toBe("吸附失敗（HTTP 418）");
   });
 
+  it("detail.warnings 是 null（引擎 OpenAPI 宣告 array | null）→ 保留引擎的訊息，warnings 當空陣列", () => {
+    const detail = { code: "timeout", message: "吸附超過 5 秒", warnings: null };
+    expect(toMatchError(504, { detail })).toEqual({
+      status: 504,
+      message: "吸附超過 5 秒",
+      warnings: [],
+      engineDown: false,
+    });
+  });
+
   it("detail 物件缺 message 或 warnings 格式錯 → 預設訊息，不丟例外", () => {
     const fallback = {
       status: 422,

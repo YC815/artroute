@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import type { z } from "zod";
 import {
   errorBodySchema,
+  errorDetailSchema,
   matchRequestSchema,
   matchResponseSchema,
   statusResponseSchema,
 } from "@/lib/engine/contract";
 import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import type { components } from "@/lib/engine/openapi";
 
 const stroke = (n: number) => ({
   points: Array.from({ length: n }, (_, i) => [121.5 + i * 1e-4, 25.03] as [number, number]),
@@ -77,5 +80,34 @@ describe("errorBodySchema", () => {
 
   it("detail 可省略", () => {
     expect(errorBodySchema.parse({})).toEqual({});
+  });
+});
+
+describe("errorDetailSchema", () => {
+  it("warnings 可以是 null（引擎的 OpenAPI 宣告 array | null）、省略或陣列", () => {
+    const base = { code: "timeout", message: "吸附超過時間上限" };
+    expect(errorDetailSchema.parse({ ...base, warnings: null })).toEqual({ ...base, warnings: null });
+    expect(errorDetailSchema.parse(base)).toEqual(base);
+    const warnings = SAMPLE_MATCH_RESPONSE.warnings;
+    expect(errorDetailSchema.parse({ ...base, warnings })).toEqual({ ...base, warnings });
+  });
+
+  it("代理自己的錯誤碼也能解析（刻意比引擎的 code enum 寬）", () => {
+    for (const code of ["too_large", "validation", "engine_unreachable"]) {
+      expect(errorDetailSchema.safeParse({ code, message: "x" }).success).toBe(true);
+    }
+  });
+});
+
+// contract.ts 的 `satisfies` 擋住「web 解析結果不符合引擎型別」；這裡補另一個方向：
+// 引擎的回應型別必須能被 zod 解析，引擎拿掉 web 需要的欄位時 tsc 會失敗（型別檢查，不是執行期斷言）。
+describe("引擎回應型別 → zod 解析結果", () => {
+  it("MatchResponse、StatusResponse 可指派", () => {
+    expectTypeOf<components["schemas"]["MatchResponse"]>().toExtend<z.infer<typeof matchResponseSchema>>();
+    expectTypeOf<components["schemas"]["StatusResponse"]>().toExtend<z.infer<typeof statusResponseSchema>>();
+  });
+
+  it("ErrorDetail 可被 errorDetailSchema（超集）接受；不綁 code enum", () => {
+    expectTypeOf<components["schemas"]["ErrorDetail"]>().toExtend<z.infer<typeof errorDetailSchema>>();
   });
 });
