@@ -2,7 +2,7 @@
 
 以下數字都是實測值，來源是 m1 上的 `artroute-engine` 容器（2 個 uvicorn worker）與本機。推測一律標「推測」。時間皆為 UTC。
 
-目前 live 的是 build `20261010T183449Z`（引擎程式碼 `2e39d37`，ref 規則已修正）。前一個 build `20261010T181406Z`（程式碼 `b5f65f6`）的 ref 規則不會命中任何真實資料，已被取代；文中標明「`181406Z`」的數字是在那個 build 上量的。
+目前 live 的是 build `20261010T183449Z`（ref 規則已修正）；引擎程式碼是最終修正後的 `8142bde`（見「最終修正」）。前一個 build `20261010T181406Z`（程式碼 `b5f65f6`）的 ref 規則不會命中任何真實資料，已被取代；文中標明「`181406Z`」的數字是在那個 build 上量的。
 
 ## 結論
 
@@ -13,6 +13,55 @@
 - 基準測試 25 個案例全部成功、0 個 SLOW；單次 `ms` 中位數 219、最慢 497；overall 中位數 46、平均 48.4。ref 規則修正前後 25 個案例的分數與路線長度完全相同。
 - 對照沒有快速道路標記的 P0 build（在 `181406Z` 時量的）：25 個案例只有 2 個結果不同。基準測試的低分主要不是快速道路標記造成的。
 - 小型 L（台北車站附近）在新 build 上仍是 0/0/0，結果和 P0 build 完全相同。
+
+## 最終修正（final review 的 I-1、I-2、M1、M2、M5、M6、M7）
+
+branch 上的提交：`f1e859d`（I-1）、`c635c1e`（M5）、`78ad40e`（I-2）、`05be6c7`（M1）、`bfa794b`（M7）、`f1ff961`（M6）、`a6cd1a5`（M2）、`953113b`（接點裁切重試，控制者對 I-1 的補充）、`02778c2`（M2：edge_walk 切開再配）、`8142bde`（裁切只裁沒接上的那一端）。
+
+### 部署
+
+- `hl deploy artroute-engine --internal`：先部署 `02778c2`（19:47:03Z–19:49:58Z，RC=0；`pyproject.toml` 的註解改動讓依賴層重建，下載較久），再部署 `8142bde`（19:56:17Z–19:56:26Z，RC=0）。`current` 維持 `20261010T183449Z`，沒有重建資料。部署後 m1 上 `join.py`、`types.py` 的 md5 與 repo 一致，`/status` 回 `183449Z`，仍是 2 個 uvicorn worker。
+- 容器測試（linux arm64，`docker build --target test`，`8142bde`）：**675 passed** in 14.71s，RC=0。本機 `uv run pytest -q -W error`：675 passed。
+
+### I1：拖曳時被取消的請求
+
+請求是網站預設文字「I ♥ TAIPEI」（futural 字型、中心 121.5654, 25.033、2000 m，由 `web/src/lib/text` 與 `match/request` 產生）：**15 筆畫、68 點**。另外補量同一段文字放大到 6000 m（同樣 15 筆畫、68 點），因為 2000 m 版吸附只要約 230 ms，比 300 ms 的取消間隔短，量不出排隊。
+
+做法：每 300 ms 開新連線送一筆，送下一筆前關掉（或 abort）上一筆，持續 5 s（共 17 筆），最後一筆不關，記它的延遲與狀態碼；每種各 3 次。(a) 在引擎容器內用 Python 直打 `localhost:8080/match`；(b) 在 `artroute` 容器內用 node 的 fetch + AbortController 打 `localhost:$PORT/api/match`。
+
+| 請求 | 路徑 | 修前（`b436026`）最後一筆 | 修後（`8142bde`）最後一筆 | 單筆閒置延遲（修前／修後） |
+| --- | --- | --- | --- | --- |
+| 預設 2000 m | (a) 直打引擎 | 200：232、228、228 ms | 200：258、252、252 ms | 280／397 ms（修後是剛重啟的 worker） |
+| 預設 2000 m | (b) 經網站 | 200：232、238、243 ms | 200：255、253、255 ms | 279／313 ms |
+| 6000 m | (a) 直打引擎 | 200：**2044、2363、3108 ms** | 200：**760、749、743 ms** | 688／808 ms |
+| 6000 m | (b) 經網站 | 200：**5176、1480、3080 ms** | 200：**711、758、777 ms** | 737／776 ms |
+
+- 修後引擎的請求紀錄（M7）：6000 m 版 (a) 48 筆 `status=499 cancelled=True`、(b) 49 筆 499，其餘是 200。**(b) 也出現 499**，證明 Next 在呼叫端 abort 時確實中斷了往引擎的 fetch，引擎在排隊或吸附中途就停下。
+- 預設 2000 m 版修後沒有 499：每筆都在 300 ms 內完成，沒有東西可取消（53 筆 200）。
+- 修前沒有請求紀錄；uvicorn 的 access log 在呼叫端已斷線時不會寫，所以修前看不到被取消的請求在背後跑了多久，只能從最後一筆的延遲看出排隊。
+- 修後單筆吸附比修前慢：預設文字在同一個 Router 上的中位數 222 → 250 ms（6 次取中位數，`timing.py`），6000 m 版 656 → 725 ms。原因是 route 呼叫變多（預設文字 31 → 36 次）：接點接不上時的裁切重試，以及被拒絕的繞路改成斷開、交給串接器接。對應的品質：預設文字的第 2 筆畫不再是 `partial`（overall 54 → 53、coverage 68 → 69），6000 m 版的第 13 筆畫不再是 `no_route`（overall 38 → 40、coverage 75 → 79）。
+
+### 接點規則與裁切重試（I-1 與控制者補充）
+
+- 補橋、connector 的兩端都必須落在要求位置 1 m 內（`join` → `legal_route`），接不上就斷開 chain（吸附）或丟掉部件（串接），絕不畫直線。`match_shape` 輸出前再檢查一次相鄰路段 ≤ 1 m，違反就記 error 並回 500。
+- 斷開之前先裁切重試：沒接上的那一端沿既有吸附結果往內裁 20／50／100 m 再接（起點沒接上裁前段尾巴、終點沒接上裁後段開頭、找不到路兩端一起裁）；只裁 Valhalla 給的幾何，接點仍 ≤ 1 m。
+- 繞路候選的端點仍容許 2 倍搜尋半徑；它和前後段接不接得上一律由 `join` 以 1 m 判斷。I-1 的第一版（`f1e859d`）讓接 trace 端點的繞路也只容許 1 m，在真實資料上把合法的繞路丟掉（`hi@taipei_riverside` 16 → 10），`953113b` 改回。
+- 用 `b436026` 的程式在同一個 build 上重跑 25 個案例：3 個接點有 > 1 m 的直線缺口（`heart@taipei_daan` 9.0、11.6 m；`star@taipei_daan@r30` 21.2 m）。修後 0 個。
+
+### 基準測試（`183449Z`，修後程式）
+
+- 用修前的 baseline 檢查：25/25 成功、0 SLOW、**安全斷言不安全 0、無法判斷 0**；退步只有 `star@taipei_daan@r30` overall 42 → 34，`EXIT=1`。逐案例與修前 baseline 比，只有兩個案例不同：
+
+| 案例 | 修前 | 修後 | 原因 |
+| --- | --- | --- | --- |
+| `star@taipei_daan@r30` | overall 42、coverage 66、cleanliness 17、route 14957 m | overall 34、coverage 0、cleanliness 67、route 2617 m | 修前在斷點有一條 21.2 m 的直線。那裡前一段 trace 的終點 route 出不去：直接 route 的起點偏 21.2 m，前段尾巴裁掉約 121 m 後仍偏 3.5 m，所以接不上。筆畫斷成兩條 chain，串接器固定以第 0 個部件為錨點（ledger L64），接不上的第二條（大部分的星形）被丟掉 |
+| `heart@taipei_daan` | overall 64、coverage 76、route 12641 m | overall 64、coverage 75、route 12554 m | 修前有 9.0、11.6 m 兩條直線；修後由裁切重試合法接上 |
+
+- 其餘 23 個案例的 overall、coverage、cleanliness、length 與修前完全相同。
+- 兩個退步都來自修前輸出裡的非法直線，修後是合法的結果，所以照控制者的規則更新 baseline：`--update-baseline --baseline /data/baseline.json`，25/25 成功、沒有被拒絕、沒有用 `--force`、`EXIT=0`，複製回 `engine/src/engine/bench/baseline.json`（每筆多了 `safety` 欄位，通過時為 null）。
+- 修後 baseline：`ms` 中位數 237、最慢 510（`square@taipei_daan@r30`）；overall 中位數 46、平均 48.1（修前 48.4）；coverage 中位數 74。
+- 安全斷言：每個成功案例檢查相鄰路段 ≤ 1 m，並逐段用 `edges()` 確認沒有經過 build 的 `bicycle_denied_ways.json`（2399 條）。edge_walk 對死巷原地折返（A→B→A）配不上，第一次跑時 12 個案例被記成「無法判斷」；改成配不上就從中間切開各自配（`02778c2`）之後，25 個案例全部判斷得出、全部通過。
+- `compare` 現在同時比 overall 與 coverage（ledger L120）。
 
 ## 部署與容器測試
 
@@ -336,7 +385,8 @@ spec §6.1 要求 `ref` 是快速公路編號（台61、台62甲…）的 `trunk
 - ref 規則：已修正（見「ref 規則修正」）。
 - 誤判候選 1 到 7 需要人工確認；確認後用 `bicycle_overrides.toml` 的 `allow`／`deny`（OSM way id）修正。
 - 評分偏嚴（spec §6.3 backlog）：小型 L 在任何位置都是 0 分，本 task 只量測、沒有調整。
-- baseline 的 `ms` 只是單次取樣，只當參考；`compare` 只比 overall。
+- baseline 的 `ms` 只是單次取樣，只當參考；`compare` 比 overall 與 coverage（最終修正後）。
+- 串接器固定以第 0 個部件為錨點（ledger L64）：錨點那條 chain 很小時，接不上的大部分圖形會整個被丟掉（`star@taipei_daan@r30` coverage 0）。建議改成從最長的部件開始串。
 - `builds/` 只留最新兩版（`prune(keep=2)`）：每次成功重建都會移除第三舊的 build；要保留 P0 那樣的對照 build 需要另外處理。
 
 ## 附錄：全部標記名稱（括號內為 way 數）

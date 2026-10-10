@@ -4,9 +4,10 @@
     "coverage": 80,
     "error": null,
     "length_m": 11499.0,
-    "ms": 239,
+    "ms": 240,
     "name": "heart@kaohsiung_lingya",
     "overall": 72,
+    "safety": null,
     "target_length_m": 6768.7
   },
   "heart@taichung_west": {
@@ -14,19 +15,21 @@
     "coverage": 76,
     "error": null,
     "length_m": 10970.0,
-    "ms": 155,
+    "ms": 151,
     "name": "heart@taichung_west",
     "overall": 68,
+    "safety": null,
     "target_length_m": 6768.7
   },
   "heart@taipei_daan": {
     "cleanliness": 53,
-    "coverage": 76,
+    "coverage": 75,
     "error": null,
-    "length_m": 12641.0,
-    "ms": 351,
+    "length_m": 12553.8,
+    "ms": 354,
     "name": "heart@taipei_daan",
     "overall": 64,
+    "safety": null,
     "target_length_m": 6768.7
   },
   "heart@taipei_daan@r30": {
@@ -34,9 +37,10 @@
     "coverage": 58,
     "error": null,
     "length_m": 12826.0,
-    "ms": 313,
+    "ms": 329,
     "name": "heart@taipei_daan@r30",
     "overall": 52,
+    "safety": null,
     "target_length_m": 6766.7
   },
   "heart@taipei_riverside": {
@@ -44,9 +48,10 @@
     "coverage": 41,
     "error": null,
     "length_m": 19632.0,
-    "ms": 199,
+    "ms": 205,
     "name": "heart@taipei_riverside",
     "overall": 20,
+    "safety": null,
     "target_length_m": 6768.7
   },
   "hi@kaohsiung_lingya": {
@@ -54,9 +59,10 @@
     "coverage": 75,
     "error": null,
     "length_m": 21348.0,
-    "ms": 190,
+    "ms": 200,
     "name": "hi@kaohsiung_lingya",
     "overall": 38,
+    "safety": null,
     "target_length_m": 7232.4
   },
   "hi@taichung_west": {
@@ -64,9 +70,10 @@
     "coverage": 70,
     "error": null,
     "length_m": 16717.0,
-    "ms": 112,
+    "ms": 111,
     "name": "hi@taichung_west",
     "overall": 40,
+    "safety": null,
     "target_length_m": 7232.4
   },
   "hi@taipei_daan": {
@@ -74,9 +81,10 @@
     "coverage": 75,
     "error": null,
     "length_m": 17997.0,
-    "ms": 217,
+    "ms": 224,
     "name": "hi@taipei_daan",
     "overall": 46,
+    "safety": null,
     "target_length_m": 7232.4
   },
   "hi@taipei_daan@r30": {
@@ -84,9 +92,10 @@
     "coverage": 84,
     "error": null,
     "length_m": 19898.0,
-    "ms": 303,
+    "ms": 314,
     "name": "hi@taipei_daan@r30",
     "overall": 62,
+    "safety": null,
     "target_length_m": 7224.3
   },
   "hi@taipei_riverside": {
@@ -94,9 +103,10 @@
     "coverage": 31,
     "error": null,
     "length_m": 32353.0,
-    "ms": 219,
+    "ms": 244,
     "name": "hi@taipei_riverside",
     "overall": 16,
+    "safety": null,
     "target_length_m": 7232.4
   },
   "letter_l@kaohsiung_lingya": {
@@ -104,9 +114,10 @@
     "coverage": 80,
     "error": null,
     "length_m": 5837.0,
-    "ms": 93,
+    "ms": 94,
     "name": "letter_l@kaohsiung_lingya",
     "overall": 66,
+    "safety": null,
     "target_length_m": 3210.0
   },
   "letter_l@taichung_west": {
@@ -114,9 +125,10 @@
     "coverage": 48,
     "error": null,
     "length_m": 4488.0,
-    "ms": 50,
+    "ms": 49,
     "name": "letter_l@taichung_west",
     "overall": 46,
+    "safety": null,
     "target_length_m": 3210.0
   },
   "letter_l@taipei_daan": {
@@ -124,9 +136,10 @@
     "coverage": 0,
     "error": null,
     "length_m": 1711.0,
-    "ms": 125,
+    "ms": 175,
     "name": "letter_l@taipei_daan",
     "overall": 44,
+    "safety": null,
     "target_length_m": 3210.0
   },
   "letter_l@taipei_daan@r30": {
@@ -134,9 +147,10 @@
     "coverage": 55,
     "error": null,
     "length_m": 7028.0,
-    "ms": 130,
+    "ms": 135,
     "name": "letter_l@taipei_daan@r30",
     "overall": 42,
+    "safety": null,
     "target_length_m": 3208.6
   },
   "letter_l@taipei_riverside": {
@@ -144,9 +158,10 @@
     "coverage": 0,
     "error": null,
     "length_m": 2000.0,
-    "ms": 98,
+    "ms": 103,
     "name": "letter_l@taipei_riverside",
     "overall": 30,
+    "safety": null,
     "target_length_m": 3210.0
   },
   "square@kaohsiung_lingya": {
@@ -154,9 +169,10 @@
     "coverage": 78,
     "error": null,
     "length_m": 16231.0,
-    "ms": 278,
+    "ms": 285,
     "name": "square@kaohsiung_lingya",
     "overall": 39,
+    "safety": null,
     "target_length_m": 8018.0
   },
   "square@taichung_west": {
@@ -164,9 +180,10 @@
     "coverage": 81,
     "error": null,
     "length_m": 12042.0,
-    "ms": 139,
+    "ms": 130,
     "name": "square@taichung_west",
     "overall": 70,
+    "safety": null,
     "target_length_m": 8018.0
   },
   "square@taipei_daan": {
@@ -174,9 +191,10 @@
     "coverage": 74,
     "error": null,
     "length_m": 15022.0,
-    "ms": 308,
+    "ms": 314,
     "name": "square@taipei_daan",
     "overall": 56,
+    "safety": null,
     "target_length_m": 8018.0
   },
   "square@taipei_daan@r30": {
@@ -184,9 +202,10 @@
     "coverage": 83,
     "error": null,
     "length_m": 16087.0,
-    "ms": 497,
+    "ms": 510,
     "name": "square@taipei_daan@r30",
     "overall": 72,
+    "safety": null,
     "target_length_m": 8018.0
   },
   "square@taipei_riverside": {
@@ -194,9 +213,10 @@
     "coverage": 40,
     "error": null,
     "length_m": 31371.0,
-    "ms": 288,
+    "ms": 299,
     "name": "square@taipei_riverside",
     "overall": 20,
+    "safety": null,
     "target_length_m": 8018.0
   },
   "star@kaohsiung_lingya": {
@@ -204,9 +224,10 @@
     "coverage": 74,
     "error": null,
     "length_m": 12179.0,
-    "ms": 230,
+    "ms": 237,
     "name": "star@kaohsiung_lingya",
     "overall": 64,
+    "safety": null,
     "target_length_m": 7177.0
   },
   "star@taichung_west": {
@@ -214,9 +235,10 @@
     "coverage": 76,
     "error": null,
     "length_m": 11327.0,
-    "ms": 114,
+    "ms": 113,
     "name": "star@taichung_west",
     "overall": 58,
+    "safety": null,
     "target_length_m": 7177.0
   },
   "star@taipei_daan": {
@@ -224,19 +246,21 @@
     "coverage": 78,
     "error": null,
     "length_m": 15029.0,
-    "ms": 281,
+    "ms": 283,
     "name": "star@taipei_daan",
     "overall": 61,
+    "safety": null,
     "target_length_m": 7177.0
   },
   "star@taipei_daan@r30": {
-    "cleanliness": 17,
-    "coverage": 66,
+    "cleanliness": 67,
+    "coverage": 0,
     "error": null,
-    "length_m": 14957.0,
-    "ms": 352,
+    "length_m": 2617.0,
+    "ms": 366,
     "name": "star@taipei_daan@r30",
-    "overall": 42,
+    "overall": 34,
+    "safety": null,
     "target_length_m": 7177.0
   },
   "star@taipei_riverside": {
@@ -244,9 +268,10 @@
     "coverage": 43,
     "error": null,
     "length_m": 22548.0,
-    "ms": 229,
+    "ms": 239,
     "name": "star@taipei_riverside",
     "overall": 22,
+    "safety": null,
     "target_length_m": 7177.0
   }
 }
