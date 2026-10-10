@@ -47,7 +47,7 @@ export function MapView({ initialCenter, response, onError, children }: Props) {
   const [center] = useState(initialCenter);
   const [map, setMap] = useState<MapLibreMap | null>(null);
   // onError 每次 render 都可能是新函式，包成 effect event 才不會因此重建地圖
-  const reportError = useEffectEvent((message: string) => onError?.(message));
+  const notifyError = useEffectEvent((message: string) => onError?.(message));
 
   useEffect(() => {
     let disposed = false;
@@ -69,7 +69,7 @@ export function MapView({ initialCenter, response, onError, children }: Props) {
       });
       instance.touchZoomRotate.disableRotation();
       instance.keyboard.disableRotation();
-      watchErrors(instance, () => !disposed, (message) => reportError(message));
+      watchErrors(instance, () => !disposed, (message) => notifyError(message));
       // load 要等 style 加上第一批圖磚才會觸發，style 失敗時永遠不會來；style.load 一到就能加圖層
       instance.once("style.load", () => {
         if (disposed) return;
@@ -77,6 +77,11 @@ export function MapView({ initialCenter, response, onError, children }: Props) {
         setMap(instance);
       });
       created = instance;
+    }).catch((error: unknown) => {
+      // 模組載入失敗或 WebGL 初始化丟例外（new Map 同步 throw）時，至少讓使用者看到提示
+      if (disposed) return;
+      console.error("地圖載入失敗", error);
+      notifyError(LOAD_ERROR_MESSAGE);
     });
     return () => {
       disposed = true;
