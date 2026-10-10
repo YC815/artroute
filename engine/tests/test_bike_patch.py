@@ -7,7 +7,7 @@ import pytest
 from engine.data.bike_patch import Overrides, is_expressway, load_overrides, patch_pbf
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.routing.router import Router, RoutingError
-from engine.routing.tiles import build_tiles
+from engine.routing.tiles import build_tiles, config_path
 from osm_fixture import (
     EXPRESSWAY_MAP,
     EXPRESSWAY_ONLY_MAP,
@@ -65,7 +65,7 @@ def test_built_tiles_keep_bicycles_off_expressway_but_on_plain_trunk(tmp_path: P
     write_grid_pbf(src, EXPRESSWAY_MAP)
     build_dir = tmp_path / "build"
     build_dir.mkdir()
-    config = build_dir / "valhalla.json"  # 本 worktree 的 tiles.py 尚無 config_path()，合併後由 controller 改回
+    config = config_path(build_dir)
     assert build_with_patch(src, build_dir) == config
     assert not list(build_dir.glob("*.osm.pbf"))  # 修補用的暫存 pbf 已刪除
     assert [d.id for d in load_denied(build_dir)] == [EXPRESSWAY_WAY_ID]
@@ -219,7 +219,7 @@ def test_build_with_patch_writes_null_coordinates_and_loads_them_back(tmp_path: 
     missing_node_pbf(src)
     build_dir = tmp_path / "build"
     build_dir.mkdir()
-    monkeypatch.setattr("engine.data.build.build_tiles", lambda pbf, out: out / "valhalla.json")  # 這裡只測標記與清單
+    monkeypatch.setattr("engine.data.build.build_tiles", lambda pbf, out: config_path(out))  # 這裡只測標記與清單
     build_with_patch(src, build_dir)
     assert json.loads((build_dir / DENIED_FILE).read_text())[0]["last"] is None
     loaded = load_denied(build_dir)
