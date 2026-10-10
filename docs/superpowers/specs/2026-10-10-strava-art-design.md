@@ -223,7 +223,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 2. **快速道路標記（P0 發現：台灣快速道路多標成 `highway=trunk`，Valhalla 對 bicycle 視為可騎）**：建圖前用 pyosmium 產生修補過的 pbf，把符合下列任一條件的 `highway=trunk`／`trunk_link` 加上 `bicycle=no`：
    - `motorroad=yes`；
    - `name` 含「快速道路」「快速公路」「快速路」或「高架」；
-   - `ref` 是快速公路編號：台61、台61甲、台62、台62甲、台64、台65、台66、台68、台72、台74、台76、台78、台82、台84、台86、台88（含 `;` 分隔的多值）。
+   - `ref` 是快速公路編號：台61、台61甲、台62、台62甲、台64、台65、台66、台68、台72、台74、台76、台78、台82、台84、台86、台88（含 `;` 分隔的多值）。OSM 實際多寫成不帶「台」的 `61`、`62甲`，兩種寫法（含「臺」）都算。
    - 另有 `engine/src/engine/data/bicycle_overrides.toml`：`deny`／`allow` 兩個 way id 清單，最後套用，供人工修正誤判。
    - 修補過的 way id 清單存在 build 目錄（`bicycle_denied_ways.json`），供驗證查詢使用。
 3. 在 `/data/builds/<日期>/` 建出 Valhalla tiles 和可騎道路 FlatGeobuf。建圖在子程序中以低優先權執行，同一時間只允許一個建圖。
