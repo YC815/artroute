@@ -8,11 +8,11 @@ from pathlib import Path
 
 import httpx
 
+from engine.data.build import build_with_patch
 from engine.data.checks import validate_build
 from engine.data.download import GEOFABRIK_TAIWAN, download_with_md5
 from engine.data.layout import DataLayout
 from engine.data.pipeline import run_build
-from engine.routing.tiles import build_tiles
 
 
 def main() -> None:
@@ -23,7 +23,7 @@ def main() -> None:
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         md5 = download_with_md5(GEOFABRIK_TAIWAN, pbf, client)
     build_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    meta = run_build(layout, pbf, md5, build_id, builder=build_tiles, validator=validate_build)
+    meta = run_build(layout, pbf, md5, build_id, builder=build_with_patch, validator=validate_build)
     print(json.dumps(asdict(meta), ensure_ascii=False))
 
 

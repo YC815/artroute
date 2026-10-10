@@ -32,7 +32,7 @@ def write_grid_pbf(path: Path, ways: list[GridWay]) -> None:
             writer.add_node(
                 osmium.osm.mutable.Node(id=node_id, location=grid_point(*coord), version=1)
             )
-        for way in ways:
+        for way in sorted(ways, key=lambda w: w.id):  # Valhalla 要求 pbf 內物件依 id 排序，不排會 "Detected unsorted input data"
             writer.add_way(
                 osmium.osm.mutable.Way(
                     id=way.id,
@@ -62,4 +62,31 @@ TEST_MAP: list[GridWay] = [
         {**RESIDENTIAL, "oneway": "yes", "oneway:bicycle": "no"},
     ),
     GridWay(MOTORWAY_WAY_ID, [(c, 3) for c in range(7)], {"highway": "motorway"}),
+]
+
+
+EXPRESSWAY_WAY_ID = 200   # trunk + ref 台64：要被標記
+PLAIN_TRUNK_WAY_ID = 201  # 一般 trunk（例如台1線）：不標記
+X0 = 20  # 與 TEST_MAP 分開
+# 住宅街繞路所在的列。Valhalla 的 bicycle costing 對 trunk 本身就有懲罰：繞路只長一點（列 0、-1）時
+# 未修補的路線也會繞開快速道路，測試就分不出 patch 有沒有作用；列 -2 起繞路才長到讓未修補時走 trunk，
+# 取 -3 多留一列餘裕。
+DETOUR_ROW = -3
+
+EXPRESSWAY_MAP: list[GridWay] = [
+    # 上：快速公路直線；下：住宅街繞路（約 4×0.22 + 0.8 + 4×0.22 km，遠長於直線的 0.8 km）
+    GridWay(EXPRESSWAY_WAY_ID, [(X0 + c, 1) for c in range(5)], {"highway": "trunk", "ref": "台64", "name": "八里新店線"}),
+    GridWay(210, [(X0, 1), (X0, DETOUR_ROW)], RESIDENTIAL),
+    GridWay(211, [(X0 + c, DETOUR_ROW) for c in range(5)], RESIDENTIAL),
+    GridWay(212, [(X0 + 4, DETOUR_ROW), (X0 + 4, 1)], RESIDENTIAL),
+    # 一般 trunk：唯一通路，必須可騎
+    GridWay(PLAIN_TRUNK_WAY_ID, [(X0 + 4, 1), (X0 + 4, 2), (X0 + 4, 3)], {"highway": "trunk", "ref": "台1"}),
+]
+
+EXPRESSWAY_ONLY_WAY_ID = 300
+X1 = 40  # 與 TEST_MAP、EXPRESSWAY_MAP 分開
+
+EXPRESSWAY_ONLY_MAP: list[GridWay] = [
+    # 快速公路是兩點之間唯一的路：未修補時走得通，標成 bicycle=no 後必須無路可走
+    GridWay(EXPRESSWAY_ONLY_WAY_ID, [(X1 + c, 1) for c in range(5)], {"highway": "trunk", "ref": "台64"}),
 ]

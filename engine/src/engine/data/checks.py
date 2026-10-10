@@ -3,12 +3,15 @@
 from pathlib import Path
 from typing import Protocol
 
-from engine.routing.router import EdgeInfo, LonLat, RouteResult, Router
+from engine.data.bike_patch import DeniedWay
+from engine.data.build import load_denied
+from engine.routing.router import EdgeInfo, LonLat, RouteResult, Router, RoutingError
 
 # 洲美街單行段（OSM way 287016294，oneway=yes，節點順序由西往東）。座標取自該 way 的 geometry
 ZHOUMEI_ONEWAY_WAY_ID = 287016294
 ZHOUMEI_WEST: LonLat = (121.4994400, 25.1010677)
 ZHOUMEI_EAST: LonLat = (121.5035557, 25.1011282)
+ZHOUMEI_EXPRESSWAY_NAME = "洲美快速道路"
 
 
 class RouterLike(Protocol):
@@ -16,18 +19,64 @@ class RouterLike(Protocol):
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]: ...
 
 
-def taiwan_checks(router: RouterLike) -> list[str]:
+def _oneway_checks(router: RouterLike) -> list[str]:
     failures: list[str] = []
-    forward = router.edges(router.route(ZHOUMEI_WEST, ZHOUMEI_EAST).points)
-    if not any(e.way_id == ZHOUMEI_ONEWAY_WAY_ID for e in forward):
+    forward = router.route(ZHOUMEI_WEST, ZHOUMEI_EAST)
+    if not any(e.way_id == ZHOUMEI_ONEWAY_WAY_ID for e in router.edges(forward.points)):
         failures.append(
             f"順向路線沒有走洲美街單行段（way {ZHOUMEI_ONEWAY_WAY_ID}）：OSM 資料可能變了，需要更新這項檢查"
         )
-    for edge in router.edges(router.route(ZHOUMEI_EAST, ZHOUMEI_WEST).points):
+    backward = router.route(ZHOUMEI_EAST, ZHOUMEI_WEST)
+    if backward.length_km <= forward.length_km:
+        failures.append("洲美街逆向路線沒有比順向長：可能沒有真的繞路")
+    for edge in router.edges(backward.points):
         if edge.way_id == ZHOUMEI_ONEWAY_WAY_ID and not 45 <= edge.begin_heading <= 135:
             failures.append(f"逆向騎上洲美街單行段（heading {edge.begin_heading}）")
     return failures
 
 
+def _expressway_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
+    if not denied:
+        return ["沒有任何快速道路被標記為禁行：資料或標記規則可能壞了"]
+    # is_expressway 用子字串比對名稱，這裡也用子字串：真實資料可能叫「洲美快速道路（北上）」
+    zhoumei = [d for d in denied if ZHOUMEI_EXPRESSWAY_NAME in (d.name or "")]
+    if not zhoumei:
+        return [f"找不到{ZHOUMEI_EXPRESSWAY_NAME}：OSM 資料可能變了，需要更新這項檢查"]
+    # 端點節點不在 pbf 時座標是 None，這種 way 沒辦法查；全都沒座標就當失敗，不讓 None 進到 route
+    checkable = [(d, d.first, d.last) for d in zhoumei if d.first is not None and d.last is not None]
+    if not checkable:
+        return [f"{ZHOUMEI_EXPRESSWAY_NAME}的 way 都缺少端點座標：無法驗證自行車路線是否避開快速道路"]
+    denied_ids = {d.id for d in denied}
+    failures: list[str] = []
+    errors: list[str] = []
+    succeeded = 0
+    for way, first, last in checkable:
+        # 兩個方向都要查：只查 first->last 會漏掉 oneway=-1 這類只在逆向才走上快速道路的情形
+        for label, start, end in (("順向", first, last), ("逆向", last, first)):
+            try:
+                route = router.route(start, end)
+            except RoutingError as error:
+                errors.append(f"way {way.id} {label}：{error}")
+                continue
+            succeeded += 1
+            used = {e.way_id for e in router.edges(route.points)} & denied_ids
+            if used:
+                failures.append(f"自行車路線（{ZHOUMEI_EXPRESSWAY_NAME} way {way.id} {label}）使用了被禁行的快速道路 way {sorted(used)}")
+    if not succeeded:  # 沒有任何一條路線算得出來，就沒有東西能證明路線避開了快速道路
+        raise RoutingError("；".join(errors))
+    return failures
+
+
+def taiwan_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
+    failures: list[str] = []
+    for name, check in (("洲美街單行段檢查", lambda: _oneway_checks(router)),
+                        ("洲美快速道路檢查", lambda: _expressway_checks(router, denied))):
+        try:
+            failures.extend(check())
+        except RoutingError as error:
+            failures.append(f"{name}失敗：{error}")
+    return failures
+
+
 def validate_build(build_dir: Path) -> list[str]:
-    return taiwan_checks(Router(build_dir / "valhalla.json"))
+    return taiwan_checks(Router.from_build(build_dir), load_denied(build_dir))
