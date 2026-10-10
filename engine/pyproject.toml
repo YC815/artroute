@@ -1,0 +1,28 @@
+[project]
+name = "engine"
+version = "0.1.0"
+description = "artroute-engine：GPS art 路線吸附與搜尋引擎"
+authors = [
+    { name = "YC815", email = "yushun@chen.zone" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.143.0",
+    "httpx>=0.28.1",
+    "pyvalhalla==3.9.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "osmium>=4.3.1",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["valhalla: 會實際建 Valhalla tiles（較慢）"]
