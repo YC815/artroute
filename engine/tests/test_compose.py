@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.matching.compose import MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
+from engine.matching.compose import ANCHOR_TIE_M, MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
@@ -449,9 +449,18 @@ def test_parts_before_the_anchor_are_joined_in_riding_order() -> None:
 
 
 def test_parts_of_equal_length_keep_part_zero_as_anchor() -> None:
-    # 兩段的長度只差浮點誤差：視為一樣長，取索引小的
+    # b 比 a 長一點點，但差距不到 ANCHOR_TIE_M：視為一樣長，取索引小的（拿掉容差，b 會變成錨點、a 被丟掉）
     a = seg([(121.50, LAT), (121.51, LAT)], index=0)
-    b = seg([(121.60, LAT), (121.61, LAT)], index=1)
+    b = seg([(121.60, LAT), (121.61 + 5e-7, LAT)], index=1)  # 比 a 長約 0.05 m
+    assert 0 < b.length_m - a.length_m < ANCHOR_TIE_M
     router = IslandStraightRouter(island=frozenset(b.points))
     result = compose(router, [Part([a], False), Part([b], False)], Deadline(10))
     assert result.dropped == [1]
+
+
+def test_a_single_part_is_returned_as_a_new_list() -> None:
+    # 沒有其他部件可接時，輸出不能與輸入共用同一個 list
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    part = Part([a], False)
+    result = compose(StraightRouter(), [part], Deadline(10))
+    assert result.segments == [a] and result.segments is not part.segments

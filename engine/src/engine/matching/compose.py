@@ -187,7 +187,7 @@ def _assemble(
     """從錨點開始組裝：order 裡排在錨點後面的依序接在尾端，排在前面的由近到遠接在開頭。
     原定那一端接不上就試另一端，兩端都接不上才丟：一個出不去的端點只擋住接在它後面的那一次。"""
     k = order.index(anchor)
-    route, dropped = bodies[anchor], []
+    route, dropped = list(bodies[anchor]), []  # 沒有其他部件可接時也回新的 list，不與輸入共用
     sides = [(i, True) for i in order[k + 1 :]] + [(i, False) for i in reversed(order[:k])]
     for i, at_end in sides:
         joined = _attach(router, deadline, route, bodies[i], at_end)
