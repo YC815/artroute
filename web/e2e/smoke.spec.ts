@@ -48,7 +48,7 @@ const STATUS = { data: { build_id: "20260101T000000Z", osm_md5: "e2e", created_a
 const STATUS_DATE = "2026-01-01";
 const MATCH_DATE = "2026-10-10";
 
-/** 路線往北平移約 220 m（約 25 px）：目標圖形的 SVG 不會蓋住路線，畫出來的像素才數得到。 */
+/** 路線往北平移約 220 m（zoom 14 約 51 px）：目標圖形的 SVG 不會蓋住路線，畫出來的像素才數得到。 */
 const NORTH_SHIFT_DEG = 0.002;
 const HI_STROKES = 4;
 
