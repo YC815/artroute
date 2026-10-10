@@ -113,6 +113,24 @@ describe("imageShape", () => {
     expect(imageShape(rings, [0]).strokes[0].points).toHaveLength(4);
   });
 
+  it("略過無效的索引（越界、負數、非整數、NaN），不丟例外", () => {
+    const rings: Ring[] = [{ points: [[0, 0], [10, 0], [10, 10], [0, 10]], area: 100, outer: true }];
+    const selected = [5, -1, 0.5, Number.NaN, 0];
+    expect(() => imageShape(rings, selected)).not.toThrow();
+    expect(imageShape(rings, selected).strokes).toEqual(imageShape(rings, [0]).strokes);
+  });
+
+  it("重複的索引只產生一筆，保留第一次出現的順序", () => {
+    const rings: Ring[] = [
+      { points: [[0, 0], [10, 0], [10, 10], [0, 10]], area: 100, outer: true },
+      { points: [[20, 20], [30, 20], [30, 30]], area: 50, outer: true },
+    ];
+    const shape = imageShape(rings, [1, 0, 1, 0]);
+    expect(shape.strokes).toHaveLength(2);
+    expect(shape.strokes).toEqual(imageShape(rings, [1, 0]).strokes);
+    expect(shape.strokes).not.toEqual(imageShape(rings, [0, 1]).strokes);
+  });
+
   it("超過 2000 點的原始環會簡化到上限內（用真實的 traceRings 輸出）", () => {
     const size = 400;
     // 鋸齒邊緣會切出小碎片，取面積最大的那一環（主體）

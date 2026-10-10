@@ -34,4 +34,22 @@ describe("simplifyToLimit", () => {
     const line: Point[] = [[0, 0], [1, 1], [2, 0]];
     expect(simplifyToLimit(line, 0.5, 10)).toEqual(simplifyPolyline(line, 0.5));
   });
+
+  it("容許誤差不合法（0、負數、NaN）時改用 1，而且會結束", () => {
+    const zigzag: Point[] = Array.from({ length: 101 }, (_, i) => [i, i % 2 === 0 ? 0 : 1]);
+    for (const tolerance of [0, -1, Number.NaN]) {
+      const result = simplifyToLimit(zigzag, tolerance, 10);
+      expect(result.length).toBeLessThanOrEqual(10);
+      expect(result).toEqual(simplifyToLimit(zigzag, 1, 10));
+    }
+  });
+
+  it("maxPoints 小於 2 時當成 2，而且會結束", () => {
+    const zigzag: Point[] = Array.from({ length: 101 }, (_, i) => [i, i % 2 === 0 ? 0 : 1]);
+    for (const maxPoints of [1, 0, -3]) {
+      const result = simplifyToLimit(zigzag, 0.1, maxPoints);
+      expect(result.length).toBeLessThanOrEqual(2);
+      expect(result).toEqual([[0, 0], [100, 0]]);
+    }
+  });
 });

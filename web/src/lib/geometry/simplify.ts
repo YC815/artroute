@@ -36,10 +36,15 @@ export function simplifyPolyline(points: Point[], tolerance: number): Point[] {
   return points.filter((_, i) => keep[i] === 1);
 }
 
-/** 簡化到點數不超過 maxPoints：容許誤差每次加倍。tolerance 必須大於 0。 */
+/**
+ * 簡化到點數不超過 maxPoints：容許誤差每次加倍。
+ * 不合法的參數會被修正，否則迴圈會永遠不結束：tolerance 不是正數（0、負數、NaN）時用 1；maxPoints 小於 2 時當成 2。
+ */
 export function simplifyToLimit(points: Point[], tolerance: number, maxPoints: number): Point[] {
-  let result = simplifyPolyline(points, tolerance);
-  for (let t = tolerance * 2; result.length > maxPoints; t *= 2) {
+  const safeTolerance = tolerance > 0 ? tolerance : 1;
+  const limit = Math.max(2, maxPoints);
+  let result = simplifyPolyline(points, safeTolerance);
+  for (let t = safeTolerance * 2; result.length > limit; t *= 2) {
     result = simplifyPolyline(points, t);
   }
   return result;

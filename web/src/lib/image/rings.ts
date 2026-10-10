@@ -5,7 +5,10 @@ import { MAX_STROKE_POINTS, MIN_STROKE_POINTS } from "@/lib/limits";
 import { normalizeStrokes } from "@/lib/shape/normalize";
 import type { Point, Shape, Stroke } from "@/lib/shape/types";
 
-/** 一個輪廓環（像素座標，y 向下）。points 不重複起點；outer 為 false 代表是洞。 */
+/**
+ * 一個輪廓環（像素座標，y 向下）。經過 extractRings 之後 points 不重複起點（首尾不相同）；
+ * traceRings 的原始輸出首尾相同。outer 為 false 代表是洞。
+ */
 export type Ring = { points: Point[]; area: number; outer: boolean };
 
 /** 面積小於影像面積這個比例的環視為雜點，丟掉。 */
@@ -72,8 +75,12 @@ function closedStroke(points: Point[]): Stroke | null {
   return { points: fitted, closed: true };
 }
 
-/** 選取的環 → 正規化的 Shape，每個環是一個封閉筆畫。退化的環不產生筆畫，超過點數上限的環先簡化。 */
+/**
+ * 選取的環 → 正規化的 Shape，每個環是一個封閉筆畫。
+ * 略過無效（越界、非整數）與重複的索引，重複的只保留第一次出現的位置；退化的環不產生筆畫，超過點數上限的環先簡化。
+ */
 export function imageShape(rings: Ring[], selected: number[]): Shape {
-  const strokes = selected.flatMap((i) => closedStroke(rings[i].points) ?? []);
+  const indices = [...new Set(selected)].filter((i) => Number.isInteger(i) && i >= 0 && i < rings.length);
+  const strokes = indices.flatMap((i) => closedStroke(rings[i].points) ?? []);
   return { kind: "image", strokes: normalizeStrokes(strokes) };
 }
