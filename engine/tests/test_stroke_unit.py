@@ -7,6 +7,7 @@ from engine.matching.stroke import densify, match_stroke
 from engine.matching.types import JOIN_TOLERANCE_M
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
+from island_router import IslandRouter, across_island
 
 LAT = 25.05
 
@@ -220,3 +221,46 @@ def test_route_snapped_beyond_twice_the_search_radius_is_a_failure(start_m: floa
     else:
         assert result.chains == []
         assert [w.code for w in result.warnings] == ["no_route"]
+
+
+# ---- 最終審查 I-1：橋接線與繞路的端點必須真的接在相鄰路段上，否則接點會變成一條直線 ----
+
+
+def test_island_endpoint_never_leaves_a_straight_gap_inside_a_chain() -> None:
+    # 島上那段 trace 的終點 route 不到：route 從主路上另一點出發（約 36 m 外，仍在 2r 內）。
+    # 舊版把這條 route 當橋接收下，chain 內就有一個 36 m 的缺口，_route_points 再把它畫成直線
+    router = IslandRouter()
+    result = run(router, across_island())
+    assert result.chains
+    for chain in result.chains:
+        assert_chain_continuous(chain)
+    assert [w.code for w in result.warnings] == ["partial"]
+
+
+class ShortcutRouter(FakeRouter):
+    """route 回傳的長度只有 1 m：任何繞路都會被 MIN_LENGTH_RATIO 拒絕（模擬塌縮、切角）。"""
+
+    def route(self, start, end):
+        result = super().route(start, end)
+        return RouteResult(points=result.points, length_km=0.001)
+
+
+def test_rejected_detour_is_not_readmitted_as_a_bridge() -> None:
+    # ledger L34：繞路被 MIN_LENGTH_RATIO 拒絕後，舊版 _link 用同一條 route 橋接同一個缺口並收下，
+    # 等於繞過「切角／塌縮不能收」的規則。被拒絕的那一段要讓 chain 斷開
+    router = ShortcutRouter(bad=(121.509, 121.511))
+    result = run(router, line(121.50, 121.52))
+    assert len(result.chains) == 2
+    assert all(s.kind == "stroke" for chain in result.chains for s in chain)
+    assert [w.code for w in result.warnings] == ["partial"]
+
+
+def test_split_point_of_a_failed_run_is_an_input_point_and_may_snap() -> None:
+    # 整串繞不過去時從中間的輸入點切開重試：切點是原始輸入點（不在路上），route 可以把它吸附到 2r 內；
+    # 兩半從同一個輸入點出發，吸附結果一致，chain 照樣連續
+    router = FarSnapRouter(40, 40, bad=(121.0, 122.0), max_route_m=600)
+    result = run(router, line(121.50, 121.51))
+    assert len(result.chains) == 1
+    assert_chain_continuous(result.chains[0])
+    assert [s.kind for s in result.chains[0]] == ["detour", "detour"]
+    assert result.warnings == []

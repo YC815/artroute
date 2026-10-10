@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from engine.matching.deadline import Deadline
-from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, segment_from
+from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, legal_route, segment_from
 from engine.routing.geo import haversine_m, polyline_length_m
-from engine.routing.router import LonLat, RoutingError
+from engine.routing.router import LonLat
 
 CLOSED_ROTATION_STEP_M = 50.0
 
@@ -153,22 +153,11 @@ def _two_opt(options: list[list[_Option]], order: list[int]) -> list[int]:
 
 
 def _connect(router: MatchRouter, deadline: Deadline, start: LonLat, end: LonLat) -> Segment | None:
-    """start 到 end 的合法路線；繞不出來、或結果沒有真的從 start 走到 end 就回傳 None。
-
-    起訖吸附到同一處時 route 會成功，但只回傳不到 2 個不同的點、長度 0：那不是連線，
-    收下來就是零長度的 connector，後面的部件實際上沒接上。
-    route 的起訖若離要求的位置超過 JOIN_TOLERANCE_M（端點被吸附到別處），接上去就在接點留下缺口。
-    """
-    deadline.check()
-    try:
-        result = router.route(start, end)
-    except RoutingError:
-        return None
-    if len(set(result.points)) < 2:
-        return None
-    if haversine_m(result.points[0], start) > JOIN_TOLERANCE_M or haversine_m(result.points[-1], end) > JOIN_TOLERANCE_M:
-        return None
-    return segment_from("connector", None, result)
+    """start 到 end 的 connector。兩端都是部件的端點（已經在路上），所以端點容許誤差都是 JOIN_TOLERANCE_M。"""
+    result = legal_route(
+        router, deadline, start, end, start_tolerance_m=JOIN_TOLERANCE_M, end_tolerance_m=JOIN_TOLERANCE_M
+    )
+    return None if result is None else segment_from("connector", None, result)
 
 
 def _append(router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment]) -> bool:

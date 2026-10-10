@@ -1,20 +1,24 @@
+import logging
 from pathlib import Path
 
 import pytest
 
+from engine.matching.compose import Composition
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.service import (
     AllStrokesFailed,
+    DiscontinuousRoute,
     OutsideTaiwan,
     StrokeInput,
     TargetTooSmall,
     default_search_radius,
     match_shape,
 )
-from engine.matching.types import JOIN_TOLERANCE_M
+from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
 from grid_helpers import densify, rides_westward_on_row
+from island_router import IslandRouter, across_island
 from osm_fixture import grid_point
 
 LAT = 25.05
@@ -230,3 +234,33 @@ def test_mixed_shape_legal_wrong_way_and_closed_loop(grid_config: Path) -> None:
     loop = [p for s in result.segments if s.stroke_index == 2 for p in s.points]
     assert haversine_m(loop[0], loop[-1]) <= JOIN_TOLERANCE_M  # 封閉圈繞一圈回到進入點
     assert haversine_m(loop[0], grid_point(5, 0)) > 100  # 已旋轉：從離前一段最近的地方進，不是畫的起點
+
+
+# ---- 最終審查 I-1：輸出前檢查連續性；任何接點超過 JOIN_TOLERANCE_M 都不能變成直線輸出 ----
+
+
+def assert_joins_within_tolerance(segments) -> None:
+    for a, b in zip(segments, segments[1:]):
+        assert haversine_m(a.points[-1], b.points[0]) <= JOIN_TOLERANCE_M
+
+
+def test_island_shape_route_has_no_straight_gap() -> None:
+    result = match_shape(IslandRouter(), [StrokeInput(across_island(), False)], search_radius_m=30, deadline=Deadline(30))
+    assert result.segments
+    assert_joins_within_tolerance(result.segments)
+    assert [w.code for w in result.warnings] == ["partial"]
+
+
+def test_gap_between_segments_is_an_internal_error_not_a_straight_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 吸附或串接若有漏洞留下缺口，輸出一條直線比回 500 更糟：在 _route_points 之前擋下並記錄
+    def gappy(router, parts, deadline) -> Composition:
+        a = Segment("stroke", 0, [(121.50, LAT), (121.51, LAT)], 1000.0)
+        b = Segment("detour", 0, [(121.5101, LAT), (121.52, LAT)], 1000.0)  # 與 a 相距約 10 m
+        return Composition(segments=[a, b], dropped=[])
+
+    monkeypatch.setattr("engine.matching.service.compose", gappy)
+    with caplog.at_level(logging.ERROR, logger="engine.matching.service"), pytest.raises(DiscontinuousRoute):
+        match_shape(FakeRouter(), [StrokeInput(row(121.50, 121.51), False)], search_radius_m=50, deadline=Deadline(30))
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]

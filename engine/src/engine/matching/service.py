@@ -1,5 +1,6 @@
 """整個圖形的吸附流程：驗證 → 逐部件分治吸附 → 串接 → 評分。"""
 
+import logging
 from dataclasses import dataclass
 
 from engine.matching.compose import Part, compose
@@ -15,6 +16,8 @@ MIN_TARGET_LENGTH_M = 50.0
 MIN_DIAGONAL_M = 2.0  # 範圍太小 score() 無法評分（它的下限是 1 m，量法不同，多留一倍餘裕）
 RADIUS_RATIO, MIN_RADIUS_M, MAX_RADIUS_M = 0.02, 30.0, 150.0
 
+logger = logging.getLogger(__name__)
+
 
 class OutsideTaiwan(Exception):
     pass
@@ -22,6 +25,10 @@ class OutsideTaiwan(Exception):
 
 class TargetTooSmall(Exception):
     pass
+
+
+class DiscontinuousRoute(RuntimeError):
+    """相鄰路段之間有缺口：程式錯誤。輸出的話缺口會變成一條地圖上不存在的直線，所以寧可回內部錯誤。"""
 
 
 class AllStrokesFailed(Exception):
@@ -79,7 +86,16 @@ def _closes(chain: list[Segment]) -> bool:
     return haversine_m(chain[-1].points[-1], chain[0].points[0]) <= JOIN_TOLERANCE_M
 
 
+def _check_continuous(segments: list[Segment]) -> None:
+    for i, (a, b) in enumerate(zip(segments, segments[1:])):
+        gap_m = haversine_m(a.points[-1], b.points[0])
+        if gap_m > JOIN_TOLERANCE_M:
+            logger.error("路線第 %d、%d 段（%s → %s）之間有 %.1f m 的缺口，不輸出", i, i + 1, a.kind, b.kind, gap_m)
+            raise DiscontinuousRoute(f"路線第 {i}、{i + 1} 段之間有 {gap_m:.1f} m 的缺口")
+
+
 def _route_points(segments: list[Segment]) -> list[LonLat]:
+    """攤平成一條折線。後一段的第一點會被丟掉，所以呼叫前必須先確認相鄰段落相接（_check_continuous）。"""
     points: list[LonLat] = []
     for segment in segments:
         points.extend(segment.points if not points else segment.points[1:])
@@ -154,6 +170,7 @@ def match_shape(
 
     composition = compose(router, parts, deadline)
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
+    _check_continuous(composition.segments)
     route = _route_points(composition.segments)
     return MatchResult(
         route_points=route,
