@@ -20,9 +20,9 @@ from engine.routing.router import EdgeInfo, LonLat, RoutingError
 PRODUCTION_TIMEOUT_MS = 5000
 
 # 安全斷言沒過時 CaseResult.error 的值：一律算退步（不看 baseline），也不能寫進 baseline（--force 也一樣）
-UNSAFE = "UnsafeRoute"  # 相鄰路段有缺口（會畫成直線），或經過被禁行的 way
+UNSAFE = "UnsafeRoute"  # 相鄰路段有缺口（會畫成直線）、經過被禁行的 way，或接點轉彎 Valhalla 不會直接騎
 UNDETERMINED = "SafetyUndetermined"  # edges() 配不出經過哪些路段：無法證明安全，不算通過
-SAFETY_ERRORS = frozenset({UNSAFE, UNDETERMINED})  # 安全斷言沒過：一律算退步，也不能寫進 baseline
+SAFETY_ERRORS = frozenset({UNSAFE, UNDETERMINED})
 # 只量測、不改路線：要不要禁止這些路段待使用者決定（品質調查 §5.4）
 REPORTED_USES = ("footway", "steps", "parking_aisle")
 
@@ -124,7 +124,7 @@ def _measurable_edges(router: BenchRouter, segment: Segment) -> list[EdgeInfo]:
 def use_meters(router: BenchRouter, segments: list[Segment]) -> dict[str, float]:
     """路線走在 REPORTED_USES 各用途上的公尺數（edge_walk 的 edge.length 加總，四捨五入到 0.1 m）。"""
     edges = [edge for segment in segments for edge in _measurable_edges(router, segment)]
-    return {use: round(sum(e.length_km for e in edges if e.use == use) * 1000, 1) for use in REPORTED_USES}
+    return {use: round(sum((e.length_km for e in edges if e.use == use), 0.0) * 1000, 1) for use in REPORTED_USES}
 
 
 def _run_one(router: BenchRouter, case: Case, timeout_s: float, denied_ids: frozenset[int]) -> CaseResult:

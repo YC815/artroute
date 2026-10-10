@@ -571,6 +571,7 @@ def test_use_meters_sums_only_the_reported_uses_over_every_segment() -> None:
 
 def test_use_meters_skips_zero_length_fragments_and_unmatchable_segments() -> None:
     assert use_meters(UseRouter(), [seg([A, A])]) == ZERO_USES
+    assert all(isinstance(m, float) for m in use_meters(UseRouter(), [seg([A, A])]).values())  # 沒有路段也是 0.0，不是 int 0
     assert use_meters(EdgesRouter(error="boom"), [seg([A, B])]) == ZERO_USES
 
 
@@ -583,6 +584,14 @@ def test_case_result_row_and_summary_carry_use_meters(monkeypatch: pytest.Monkey
     assert format_header().split()[7:10] == ["foot_m", "steps_m", "park_m"]
     assert format_row(res).split()[7:10] == ["12", "4", "0"]
     assert "footway／steps／parking_aisle 合計 12／4／0 m" in summarize([res])
+
+
+def test_summarize_use_totals_exclude_failed_and_unsafe_cases() -> None:
+    uses = {"footway": 10.0, "steps": 2.0, "parking_aisle": 1.0}
+    ok = replace(result("ok", 80), use_m=uses)
+    failed = replace(result("failed", 0, error="AllStrokesFailed"), use_m={"footway": 500.0, "steps": 500.0, "parking_aisle": 500.0})
+    unsafe = replace(result("unsafe", 80, error=UNSAFE), use_m={"footway": 700.0, "steps": 700.0, "parking_aisle": 700.0})
+    assert "footway／steps／parking_aisle 合計 10／2／1 m" in summarize([ok, failed, unsafe])
 
 
 def test_failed_case_has_no_use_meters_and_still_formats() -> None:
