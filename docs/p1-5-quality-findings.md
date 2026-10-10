@@ -17,6 +17,7 @@
   | T5 | `3de75ed` | 繞路、橋接、connector 取 bicycle 最短路徑（S），建圖驗證兩種設定都跑 |
   | T6 | `e890194` | 預設搜尋半徑 0.02 → 0.035（R035） |
   | T7 | `8327c82` | 分治改成串接（C） |
+  | T7+fix | `ece472e` | T7 + 錨點改取 stroke 長度最長的部件，繞路與 connector 不算（控制者裁決 A3 的修正，疊在本文件的初版 `831ee1a` 之上） |
 
 - bench：`python -m engine.bench`（不帶 `--update-baseline`，與該 commit 的 committed `baseline.json` 比較），25 案例，每個地點先預熱一次，**ms 是單次取樣**。
 - 預設文字：網站的「I ♥ TAIPEI」（futural、中心 121.5654, 25.033、2000 m），**15 筆畫、68 點、1 個封閉**；`timing.py` 用同一個 Router 連跑 6 次，第 1 次預熱不計，取後 5 次的中位數，並計 Valhalla `trace`／`route` 呼叫次數。量測時引擎容器照常服務（無流量）。
@@ -32,6 +33,7 @@
 | T5 | 25/25 | 54 | 47.4 | 74 | 39 | 2.00 | 228 / 505 | 33251／256／4001 |
 | T6 | 25/25 | 61 | 52.2 | 74 | 46 | 1.76 | 294 / 1117 | 30578／185／1019 |
 | T7 | 25/25 | 60 | 52.4 | 73 | 46 | 1.71 | 284 / 1121 | 30423／316／1428 |
+| T7+fix | 25/25 | 60 | 53.6 | 73 | 54 | 1.71 | 282 / 1118 | 30423／316／1428 |
 
 預設文字請求（單一 Router、6 次取後 5 次）：
 
@@ -43,57 +45,47 @@
 | T5 | 297 | 304 | 77／41 | 51 | 56/71/41 | 18732 | 無 |
 | T6 | 298 | 305 | 39／31 | 44 | 57/71/43 | 19439 | 無 |
 | T7 | 291 | 304 | 39／31 | 45 | 58/72/43 | 19365 | 無 |
+| T7+fix | 298 | 298 | 39／31 | 45 | 58/72/43 | 19365 | 無 |
 
 - T7 另外重量三次：median 298、290、293 ms（max 300、291、299），離 300 ms 的預算很近（約 2–3%）。
+- T7+fix 另外重量三次：median 297、291、290 ms（max 305、298、291），四次共 290–298 ms，路線與分數和 T7 完全相同（trace／route 呼叫數也相同）。
 - T3、T4 的預設文字 median 451／462 ms 高於預算：T3 的「接不上就試另一端」讓 route 呼叫從 36 增為 61；T5 的 `shortest`（61 → 41）與 T6 的半徑（trace 77 → 39）把它壓回約 300 ms。預算的閘門只看 T7。
-- bench 最慢案例：T2–T5 504–510 ms（`square@taipei_daan@r30`），T6 1117 ms、T7 1121 ms（同一案例）。原型同組合 1140 ms。
-- `star@taipei_daan@r30`（Task 3 失敗路徑重試的觀察對象）：T2 361、T3 377、T4 392、T5 388、T6 595、T7 605 ms；原型同組合 608 ms。
+- bench 最慢案例：T2–T5 504–510 ms（`square@taipei_daan@r30`），T6 1117 ms、T7 1121 ms、T7+fix 1118 ms（同一案例）。原型同組合 1140 ms。
+- `star@taipei_daan@r30`（Task 3 失敗路徑重試的觀察對象）：T2 361、T3 377、T4 392、T5 388、T6 595、T7 605、T7+fix 595 ms；原型同組合 608 ms。
 
 ### 逐案例 overall/coverage
 
-| 案例 | baseline | T2 | T3 | T4 | T5 | T6 | T7 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `heart@kaohsiung_lingya` | 72/80 | 72/80 | 72/80 | 72/80 | 73/80 | 73/78 | 73/78 |
-| `heart@taichung_west` | 68/76 | 68/76 | 68/76 | 68/76 | 65/75 | 69/76 | 69/76 |
-| `heart@taipei_daan` | 64/75 | 64/75 | 64/75 | 64/75 | 64/75 | 66/75 | 65/75 |
-| `heart@taipei_daan@r30` | 52/58 | 52/58 | 52/58 | 52/58 | 54/57 | 66/74 | 66/74 |
-| `heart@taipei_riverside` | 20/41 | 20/41 | 20/41 | 20/41 | 12/23 | 18/36 | 24/47 |
-| `hi@kaohsiung_lingya` | 38/75 | 38/75 | 38/75 | 38/75 | 37/74 | 58/71 | 58/71 |
-| `hi@taichung_west` | 40/70 | 40/70 | 40/70 | 40/70 | 42/70 | 37/71 | 37/71 |
-| `hi@taipei_daan` | 46/75 | 46/75 | 46/75 | 46/75 | 57/75 | 56/72 | 58/73 |
-| `hi@taipei_daan@r30` | 62/84 | 62/84 | 62/84 | 62/84 | 58/83 | 60/81 | 60/80 |
-| `hi@taipei_riverside` | 16/31 | 16/31 | 29/58 | 29/58 | 29/58 | 30/60 | 30/60 |
-| `letter_l@kaohsiung_lingya` | 66/80 | 66/80 | 66/80 | 66/80 | 66/80 | 71/76 | 71/76 |
-| `letter_l@taichung_west` | 46/48 | 46/48 | 46/48 | 46/48 | 46/48 | 66/73 | 64/69 |
-| `letter_l@taipei_daan` | 44/0 | 44/0 | 37/74 | 37/74 | 37/74 | 34/67 | 34/67 |
-| `letter_l@taipei_daan@r30` | 42/55 | 42/55 | 42/55 | 42/55 | 40/55 | 43/56 | 44/56 |
-| `letter_l@taipei_riverside` | 30/0 | 30/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 |
-| `square@kaohsiung_lingya` | 39/78 | 39/78 | 39/78 | 39/78 | 39/78 | 61/76 | 59/76 |
-| `square@taichung_west` | 70/81 | 70/81 | 70/81 | 70/81 | 72/82 | 70/79 | 70/79 |
-| `square@taipei_daan` | 56/74 | 56/74 | 56/74 | 56/74 | 62/75 | 66/74 | 66/74 |
-| `square@taipei_daan@r30` | 72/83 | 72/83 | 72/83 | 72/83 | 73/83 | 70/80 | 69/79 |
-| `square@taipei_riverside` | 20/40 | 20/40 | 20/40 | 20/40 | 16/32 | 22/43 | 24/48 |
-| `star@kaohsiung_lingya` | 64/74 | 64/74 | 64/74 | 64/74 | 64/74 | 66/77 | 66/77 |
-| `star@taichung_west` | 58/76 | 58/76 | 58/76 | 58/76 | 60/76 | 70/76 | 70/76 |
-| `star@taipei_daan` | 61/78 | 61/78 | 61/78 | 61/78 | 60/77 | 64/74 | 63/72 |
-| `star@taipei_daan@r30` | 34/0 | 34/0 | 39/66 | 39/66 | 38/64 | 44/70 | 43/69 |
-| `star@taipei_riverside` | 22/43 | 22/43 | 22/43 | 22/43 | 22/43 | 26/52 | 26/53 |
+| 案例 | baseline | T2 | T3 | T4 | T5 | T6 | T7 | T7+fix |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `heart@kaohsiung_lingya` | 72/80 | 72/80 | 72/80 | 72/80 | 73/80 | 73/78 | 73/78 | 73/78 |
+| `heart@taichung_west` | 68/76 | 68/76 | 68/76 | 68/76 | 65/75 | 69/76 | 69/76 | 69/76 |
+| `heart@taipei_daan` | 64/75 | 64/75 | 64/75 | 64/75 | 64/75 | 66/75 | 65/75 | 65/75 |
+| `heart@taipei_daan@r30` | 52/58 | 52/58 | 52/58 | 52/58 | 54/57 | 66/74 | 66/74 | 66/74 |
+| `heart@taipei_riverside` | 20/41 | 20/41 | 20/41 | 20/41 | 12/23 | 18/36 | 24/47 | 24/47 |
+| `hi@kaohsiung_lingya` | 38/75 | 38/75 | 38/75 | 38/75 | 37/74 | 58/71 | 58/71 | 58/71 |
+| `hi@taichung_west` | 40/70 | 40/70 | 40/70 | 40/70 | 42/70 | 37/71 | 37/71 | 37/71 |
+| `hi@taipei_daan` | 46/75 | 46/75 | 46/75 | 46/75 | 57/75 | 56/72 | 58/73 | 58/73 |
+| `hi@taipei_daan@r30` | 62/84 | 62/84 | 62/84 | 62/84 | 58/83 | 60/81 | 60/80 | 60/80 |
+| `hi@taipei_riverside` | 16/31 | 16/31 | 29/58 | 29/58 | 29/58 | 30/60 | 30/60 | 30/60 |
+| `letter_l@kaohsiung_lingya` | 66/80 | 66/80 | 66/80 | 66/80 | 66/80 | 71/76 | 71/76 | 71/76 |
+| `letter_l@taichung_west` | 46/48 | 46/48 | 46/48 | 46/48 | 46/48 | 66/73 | 64/69 | 64/69 |
+| `letter_l@taipei_daan` | 44/0 | 44/0 | 37/74 | 37/74 | 37/74 | 34/67 | 34/67 | 34/67 |
+| `letter_l@taipei_daan@r30` | 42/55 | 42/55 | 42/55 | 42/55 | 40/55 | 43/56 | 44/56 | 44/56 |
+| `letter_l@taipei_riverside` | 30/0 | 30/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 30/0 |
+| `square@kaohsiung_lingya` | 39/78 | 39/78 | 39/78 | 39/78 | 39/78 | 61/76 | 59/76 | 59/76 |
+| `square@taichung_west` | 70/81 | 70/81 | 70/81 | 70/81 | 72/82 | 70/79 | 70/79 | 70/79 |
+| `square@taipei_daan` | 56/74 | 56/74 | 56/74 | 56/74 | 62/75 | 66/74 | 66/74 | 66/74 |
+| `square@taipei_daan@r30` | 72/83 | 72/83 | 72/83 | 72/83 | 73/83 | 70/80 | 69/79 | 69/79 |
+| `square@taipei_riverside` | 20/40 | 20/40 | 20/40 | 20/40 | 16/32 | 22/43 | 24/48 | 24/48 |
+| `star@kaohsiung_lingya` | 64/74 | 64/74 | 64/74 | 64/74 | 64/74 | 66/77 | 66/77 | 66/77 |
+| `star@taichung_west` | 58/76 | 58/76 | 58/76 | 58/76 | 60/76 | 70/76 | 70/76 | 70/76 |
+| `star@taipei_daan` | 61/78 | 61/78 | 61/78 | 61/78 | 60/77 | 64/74 | 63/72 | 63/72 |
+| `star@taipei_daan@r30` | 34/0 | 34/0 | 39/66 | 39/66 | 38/64 | 44/70 | 43/69 | 43/69 |
+| `star@taipei_riverside` | 22/43 | 22/43 | 22/43 | 22/43 | 22/43 | 26/52 | 26/53 | 26/53 |
 
-### 相對 committed baseline 的下降（T7）
+### 相對 committed baseline 的下降（T7，錨點修正前）
 
-- T7 `hi@kaohsiung_lingya` coverage 75 → 71（超過容忍值 3）
-- T7 `hi@taichung_west` overall 40 → 37（容忍值內）
-- T7 `hi@taipei_daan` coverage 75 → 73（容忍值內）
-- T7 `hi@taipei_daan@r30` overall 62 → 60（容忍值內）
-- T7 `hi@taipei_daan@r30` coverage 84 → 80（超過容忍值 3）
-- T7 `letter_l@kaohsiung_lingya` coverage 80 → 76（超過容忍值 3）
-- T7 `letter_l@taipei_daan` overall 44 → 34（超過容忍值 3）
-- T7 `letter_l@taipei_riverside` overall 30 → 0（超過容忍值 3）
-- T7 `square@kaohsiung_lingya` coverage 78 → 76（容忍值內）
-- T7 `square@taichung_west` coverage 81 → 79（容忍值內）
-- T7 `square@taipei_daan@r30` overall 72 → 69（容忍值內）
-- T7 `square@taipei_daan@r30` coverage 83 → 79（超過容忍值 3）
-- T7 `star@taipei_daan` coverage 78 → 72（超過容忍值 3）
+
 
 逐項說明（「原型」指品質調查的 C＋R035＋S＋V＋BR 在官方 harness 的結果，`official_combo`，見下方「與原型逐案例對照」）：
 
@@ -111,7 +103,27 @@
   - `letter_l@taipei_daan` overall 44 → 34：T3 起 37/74/0（T2 44/0/87，長度 1711 m → 8334 m，coverage 0 → 74 但 cleanliness 87 → 0），T6 再降 3 分成 34/67/0；T7 長度 7694 m。原型 44/66/22、4672 m。
   - 原因見下方「letter_l 兩個案例」。
 
-### 與原型逐案例對照（T7 對原型 C＋R035＋S＋V＋BR）
+### 相對 committed baseline 的下降（T7+fix，最終）
+
+- T7+fix `heart@kaohsiung_lingya` coverage 80 → 78（容忍值內）
+- T7+fix `hi@kaohsiung_lingya` coverage 75 → 71（超過容忍值 3）
+- T7+fix `hi@taichung_west` overall 40 → 37（容忍值內）
+- T7+fix `hi@taipei_daan` coverage 75 → 73（容忍值內）
+- T7+fix `hi@taipei_daan@r30` overall 62 → 60（容忍值內）
+- T7+fix `hi@taipei_daan@r30` coverage 84 → 80（超過容忍值 3）
+- T7+fix `letter_l@kaohsiung_lingya` coverage 80 → 76（超過容忍值 3）
+- T7+fix `letter_l@taipei_daan` overall 44 → 34（超過容忍值 3）
+- T7+fix `square@kaohsiung_lingya` coverage 78 → 76（容忍值內）
+- T7+fix `square@taichung_west` coverage 81 → 79（容忍值內）
+- T7+fix `square@taipei_daan@r30` overall 72 → 69（容忍值內）
+- T7+fix `square@taipei_daan@r30` coverage 83 → 79（超過容忍值 3）
+- T7+fix `star@taipei_daan` coverage 78 → 72（超過容忍值 3）
+
+與 T7（錨點修正前）相比，T7+fix 只有一個案例的輸出不同，其餘 24 個案例的 overall、coverage、cleanliness、長度完全相同：`letter_l@taipei_riverside` 0/0/0、3527 m → 30/0/59、2004 m，與 committed baseline 的 overall、coverage、cleanliness 相同（30/0/59；長度 2004 m 對 2000 m，T5 以後兩段 stroke 取代了原本頭尾的 detour），與原型（30/0/59、2004 m）完全相同。整體 overall 平均 52.4 → 53.6、cleanliness 中位數 46 → 54，中位數維持 60。
+
+下降清單比 T7 少一行（`letter_l@taipei_riverside`），其餘 13 行同 T7 的說明（前述「逐項說明」）。`letter_l@taipei_daan` overall 44 → 34 是控制者裁決 A3 明確接受的例外（coverage 0 → 67，補出完整的 L；根因見「letter_l 兩個案例」）。
+
+### 與原型逐案例對照（T7 對原型 C＋R035＋S＋V＋BR；T7+fix 後 `letter_l@taipei_riverside` 也相同，見表後）
 
 25 案例中 18 個與原型的 overall／coverage／cleanliness／長度完全相同（heart 5 個、square 5 個、star 5 個（包括 `star@taipei_daan@r30` 43/69/17、13310 m）、`letter_l@taichung_west`、`letter_l@kaohsiung_lingya`、`letter_l@taipei_daan@r30`）。不同的 7 個：
 
@@ -125,9 +137,9 @@
 | `letter_l@taipei_daan` | 44/66/22，4672 m | 34/67/0，7694 m | -10 | 見下 |
 | `letter_l@taipei_riverside` | 30/0/59，2004 m | 0/0/0，3527 m | -30 | 見下 |
 
-hi 的 5 列是 Task 9（V）尚未加入造成的差異（計畫已預告）；`letter_l` 的 2 列不在預告內。原型 25 案例 overall 平均 54.4、中位數 62；T7 平均 52.4、中位數 60。
+hi 的 5 列是 Task 9（V）尚未加入造成的差異（計畫已預告）；`letter_l` 的 2 列不在預告內。T7+fix 之後 `letter_l@taipei_riverside` 回到 30/0/59、2004 m，與原型相同；與原型相同的案例變成 19 個，不同的剩 6 個（`hi` 5 個＋`letter_l@taipei_daan`）。原型 25 案例 overall 平均 54.4、中位數 62；T7 平均 52.4、中位數 60。
 
-### letter_l 兩個案例（T3 的後果）
+### letter_l 兩個案例（T3 的後果；A3 裁決與 T7+fix）
 
 `letter_l` 是單一開放筆畫（3 個點：向下再向右），吸附後斷成兩個部件：part0 = 垂直那段（由上往下）、part1 = 水平那段（由西往東）。用 `composition.dropped` 與部件端點量到：
 
@@ -137,6 +149,10 @@ hi 的 5 列是 Task 9（V）尚未加入造成的差異（計畫已預告）；
   - `letter_l@taipei_riverside`：part0 的終點 → part1 的起點相距 202.6 m，兩個方向的 route 都回 None，兩端都接不上，part0 被丟掉（`dropped=[0]`，T3、T7 相同），輸出只剩變成錨點的 part1。part1 含一條 2088 m 的繞路（T7：兩端直線距離 127 m，離畫線最遠 913 m），所以 coverage 0、cleanliness 0。舊版保留的是 part0（2000 m，貼著畫線，cleanliness 59），錨點換成「路線比較長」的 part1 之後，這個較好的部件反而被丟掉。
 - 結果：`letter_l@taipei_daan` coverage 從 0 變 74／67（整個 L 都畫出來了），但 cleanliness 87 → 0、overall 下降；`letter_l@taipei_riverside` 完全沒有分。T3 的驗收預期是「可能一起改善」，實際 overall 變差。
 - 結論：不是移植錯誤（與原型逐案例相同的其他 18 個案例證明移植吻合），是 T3 的設計（接另一端）在「開放部件不能反向」時的副作用，原型沒有 T3，所以原型沒有這個退步。**不調參數、不改 compare 容忍值；是否調整 T3 的做法由控制者決定。**
+
+控制者裁決 A3 與 T7+fix（`ece472e`）：
+- `letter_l@taipei_riverside` 是真缺陷：錨點用總路線長度挑，被繞路灌大（part1 有 2088 m 的繞路、stroke 只有 973 m），乾淨的 part0（stroke 2004 m）被擠掉。修正：錨點取 stroke 類 segment 的長度總和最長的部件（detour／connector 不算），平手規則不變。T7+fix 量到 part0 stroke 2004 m、part1 stroke 973 m，錨點回到 part0，part1 被丟（`dropped=[1]`），輸出回到 30/0/59、2004 m。
+- `letter_l@taipei_daan` 接受為 A1 的明確例外：baseline 44 的 coverage 是 0（只畫了片段），現在畫出完整的 L（coverage 67），代價是一條 3027 m 的 connector（接點在單行道上，14.7 m 的缺口正向無路、反向 603 m）。T7+fix 輸出與 T7 完全相同（34/67/0、7694 m；這個案例的 part1 stroke 長度 1675 m 小於 part0 的 1711 m，錨點換成 part0，結果仍是水平段 → connector → 垂直段）。根本的做法是把斷成多個部件的開放筆畫整條反向（把 V 擴到多部件筆畫），放 P2 backlog。這個案例的 overall 最多可降 10。
 
 ### 其他
 
@@ -150,18 +166,28 @@ hi 的 5 列是 Task 9（V）尚未加入造成的差異（計畫已預告）；
   - 其他增加的：`square@taipei_riverside` 1916 → 3666（新增兩個 detour 折返：單程 384 m 在 121.51898, 25.07773，緊接在一個既有的 365 m stroke 折返之後；單程 438 m 在 121.50292, 25.07671，後面接一個既有的 454 m stroke 折返）、`heart@taipei_riverside` 996 → 1470。這兩個案例的 overall／coverage 在 T7 反而上升（square 22/43 → 24/48、heart 18/36 → 24/47）。
   - `star@taipei_daan@r30` 有一個單程 1141 m 的折返（121.53432, 25.02949，在 detour 裡），T3 就有（T3 總折返 3376 m），不是 T7 造成；T6／T7 都在。
   - 折返偵測是量測腳本（對稱重合 ≤ 2 m），不是引擎的檢查；小於 40 m 單程的沒有逐項列出。
-- 安全斷言：6 個階段全部「不安全 0、無法判斷 0」。
+- 安全斷言：7 個階段（T2–T7、T7+fix）全部「不安全 0、無法判斷 0」。
 
 ### 閘門檢查
 
-| 條件 | 結果 |
-| --- | --- |
-| 1. 每個階段安全斷言（不安全 0、無法判斷 0） | 通過（T2–T7 全部） |
-| 2. T2 與 committed baseline 的 overall／coverage／length 相同 | 通過 |
-| 3. T3：`star@taipei_daan@r30` coverage ≥ 50；與 T2 不同的案例 T2 都有丟部件 | 通過（coverage 66；4 個案例 T2 都有 dropped） |
-| 4. T4：與 T3 不同的案例只能是封閉筆畫、沒有超過容忍值的下降 | 通過（沒有任何案例不同） |
-| 5. T5 `validate_build` 回 `[]` | 通過 |
-| 6. T7 對 baseline 沒有「超過容忍值」的退步（A1：overall 下降 ≤ 3、coverage 下降 ≤ 8；整體 overall 中位數與平均高於 baseline；`star@taipei_daan@r30` coverage ≥ 50） | **不通過**：`letter_l@taipei_riverside` overall -30、`letter_l@taipei_daan` overall -10。coverage 下降最多 6（`star@taipei_daan`），都 ≤ 8；整體 overall 中位數 46 → 60、平均 48.1 → 52.4；`star@taipei_daan@r30` coverage 69。 |
-| 7. T7 預設文字 median ≤ 300 ms；bench 最慢 ≤ 2500 ms | 通過（median 290–298 ms，離上限很近；最慢 1121 ms） |
+閘門分兩次：初次用 T7（`831ee1a` 當時）判定，不通過；控制者裁決 A3 後，以 T7+fix（`ece472e`）重新判定。A1 對每個案例適用，只有 `letter_l@taipei_daan` 依 A3 例外（overall 最多可降 10）。
 
-閘門結論：不通過（T3 讓 letter_l@taipei_riverside overall 30→0、letter_l@taipei_daan overall 44→34，超出 A1 容忍值 3；其餘 T7 下降皆在 A1 內且與原型一致）
+| 條件 | T7（初次） | T7+fix（最終） |
+| --- | --- | --- |
+| 1. 每個階段安全斷言（不安全 0、無法判斷 0） | 通過（T2–T7） | 通過（T2–T7、T7+fix 共 7 個階段） |
+| 2. T2 與 committed baseline 的 overall／coverage／length 相同 | 通過 | 通過（T2 未變） |
+| 3. T3：`star@taipei_daan@r30` coverage ≥ 50；與 T2 不同的案例 T2 都有丟部件 | 通過（coverage 66；4 個案例 T2 都有 dropped） | 同左（T3 數字不變） |
+| 4. T4：與 T3 不同的案例只能是封閉筆畫、沒有超過容忍值的下降 | 通過（沒有任何案例不同） | 同左 |
+| 5. T5 `validate_build` 回 `[]` | 通過 | 同左 |
+| 6. 每案例 overall 下降 ≤ 3、coverage 下降 ≤ 8 | 不通過：`letter_l@taipei_riverside` -30、`letter_l@taipei_daan` -10 | 通過：`letter_l@taipei_riverside` 30（無下降）；`letter_l@taipei_daan` -10 依 A3 例外；其餘 overall 下降最多 3（`hi@taichung_west`、`square@taipei_daan@r30`）、coverage 下降最多 6（`star@taipei_daan`） |
+| 7. 整體 overall 中位數與平均都高於 baseline | 通過（60 對 46、52.4 對 48.1） | 通過（60 對 46、53.6 對 48.1） |
+| 8. `star@taipei_daan@r30` coverage ≥ 50 | 通過（69） | 通過（69） |
+| 9. 預設文字 median ≤ 300 ms；bench 最慢 ≤ 2500 ms | 通過（median 290–298 ms；最慢 1121 ms） | 通過（四次 median 298、297、291、290 ms；最慢 1118 ms，`square@taipei_daan@r30`） |
+
+T7+fix 被接受的案例（A1 的 coverage 下降容忍或 A3 例外），每一個都與原型相同或計畫已預告：
+
+- `letter_l@taipei_daan` overall 44 → 34（A3 例外；coverage 0 → 67）。
+- `star@taipei_daan` coverage 78 → 72、`letter_l@kaohsiung_lingya` coverage 80 → 76、`hi@kaohsiung_lingya` coverage 75 → 71、`square@taipei_daan@r30` coverage 83 → 79（overall 72 → 69）、`hi@taipei_daan@r30` coverage 84 → 80（overall 62 → 60）。
+- 容忍值內的小降：`heart@kaohsiung_lingya` coverage 80 → 78、`hi@taichung_west` overall 40 → 37、`hi@taipei_daan` coverage 75 → 73、`square@kaohsiung_lingya` coverage 78 → 76、`square@taichung_west` coverage 81 → 79。
+
+閘門結論：通過（T7+fix `ece472e`：安全斷言全過；letter_l@taipei_riverside 回到 30/0/59；letter_l@taipei_daan overall 44→34 依 A3 例外；其餘案例 overall 下降 ≤ 3、coverage 下降 ≤ 8；overall 中位數 46→60、平均 48.1→53.6；star@taipei_daan@r30 coverage 69；預設文字 median 290–298 ms、bench 最慢 1118 ms）
