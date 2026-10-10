@@ -16,6 +16,7 @@ from engine.bench.runner import (
     UNDETERMINED,
     UNSAFE,
     CaseResult,
+    bad_turns,
     case_set_changes,
     compare,
     format_header,
@@ -37,7 +38,8 @@ from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import EdgeInfo, Router, RoutingError
 from engine.routing.tiles import build_tiles
 from grid_helpers import densify
-from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, grid_point, write_grid_pbf
+from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, X3, grid_point, write_grid_pbf
+from turn_router import TurnBlockRouter, east, north
 
 UNIT_SQUARE = Shape("square", [([(0, 0), (1, 0), (1, 1), (0, 1)], True)])
 LINE = Shape("line", [([(0, 0.5), (1, 0.5)], False)])
@@ -596,3 +598,57 @@ def test_edges_report_use_and_length_on_real_tiles(grid_config: Path) -> None:
     edges = router.edges(route.points)
     assert edges and {e.use for e in edges} == {"road"}  # 合成地圖全是 residential
     assert sum(e.length_km for e in edges) == pytest.approx(route.length_km, rel=0.05)
+
+
+# ---- P1.5 Task 11：接點轉彎安全計數 ----
+
+CORNER = (121.505, 25.05)
+INTO = seg([east(CORNER, -100), CORNER])
+UP = seg([CORNER, north(CORNER, 100)])
+ON = seg([CORNER, east(CORNER, 100)])
+
+
+class TurnEdgesRouter(TurnBlockRouter):
+    """TurnBlockRouter 加上 edges()（安全斷言要用）：一律配到 way 1。"""
+
+    def edges(self, points):
+        return [EdgeInfo(1, 0.0)]
+
+
+def test_bad_turns_counts_joins_valhalla_would_not_ride() -> None:
+    router = TurnEdgesRouter(blocked=CORNER)
+    assert bad_turns(router, [INTO, UP]) == 1
+    assert bad_turns(router, [INTO, ON]) == 0
+    assert bad_turns(router, [INTO]) == 0
+
+
+def test_bad_turns_sees_through_a_zero_length_fragment() -> None:
+    # 封閉圈旋轉可能切出 [p, p]：它兩側的接點都量到同一個轉彎
+    assert bad_turns(TurnEdgesRouter(blocked=CORNER), [INTO, seg([CORNER, CORNER]), UP]) == 2
+
+
+def test_case_with_a_bad_turn_is_unsafe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result([INTO, UP]))
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(TurnEdgesRouter(blocked=CORNER), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error == UNSAFE and "轉彎" in res.safety
+    assert res.bad_turns == 1
+    assert "不安全 1" in summarize([res]) and "轉彎不能直接騎的接點 1 個" in summarize([res])
+    assert compare([res], {})[0].startswith("sq：安全斷言沒過（UnsafeRoute：1 個接點的轉彎")
+
+
+def test_case_without_bad_turns_is_unaffected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result([INTO, ON]))
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(TurnEdgesRouter(blocked=CORNER), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error is None and res.bad_turns == 0
+
+
+@pytest.mark.valhalla
+def test_bad_turns_on_real_tiles(crossing_config: Path) -> None:
+    router = Router(crossing_config)
+    cross = grid_point(X3 + 1, 1)
+    bridge, under = seg([grid_point(X3, 1), cross]), seg([cross, grid_point(X3 + 1, 2)])
+    assert bad_turns(router, [bridge, under]) == 1
+    node = grid_point(X3, 1)
+    assert bad_turns(router, [seg([grid_point(X3, 0), node]), seg([node, cross])]) == 0

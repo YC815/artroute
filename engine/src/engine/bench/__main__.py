@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
     router = Router.from_build(build)
 
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)
-    print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way；沒過的案例算失敗。", flush=True)
+    print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way、接點轉彎能直接騎；沒過的案例算失敗。", flush=True)
     print(format_header(), flush=True)
     results = run_cases(router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True))
     print(summarize(results), flush=True)

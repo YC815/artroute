@@ -10,6 +10,7 @@ from typing import Protocol
 from engine.bench.cases import Case, place
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.service import AllStrokesFailed, StrokeInput, match_shape
+from engine.matching.turns import head_points, rideable, tail_points
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import EdgeInfo, LonLat, RoutingError
@@ -42,6 +43,7 @@ class CaseResult:
     error: str | None  # 失敗時為例外類別名或 UNSAFE / UNDETERMINED，成功為 None
     safety: str | None = None  # 安全斷言沒過的說明
     use_m: dict[str, float] = field(default_factory=dict)  # 走在 REPORTED_USES 各用途上的公尺數（只量測）
+    bad_turns: int = 0  # 轉彎 Valhalla 不會直接騎的接點數（> 0 就是 UNSAFE）
 
 
 def _target_length_m(strokes: list[StrokeInput]) -> float:
@@ -93,6 +95,23 @@ def safety_problem(
     return None
 
 
+TURN_CHECK_TIMEOUT_S = 60.0  # 每個案例檢查接點轉彎的時間上限（bench 不計時）
+
+
+def bad_turns(router: BenchRouter, segments: list[Segment]) -> int:
+    """相鄰路段的接點中，轉彎 Valhalla 不會直接騎的個數（matching.turns.rideable）。
+    探針跨段，所以零長度片段或很短的 link 兩側的轉彎也量得到。"""
+    deadline = Deadline(TURN_CHECK_TIMEOUT_S)
+    return sum(
+        not rideable(router, deadline, tail_points(segments[: i + 1]), head_points(segments[i + 1 :]))
+        for i in range(len(segments) - 1)
+    )
+
+
+def _turn_problem(count: int) -> tuple[str, str] | None:
+    return (UNSAFE, f"{count} 個接點的轉彎 Valhalla 不會直接騎") if count else None
+
+
 def _measurable_edges(router: BenchRouter, segment: Segment) -> list[EdgeInfo]:
     if len(set(segment.points)) < 2:
         return []  # 零長度片段沒有經過任何路段
@@ -117,12 +136,13 @@ def _run_one(router: BenchRouter, case: Case, timeout_s: float, denied_ids: froz
         ms = round((time.perf_counter() - started) * 1000)
         return CaseResult(case.name, 0, 0, 0, 0.0, round(_target_length_m(strokes), 1), ms, type(error).__name__)
     ms = round((time.perf_counter() - started) * 1000)
-    error, safety = safety_problem(router, result.segments, denied_ids) or (None, None)
+    turns = bad_turns(router, result.segments)
+    error, safety = safety_problem(router, result.segments, denied_ids) or _turn_problem(turns) or (None, None)
     s = result.score
     return CaseResult(
         case.name, s.coverage, s.cleanliness, s.overall,
         round(result.route_length_m, 1), round(result.target_length_m, 1), ms, error, safety,
-        use_m=use_meters(router, result.segments),
+        use_m=use_meters(router, result.segments), bad_turns=turns,
     )
 
 
@@ -231,6 +251,7 @@ def summarize(results: list[CaseResult]) -> str:
     return (
         f"共 {len(results)} 案例：成功 {len(ok)}、失敗 {len(results) - len(ok)}、"
         f"SLOW {slow}（> {PRODUCTION_TIMEOUT_MS} ms，僅供參考）；成功案例平均 overall {mean}；"
-        f"安全斷言（接點 ≤ {JOIN_TOLERANCE_M:g} m、不經過禁行 way）不安全 {unsafe}、無法判斷 {undetermined}；"
+        f"安全斷言（接點 ≤ {JOIN_TOLERANCE_M:g} m、不經過禁行 way、接點轉彎能直接騎）不安全 {unsafe}、無法判斷 {undetermined}；"
+        f"轉彎不能直接騎的接點 {sum(r.bad_turns for r in results)} 個；"
         f"footway／steps／parking_aisle 合計 {uses} m（成功案例，只量測）"
     )
