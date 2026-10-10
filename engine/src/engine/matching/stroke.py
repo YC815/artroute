@@ -2,7 +2,7 @@
 
 整段 trace → 失敗就對半切（串接：左半 trace 成功時，右半的第一個點換成左半的實際終點）→
 短於 min_piece_m 仍失敗的小段標記為失敗。連續的失敗小段合併成一次合法 route 繞路（見 _merge、_detour_run）。
-相鄰段落接不上時用 route 補（join：接點只容許 JOIN_TOLERANCE_M，接不上先裁掉兩邊 20／50／100 m 再試）；
+相鄰段落接不上時用 route 補（join：接點只容許 JOIN_TOLERANCE_M，接點轉彎不能直接騎也算接不上，接不上先裁掉兩邊 20／50／100 m 再試）；
 補不起來、或繞路被拒絕，就斷成新的 chain，絕不畫直線。
 
 繞路本身只是候選：route 會自己吸附起訖點，端點可以離要求的位置 MAX_SNAP_GAP_RADII 倍搜尋半徑

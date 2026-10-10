@@ -6,9 +6,12 @@ import pytest
 
 from engine.matching.compose import ANCHOR_TIE_M, MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
+from engine.matching.stroke import densify
+from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
+from turn_router import TurnBlockRouter, east, north
 
 LAT = 25.05
 
@@ -527,3 +530,19 @@ def test_only_reversible_open_parts_get_a_reverse_option() -> None:
     assert [o.reverse for o in _options(Part([B_DRAWN], False, reversible=True))] == [False, True]
     loop = Part([seg(ring(121.50, 0.001, 120))], closed=True, reversible=True)
     assert not any(o.reverse for o in _options(loop))
+
+
+# ---- P1.5 Task 10：部件之間的接點轉彎不能騎就不能直接接 ----
+
+CORNER = (121.505, LAT)
+
+
+def test_parts_meeting_at_a_turn_valhalla_would_not_ride_get_a_connector() -> None:
+    a = Part([seg(densify([east(CORNER, -510), CORNER]), index=0)], False)
+    b = Part([seg(densify([CORNER, north(CORNER, 510)]), index=1)], False)
+    result = compose(TurnBlockRouter(blocked=CORNER), [a, b], Deadline(10))
+    assert result.dropped == []
+    assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
+    assert_continuous(result.segments)
+    check = TurnBlockRouter(blocked=CORNER)
+    assert all(rideable(check, Deadline(10), x.points, y.points) for x, y in zip(result.segments, result.segments[1:]))

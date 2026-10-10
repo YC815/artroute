@@ -89,7 +89,7 @@ def _stitch_closed(
 ) -> tuple[list[list[Segment]], bool]:
     """封閉筆畫：照筆畫順序把相鄰的 chain 接起來（connect：相鄰直接串，否則 connector＋裁切重試，與串接器同一套規則）。
 
-    回傳 (chains, closed)。全部接上、而且最後一點與第一點相鄰 → 一條 chain、closed=True。
+    回傳 (chains, closed)。全部接上、而且最後一點與第一點相鄰（≤ 1 m，且接縫的轉彎能直接騎）→ 一條 chain、closed=True。
     收尾只接受相鄰、不另外補 route：只有一個部件時那段路沒有用，只會讓路線變長。
     中間有接不上的地方 → 從那裡斷開；最後一條與第一條相鄰就合成一條（最後一條在前），
     斷點只剩真正接不上的地方，不會在收尾處多出一個部件（star@taipei_daan@r30）。
@@ -102,8 +102,8 @@ def _stitch_closed(
         else:
             runs[-1] = merged
     if len(runs) == 1:
-        return runs, adjacent(runs[0], runs[0])
-    if adjacent(runs[-1], runs[0]):
+        return runs, adjacent(router, deadline, runs[0], runs[0])
+    if adjacent(router, deadline, runs[-1], runs[0]):
         return [runs[-1] + runs[0], *runs[1:-1]], False
     return runs, False
 

@@ -8,6 +8,7 @@ from engine.matching.join import TRIM_STEPS_M, join
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
+from turn_router import TurnBlockRouter
 
 LAT = 25.05
 M_PER_DEG_LON = 100_900  # 緯度 25° 附近
@@ -144,3 +145,30 @@ def test_deadline_is_checked_before_each_retry() -> None:
     with pytest.raises(MatchTimeout):
         join(router, Deadline(1, clock=lambda: next(ticks)), BEFORE, AFTER, "connector", None)
     assert len(router.calls) == 3
+
+
+# ---- P1.5 Task 10：接點轉彎 Valhalla 不會直接騎，視同沒接上 ----
+
+J_END = (121.507, LAT)
+AFTER_NORTH = seg([(121.507, LAT + k * 10 / 110_574) for k in range(51)])  # 從 J_END 往北 500 m
+J_START = (121.505, LAT)
+BEFORE_NORTH = seg([(121.505, LAT - (50 - k) * 10 / 110_574) for k in range(51)])  # 從南邊往北騎到 J_START
+
+
+def test_link_whose_far_end_turn_cannot_be_ridden_trims_the_next_piece() -> None:
+    # link 由西往東到 J_END，後段在 J_END 往北：那個左轉不能騎 → 裁後段開頭，從別處接
+    router = TurnBlockRouter(blocked=J_END)
+    joined = join(router, Deadline(10), BEFORE, AFTER_NORTH, "connector", None)
+    assert joined is not None
+    assert_joined(joined)
+    assert joined.before == BEFORE
+    assert is_suffix(joined.after.points, AFTER_NORTH.points) and joined.after != AFTER_NORTH
+
+
+def test_link_whose_near_end_turn_cannot_be_ridden_trims_the_previous_piece() -> None:
+    router = TurnBlockRouter(blocked=J_START)
+    joined = join(router, Deadline(10), BEFORE_NORTH, AFTER, "connector", None)
+    assert joined is not None
+    assert_joined(joined)
+    assert joined.after == AFTER
+    assert is_prefix(joined.before.points, BEFORE_NORTH.points) and joined.before != BEFORE_NORTH

@@ -22,7 +22,7 @@ MAX_CLOSED_ENTRIES = 24  # 每個封閉圈最多約這麼多個進入點：間�
 
 @dataclass(frozen=True)
 class Part:
-    """一個部件。segments 首尾相接；closed=True 時最後一點與第一點相差 ≤ JOIN_TOLERANCE_M。
+    """一個部件。segments 首尾相接；closed=True 時最後一點與第一點相鄰（≤ JOIN_TOLERANCE_M，且接縫的轉彎能直接騎）。
     reversible=True 的開放部件可以反向走：串接器選了反向時，用 rematch 以反向的點重新吸附（不是把路線倒過來）。"""
 
     segments: list[Segment]

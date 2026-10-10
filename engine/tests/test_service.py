@@ -16,12 +16,14 @@ from engine.matching.service import (
     default_search_radius,
     match_shape,
 )
+from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
 from grid_helpers import densify, rides_westward_on_row
 from island_router import IslandRouter, across_island
 from osm_fixture import grid_point
+from turn_router import TurnBlockRouter
 
 LAT = 25.05
 
@@ -473,3 +475,17 @@ def test_failed_reverse_trace_rides_the_drawn_direction_without_bisecting() -> N
     assert second[0].points[0][0] == pytest.approx(121.53) and second[-1].points[-1][0] == pytest.approx(121.52)
     assert len(router.traced) == 3  # 筆畫 0、筆畫 1 正向各一次，加上被拒絕的那一次反向
     assert result.warnings == []
+
+
+# ---- P1.5 Task 10：封閉筆畫的接縫轉彎不能騎，就不當成圈 ----
+
+
+def test_closed_stroke_whose_seam_turn_cannot_be_ridden_is_not_rotated_through_it() -> None:
+    # 方形的起點 SW 不能轉彎：當成圈旋轉時，SW 會變成路線中間的接點（由北往南騎到 SW 再往東）
+    approach = row(121.50, 121.525, LAT - 0.005)
+    strokes = [StrokeInput(approach, False), StrokeInput([SW, SE, NE, NW], True)]
+    result = match_shape(TurnBlockRouter(blocked=SW), strokes, search_radius_m=50, deadline=Deadline(30))
+    assert result.warnings == []
+    assert_joins_within_tolerance(result.segments)
+    check = TurnBlockRouter(blocked=SW)
+    assert all(rideable(check, Deadline(10), a.points, b.points) for a, b in zip(result.segments, result.segments[1:]))

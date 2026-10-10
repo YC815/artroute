@@ -103,3 +103,16 @@ SHORTEST_MAP: list[GridWay] = [
     GridWay(411, [(X2 + c, CYCLEWAY_DETOUR_ROW) for c in range(7)], {"highway": "cycleway"}),
     GridWay(412, [(X2 + 6, CYCLEWAY_DETOUR_ROW), (X2 + 6, 1)], {"highway": "cycleway"}),
 ]
+
+X3 = 80  # 與其他地圖分開
+BRIDGE_WAY_ID = 500
+UNDER_WAY_ID = 501
+
+CROSSING_MAP: list[GridWay] = [
+    # 橋由西往東跨過下面那條路：兩者在 (X3 + 1, 1) 交叉但沒有共用節點，平面上是同一點，實際上不相通
+    GridWay(BRIDGE_WAY_ID, [(X3, 1), (X3 + 2, 1)], {**RESIDENTIAL, "bridge": "yes", "layer": "1"}),
+    GridWay(UNDER_WAY_ID, [(X3 + 1, 0), (X3 + 1, 2)], RESIDENTIAL),
+    # 外圈：橋的兩端與下面那條路的兩端用一般道路連起來；從橋上到下面那條路只能繞外圈
+    GridWay(502, [(X3, 1), (X3, 0), (X3 + 1, 0)], RESIDENTIAL),
+    GridWay(503, [(X3 + 2, 1), (X3 + 2, 2), (X3 + 1, 2)], RESIDENTIAL),
+]

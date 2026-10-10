@@ -4,10 +4,12 @@ import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.stroke import densify, match_stroke
+from engine.matching.turns import rideable
 from engine.matching.types import JOIN_TOLERANCE_M
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
 from island_router import IslandRouter, across_island
+from turn_router import TurnBlockRouter, east, north
 
 LAT = 25.05
 
@@ -362,4 +364,22 @@ def test_chained_halves_meet_without_a_bridge() -> None:
     chain = result.chains[0]
     assert chain[1].points[0] == chain[0].points[-1]
     assert router.route_calls == 0  # 舊版：兩半在切點吸到不同的路（差約 3.6 m），要補一條橋
+    assert result.warnings == []
+
+
+# ---- P1.5 Task 10：吸附出來的相鄰兩段，接點轉彎不能騎就不能直接接 ----
+
+CORNER = (121.505, LAT)
+L_SHAPE = [east(CORNER, -510), CORNER, north(CORNER, 510)]  # 往東 510 m，在 CORNER 左轉往北 510 m
+
+
+def test_trace_pieces_meeting_at_a_turn_valhalla_would_not_ride_are_not_joined_directly() -> None:
+    dense = densify(L_SHAPE)
+    assert haversine_m(dense[len(dense) // 2], CORNER) < 0.01  # 前提：對半切正好切在轉角
+    result = run(TurnBlockRouter(blocked=CORNER), L_SHAPE)
+    assert [[s.kind for s in c] for c in result.chains] == [["stroke", "detour", "stroke"]]
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    check = TurnBlockRouter(blocked=CORNER)
+    assert all(rideable(check, Deadline(10), a.points, b.points) for a, b in zip(chain, chain[1:]))
     assert result.warnings == []
