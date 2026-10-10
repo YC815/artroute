@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { defaultSelection, extractRings, imageShape, traceRings, type Ring } from "@/lib/image/rings";
+import {
+  defaultSelection,
+  extractRings,
+  imageShape,
+  noRingsProblem,
+  NO_RINGS_MESSAGE,
+  traceRings,
+  type Ring,
+} from "@/lib/image/rings";
 import { binaryMask } from "@/lib/image/threshold";
 import { MAX_STROKE_POINTS, MIN_STROKE_POINTS } from "@/lib/limits";
 import { shapeBounds } from "@/lib/shape/normalize";
@@ -68,6 +76,32 @@ describe("extractRings", () => {
     expect(rings[0].outer).toBe(true);
     expect(rings[0].area).toBeGreaterThan(2000);
     expect(rings.some((r) => !r.outer)).toBe(true);
+  });
+});
+
+describe("noRingsProblem", () => {
+  const ring: Ring = { points: [[0, 0], [1, 0], [0, 1]], area: 0.5, outer: true };
+
+  it("處理完卻沒有輪廓：回傳說明", () => {
+    expect(noRingsProblem(true, [])).toBe(NO_RINGS_MESSAGE);
+    expect(NO_RINGS_MESSAGE).toBe("找不到輪廓，試試調整門檻或反轉");
+  });
+
+  it("還沒上傳或處理中（loaded 為 false）：不說沒有輪廓", () => {
+    expect(noRingsProblem(false, [])).toBeNull();
+  });
+
+  it("有輪廓：沒有說明", () => {
+    expect(noRingsProblem(true, [ring])).toBeNull();
+  });
+
+  it("沒有前景的影像抽不到輪廓（真的會走到這個提示）：全白不反轉、全黑反轉", () => {
+    const white = grayImage(20, 20, []);
+    const black = grayImage(20, 20, [[0, 0, 20, 20]]);
+    expect(noRingsProblem(true, extractRings(white, 20, 20, 128, false))).toBe(NO_RINGS_MESSAGE);
+    expect(noRingsProblem(true, extractRings(black, 20, 20, 128, true))).toBe(NO_RINGS_MESSAGE);
+    // 反過來整張都是前景，有一個外框
+    expect(noRingsProblem(true, extractRings(white, 20, 20, 128, true))).toBeNull();
   });
 });
 

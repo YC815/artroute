@@ -245,6 +245,18 @@ test("圖片 → 輪廓 → 以封閉筆畫吸附", async ({ page }) => {
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
 });
 
+test("圖片抽不到輪廓：顯示說明，調整後恢復", async ({ page }) => {
+  await mockEngine(page);
+  await page.goto("/");
+  await uploadImage(page, "blank.png", await makePng(page, { width: 600, height: 400, blank: true }));
+
+  await expect(page.getByText("找不到輪廓，試試調整門檻或反轉")).toBeVisible();
+  // 反轉後整張白底變成前景，抽得到外框，說明消失、圖形出現
+  await page.getByRole("switch", { name: "反轉（深色背景、淺色圖案）" }).click();
+  await expect(page.getByText("找不到輪廓，試試調整門檻或反轉")).toHaveCount(0);
+  await expect(page.getByTestId("target-stroke").first()).toBeAttached();
+});
+
 test("引擎離線：顯示橫幅、停用吸附，不送 /api/match", async ({ page, allowedErrors }) => {
   // 不 mock /api/status：走真的 standalone 代理，playwright.config.ts 把 ENGINE_URL 設成空字串，代理回 503
   allowedErrors.push(/status of 503.*\/api\/status/);

@@ -58,6 +58,14 @@ export function extractRings(
     .sort((a, b) => b.area - a.area);
 }
 
+/** 抽完輪廓卻一個也沒有時給使用者的說明（全白、全黑、透明背景配白色圖案等）。 */
+export const NO_RINGS_MESSAGE = "找不到輪廓，試試調整門檻或反轉";
+
+/** 影像已處理完（loaded）卻沒有任何輪廓時回傳說明，其他情況（還沒上傳、處理中、有輪廓）回傳 null。 */
+export function noRingsProblem(loaded: boolean, rings: readonly Ring[]): string | null {
+  return loaded && rings.length === 0 ? NO_RINGS_MESSAGE : null;
+}
+
 /** 預設選取：面積最大的外框（rings 已依面積排序，所以是第一個外框）。 */
 export function defaultSelection(rings: Ring[]): number[] {
   const index = rings.findIndex((ring) => ring.outer);

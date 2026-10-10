@@ -7,7 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useImageTrace } from "@/hooks/use-image-trace";
 import { IMAGE_TYPES, imageFileProblem } from "@/lib/image/file";
-import { defaultSelection, imageShape, type Ring } from "@/lib/image/rings";
+import { defaultSelection, imageShape, noRingsProblem, type Ring } from "@/lib/image/rings";
 import type { Stroke } from "@/lib/shape/types";
 
 type Props = {
@@ -37,6 +37,7 @@ export function ImageSource({ hasShape, onStrokes }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const loaded = size.width > 0;
+  const noRings = noRingsProblem(loaded, rings);
 
   const { trace, working, error } = useImageTrace((result) => {
     const initial = defaultSelection(result.rings);
@@ -128,9 +129,15 @@ export function ImageSource({ hasShape, onStrokes }: Props) {
 
       {loaded && (
         <div className="flex flex-col gap-1.5">
-          <p className="text-xs text-muted-foreground">
-            點輪廓加入或移除（藍色＝已選，{selected.length} 個）。預設選最大的外框。
-          </p>
+          {noRings ? (
+            <p role="alert" className="text-sm text-destructive">
+              {noRings}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              點輪廓加入或移除（藍色＝已選，{selected.length} 個）。預設選最大的外框。
+            </p>
+          )}
           <svg
             viewBox={`0 0 ${size.width} ${size.height}`}
             className="w-full rounded-md border bg-white"
