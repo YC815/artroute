@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "gen:engine-types": "openapi-typescript ../engine/openapi.json -o src/lib/engine/openapi.d.ts"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -35,6 +36,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "openapi-typescript": "7.13.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "5.0.3"
