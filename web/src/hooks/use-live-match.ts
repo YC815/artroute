@@ -28,7 +28,7 @@ export function matchForRequest(state: LiveMatch, request: MatchRequest | null):
 }
 
 /**
- * 即時吸附：request 變了就排程送出（拖曳中每 300ms 一次、放開立刻送）。
+ * 即時吸附：request 變了就排程送出（拖曳中最多一筆在途、兩次送出至少相隔 300ms，不取消在途的；放開立刻送並取消在途的）。
  *
  * - request 必須用 useMemo 穩定住；排程器雖會略過內容相同的請求，每次 render 都重建仍白白增加比對成本。
  * - request 為 null 或 enabled 為 false（引擎不可用）時不送，並取消已排定與進行中的請求；
