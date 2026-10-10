@@ -11,9 +11,10 @@ from pathlib import Path
 
 import osmium
 
+# 快速公路編號，不帶「台」。OSM 實際寫成 61、62甲（舊的帶「台」寫法在真實資料命中 0 條），比對前先去掉開頭的台／臺
 EXPRESSWAY_REFS = frozenset(
-    {"台61", "台61甲", "台62", "台62甲", "台64", "台65", "台66", "台68",
-     "台72", "台74", "台76", "台78", "台82", "台84", "台86", "台88"}
+    {"61", "61甲", "62", "62甲", "64", "65", "66", "68",
+     "72", "74", "76", "78", "82", "84", "86", "88"}
 )
 NAME_KEYWORDS = ("快速道路", "快速公路", "快速路", "高架")
 TRUNK = frozenset({"trunk", "trunk_link"})
@@ -28,7 +29,7 @@ def is_expressway(tags: Mapping[str, str]) -> bool:
         return True
     if any(keyword in tags.get("name", "") for keyword in NAME_KEYWORDS):
         return True
-    refs = {ref.strip() for ref in tags.get("ref", "").split(";")}
+    refs = {ref.strip().removeprefix("台").removeprefix("臺") for ref in tags.get("ref", "").split(";")}
     return bool(refs & EXPRESSWAY_REFS)
 
 

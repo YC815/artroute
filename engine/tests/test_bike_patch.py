@@ -39,6 +39,31 @@ def test_is_expressway(tags: dict[str, str], expected: bool) -> None:
     assert is_expressway(tags) is expected
 
 
+@pytest.mark.parametrize(
+    "tags, expected",
+    [
+        ({"highway": "trunk", "ref": "61"}, True),
+        ({"highway": "trunk", "ref": "台61"}, True),
+        ({"highway": "trunk", "ref": "臺61"}, True),
+        ({"highway": "trunk", "ref": "61甲"}, True),
+        ({"highway": "trunk_link", "ref": "台62甲"}, True),
+        ({"highway": "trunk", "ref": "1;61"}, True),
+        ({"highway": "trunk", "ref": " 61 "}, True),
+        ({"highway": "trunk", "ref": "1"}, False),
+        ({"highway": "trunk", "ref": "北100"}, False),
+        ({"highway": "trunk", "ref": "161"}, False),
+        ({"highway": "trunk", "ref": "610"}, False),
+        ({"highway": "trunk", "ref": "6"}, False),
+        ({"highway": "trunk", "ref": "61乙"}, False),
+        ({"highway": "trunk", "ref": ""}, False),
+        ({"highway": "primary", "ref": "61"}, False),
+    ],
+)
+def test_is_expressway_ref_with_or_without_tai_prefix(tags: dict[str, str], expected: bool) -> None:
+    """OSM 的快速公路 ref 多半寫成不帶「台」的 61、62甲；台／臺前綴也要認得。"""
+    assert is_expressway(tags) is expected
+
+
 def test_load_overrides(tmp_path: Path) -> None:
     path = tmp_path / "o.toml"
     path.write_text("deny = [1, 2]\nallow = [3]\n")
