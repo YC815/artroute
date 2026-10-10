@@ -22,9 +22,12 @@ export function engineDeps(timeoutMs: number): ProxyDeps {
   return { engineUrl: process.env.ENGINE_URL, fetch, timeoutMs };
 }
 
+/** 所有代理回應都帶：引擎的 content-type 是原樣轉回的，不讓瀏覽器自己猜內容類型。 */
+const SECURITY_HEADERS = { "x-content-type-options": "nosniff" };
+
 /** 代理自己產生的錯誤，body 與引擎的領域錯誤同形：{ detail: { code, message } }。 */
 function proxyError(status: number, code: string, message: string): Response {
-  return Response.json({ detail: { code, message } }, { status });
+  return Response.json({ detail: { code, message } }, { status, headers: SECURITY_HEADERS });
 }
 
 /** 轉發到引擎，狀態碼與 body 原樣轉回。沒設定 ENGINE_URL 或連不上回 503、逾時（含讀 body 階段）回 504。 */
@@ -54,7 +57,7 @@ export async function forwardToEngine(
   }
   return new Response(bytes, {
     status: res.status,
-    headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
+    headers: { ...SECURITY_HEADERS, "content-type": res.headers.get("content-type") ?? "application/json" },
   });
 }
 

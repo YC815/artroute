@@ -107,6 +107,67 @@ describe("proxyMatch", () => {
   });
 });
 
+describe("回應標頭", () => {
+  const NOSNIFF = "nosniff";
+
+  it("轉回引擎的回應（成功與錯誤狀態碼）帶 x-content-type-options: nosniff，content-type 照舊", async () => {
+    const ok = await proxyMatch(post(JSON.stringify(VALID)), deps(vi.fn(async () => Response.json(SAMPLE_MATCH_RESPONSE))));
+    expect(ok.headers.get("x-content-type-options")).toBe(NOSNIFF);
+    expect(ok.headers.get("content-type")).toContain("application/json");
+
+    const failed = await proxyMatch(
+      post(JSON.stringify(VALID)),
+      deps(vi.fn(async () => Response.json({ detail: { code: "outside_taiwan", message: "x" } }, { status: 400 }))),
+    );
+    expect(failed.headers.get("x-content-type-options")).toBe(NOSNIFF);
+  });
+
+  it("引擎沒有給 content-type 時補 application/json，仍帶 nosniff", async () => {
+    const bare = new Response("{}", { headers: {} });
+    bare.headers.delete("content-type");
+    const res = await proxyMatch(post(JSON.stringify(VALID)), deps(vi.fn(async () => bare)));
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("x-content-type-options")).toBe(NOSNIFF);
+  });
+
+  it("代理自己產生的錯誤（413、422、503、504）都帶 nosniff", async () => {
+    const tooLarge = await proxyMatch(
+      new Request("http://web/api/match", {
+        method: "POST",
+        body: "{}",
+        headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+      }),
+      deps(vi.fn()),
+    );
+    const invalid = await proxyMatch(post("not json"), deps(vi.fn()));
+    const unreachable = await proxyMatch(post(JSON.stringify(VALID)), deps(vi.fn(), { engineUrl: undefined }));
+    const timeout = await proxyMatch(
+      post(JSON.stringify(VALID)),
+      deps(
+        vi.fn(
+          (_url: string, init: RequestInit) =>
+            new Promise<Response>((_, reject) => {
+              init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+            }),
+        ),
+        { timeoutMs: 20 },
+      ),
+    );
+    expect([tooLarge.status, invalid.status, unreachable.status, timeout.status]).toEqual([413, 422, 503, 504]);
+    for (const res of [tooLarge, invalid, unreachable, timeout]) {
+      expect(res.headers.get("x-content-type-options")).toBe(NOSNIFF);
+    }
+  });
+
+  it("GET /status 的回應也帶 nosniff", async () => {
+    const res = await proxyStatus(
+      new Request("http://web/api/status"),
+      deps(vi.fn(async () => Response.json({ data: null }))),
+    );
+    expect(res.headers.get("x-content-type-options")).toBe(NOSNIFF);
+  });
+});
+
 describe("proxyMatch 請求大小與錯誤訊息長度", () => {
   const TOO_LARGE = { detail: { code: "too_large", message: "請求太大" } };
 

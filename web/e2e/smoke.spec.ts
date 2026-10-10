@@ -303,6 +303,7 @@ test("引擎離線：顯示橫幅、停用吸附，不送 /api/match", async ({ 
   const status = await statusResponse;
   expect(status.status()).toBe(503);
   expect((await status.json()).detail.code).toBe("engine_unreachable");
+  expect(status.headers()["x-content-type-options"]).toBe("nosniff");
   await expect(page.getByText("路線引擎暫時無法使用")).toBeVisible();
   await expect(page.getByRole("button", { name: "重試" })).toBeVisible();
   // 圖形仍可編輯，但沒有送出任何吸附請求
