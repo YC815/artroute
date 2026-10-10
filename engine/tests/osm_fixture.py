@@ -90,3 +90,16 @@ EXPRESSWAY_ONLY_MAP: list[GridWay] = [
     # 快速公路是兩點之間唯一的路：未修補時走得通，標成 bicycle=no 後必須無路可走
     GridWay(EXPRESSWAY_ONLY_WAY_ID, [(X1 + c, 1) for c in range(5)], {"highway": "trunk", "ref": "台64"}),
 ]
+
+SHORT_PRIMARY_WAY_ID = 400
+X2 = 60  # 與其他地圖分開
+CYCLEWAY_DETOUR_ROW = -2
+
+SHORTEST_MAP: list[GridWay] = [
+    # 預設的 bicycle 成本偏好自行車道、懲罰主幹道：兩點之間走 cycleway 繞路（約 2.1 km）；
+    # shortest 只看距離：走 primary 直線（約 1.2 km）。primary 本身可騎（沒有 bicycle=no）。
+    GridWay(SHORT_PRIMARY_WAY_ID, [(X2 + c, 1) for c in range(7)], {"highway": "primary"}),
+    GridWay(410, [(X2, 1), (X2, CYCLEWAY_DETOUR_ROW)], {"highway": "cycleway"}),
+    GridWay(411, [(X2 + c, CYCLEWAY_DETOUR_ROW) for c in range(7)], {"highway": "cycleway"}),
+    GridWay(412, [(X2 + 6, CYCLEWAY_DETOUR_ROW), (X2 + 6, 1)], {"highway": "cycleway"}),
+]

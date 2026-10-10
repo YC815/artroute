@@ -5,8 +5,17 @@ from pathlib import Path
 import pytest
 
 from engine.routing.router import Router, RoutingError
+from engine.routing.tiles import build_tiles
 from grid_helpers import densify, rides_westward_on_row
-from osm_fixture import BOTTOM_ONEWAY_WAY_ID, CONTRAFLOW_WAY_ID, MOTORWAY_WAY_ID, grid_point
+from osm_fixture import (
+    BOTTOM_ONEWAY_WAY_ID,
+    CONTRAFLOW_WAY_ID,
+    MOTORWAY_WAY_ID,
+    SHORTEST_MAP,
+    X2,
+    grid_point,
+    write_grid_pbf,
+)
 
 pytestmark = pytest.mark.valhalla
 
@@ -128,3 +137,18 @@ def test_shortest_route_never_rides_a_denied_way(router: Router) -> None:
     for start, end in ((grid_point(0, 3), grid_point(6, 3)), (grid_point(6, 3), grid_point(0, 3))):
         edges = router.edges(router.route(start, end, shortest=True).points)
         assert all(e.way_id != MOTORWAY_WAY_ID for e in edges)
+
+
+def test_shortest_really_changes_the_valhalla_route(tmp_path: Path) -> None:
+    # Valhalla 會悄悄忽略不認得的 costing 選項：鍵名、巢狀層級錯了，或升級 pyvalhalla 之後選項改名，
+    # 其他 shortest 測試照樣全綠。這裡用「短的 primary vs 長的 cycleway」證明 shortest 真的改變了結果
+    pbf = tmp_path / "shortest.osm.pbf"
+    write_grid_pbf(pbf, SHORTEST_MAP)
+    router = Router(build_tiles(pbf, tmp_path / "build"))
+    start, end = grid_point(X2, 1), grid_point(X2 + 6, 1)
+
+    default = router.route(start, end)
+    shortest = router.route(start, end, shortest=True)
+    assert default.length_km > 1.8  # 前提：預設成本確實偏好自行車道繞路
+    assert shortest.length_km == pytest.approx(1.2, abs=0.1)
+    assert shortest.length_km < default.length_km

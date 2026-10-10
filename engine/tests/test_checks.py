@@ -215,8 +215,9 @@ def test_validate_build_loads_router_and_denied_from_build_dir(tmp_path: Path) -
     build_with_patch(src, build_dir)
     failures = validate_build(build_dir)
     # 洲美街的兩個端點都吸附到玩具路網的同一點，是零長度路線，不會走到單行段
-    assert any("沒有走洲美街單行段" in f for f in failures)
-    assert any("找不到洲美快速道路" in f for f in failures)
+    # 預設設定的失敗一定要是沒有前綴的那份：只剩 shortest 的結果代表預設設定的驗證被丟掉了
+    assert any("沒有走洲美街單行段" in f and not f.startswith("（shortest）") for f in failures)
+    assert any("找不到洲美快速道路" in f and not f.startswith("（shortest）") for f in failures)
     # 吸附用的是 shortest 的 route：兩種設定都要驗
     assert any(f.startswith("（shortest）") and "沒有走洲美街單行段" in f for f in failures)
 
