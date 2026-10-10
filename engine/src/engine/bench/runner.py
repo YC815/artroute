@@ -3,7 +3,7 @@
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +22,8 @@ PRODUCTION_TIMEOUT_MS = 5000
 UNSAFE = "UnsafeRoute"  # 相鄰路段有缺口（會畫成直線），或經過被禁行的 way
 UNDETERMINED = "SafetyUndetermined"  # edges() 配不出經過哪些路段：無法證明安全，不算通過
 SAFETY_ERRORS = frozenset({UNSAFE, UNDETERMINED})  # 安全斷言沒過：一律算退步，也不能寫進 baseline
+# 只量測、不改路線：要不要禁止這些路段待使用者決定（品質調查 §5.4）
+REPORTED_USES = ("footway", "steps", "parking_aisle")
 
 
 class BenchRouter(MatchRouter, Protocol):
@@ -39,6 +41,7 @@ class CaseResult:
     ms: int  # 預熱之後的單次取樣，不是多次平均；小差異不要當成效能變化
     error: str | None  # 失敗時為例外類別名或 UNSAFE / UNDETERMINED，成功為 None
     safety: str | None = None  # 安全斷言沒過的說明
+    use_m: dict[str, float] = field(default_factory=dict)  # 走在 REPORTED_USES 各用途上的公尺數（只量測）
 
 
 def _target_length_m(strokes: list[StrokeInput]) -> float:
@@ -46,8 +49,8 @@ def _target_length_m(strokes: list[StrokeInput]) -> float:
     return sum(polyline_length_m(s.points + [s.points[0]] if s.closed else s.points) for s in strokes)
 
 
-def _ways(router: BenchRouter, points: list[LonLat]) -> set[int]:
-    """折線經過的 way。edge_walk 整段配不上時（實測：吸附結果在死巷原地折返 A→B→A），從中間的點切成兩半各自配：
+def _edges(router: BenchRouter, points: list[LonLat]) -> list[EdgeInfo]:
+    """折線經過的路段（edge）。edge_walk 整段配不上時（實測：吸附結果在死巷原地折返 A→B→A），從中間的點切成兩半各自配：
     兩半共用切點，經過的路段一條都不會漏。切到只剩兩點還配不上，或配到的路段是空的，就丟 RoutingError。"""
     try:
         edges = router.edges(points)
@@ -55,10 +58,10 @@ def _ways(router: BenchRouter, points: list[LonLat]) -> set[int]:
         if len(points) <= 2:
             raise
         mid = len(points) // 2
-        return _ways(router, points[: mid + 1]) | _ways(router, points[mid:])
+        return _edges(router, points[: mid + 1]) + _edges(router, points[mid:])
     if not edges and len(set(points)) >= 2:
         raise RoutingError("沒有配到任何路段")
-    return {e.way_id for e in edges}
+    return edges
 
 
 def safety_problem(
@@ -67,7 +70,7 @@ def safety_problem(
     """吸附結果的安全不變式；通過回傳 None，否則回傳 (UNSAFE 或 UNDETERMINED, 說明)。
 
     1. 相鄰路段的接點相距 ≤ JOIN_TOLERANCE_M：超過的話輸出會把缺口畫成一條地圖上不存在的直線。
-    2. 每一段經過的路段（edges）都不是被禁行的 way。逐段查：每段都是 Valhalla 自己的輸出；配不上就切開再配（_ways）。
+    2. 每一段經過的路段（edges）都不是被禁行的 way。逐段查：每段都是 Valhalla 自己的輸出；配不上就切開再配（_edges）。
     """
     for i, (a, b) in enumerate(zip(segments, segments[1:])):
         gap_m = haversine_m(a.points[-1], b.points[0])
@@ -79,7 +82,7 @@ def safety_problem(
         if len(set(segment.points)) < 2:
             continue  # 封閉圈旋轉切出的零長度片段：沒有經過任何路段
         try:
-            used |= _ways(router, segment.points) & denied_ids
+            used |= {e.way_id for e in _edges(router, segment.points)} & denied_ids
         except RoutingError as error:
             return UNDETERMINED, f"第 {i} 段（{segment.kind}）配不出經過的路段：{error}"
         checked += 1
@@ -88,6 +91,21 @@ def safety_problem(
     if used:
         return UNSAFE, f"經過被禁行的 way {sorted(used)}"
     return None
+
+
+def _measurable_edges(router: BenchRouter, segment: Segment) -> list[EdgeInfo]:
+    if len(set(segment.points)) < 2:
+        return []  # 零長度片段沒有經過任何路段
+    try:
+        return _edges(router, segment.points)
+    except RoutingError:
+        return []  # 配不出路段的段落略過；safety_problem 已經把這種案例記成 UNDETERMINED
+
+
+def use_meters(router: BenchRouter, segments: list[Segment]) -> dict[str, float]:
+    """路線走在 REPORTED_USES 各用途上的公尺數（edge_walk 的 edge.length 加總，四捨五入到 0.1 m）。"""
+    edges = [edge for segment in segments for edge in _measurable_edges(router, segment)]
+    return {use: round(sum(e.length_km for e in edges if e.use == use) * 1000, 1) for use in REPORTED_USES}
 
 
 def _run_one(router: BenchRouter, case: Case, timeout_s: float, denied_ids: frozenset[int]) -> CaseResult:
@@ -104,6 +122,7 @@ def _run_one(router: BenchRouter, case: Case, timeout_s: float, denied_ids: froz
     return CaseResult(
         case.name, s.coverage, s.cleanliness, s.overall,
         round(result.route_length_m, 1), round(result.target_length_m, 1), ms, error, safety,
+        use_m=use_meters(router, result.segments),
     )
 
 
@@ -186,15 +205,19 @@ def load_baseline(path: Path) -> dict[str, dict]:
 
 
 def format_header() -> str:
-    return f"{'name':34} {'overall':>7} {'cov':>4} {'clean':>5} {'len_m':>9} {'target_m':>9} {'ms':>7}  note"
+    return (
+        f"{'name':34} {'overall':>7} {'cov':>4} {'clean':>5} {'len_m':>9} {'target_m':>9} {'ms':>7} "
+        f"{'foot_m':>7} {'steps_m':>7} {'park_m':>7}  note"
+    )
 
 
 def format_row(r: CaseResult) -> str:
     slow = "SLOW" if r.ms > PRODUCTION_TIMEOUT_MS else ""
     note = " ".join(filter(None, [slow, r.error, r.safety]))
+    uses = " ".join(f"{r.use_m.get(use, 0.0):7.0f}" for use in REPORTED_USES)
     return (
         f"{r.name:34} {r.overall:7} {r.coverage:4} {r.cleanliness:5} "
-        f"{r.length_m:9.0f} {r.target_length_m:9.0f} {r.ms:7}  {note}"
+        f"{r.length_m:9.0f} {r.target_length_m:9.0f} {r.ms:7} {uses}  {note}"
     ).rstrip()
 
 
@@ -204,8 +227,10 @@ def summarize(results: list[CaseResult]) -> str:
     mean = f"{sum(r.overall for r in ok) / len(ok):.1f}" if ok else "-"
     unsafe = sum(r.error == UNSAFE for r in results)
     undetermined = sum(r.error == UNDETERMINED for r in results)
+    uses = "／".join(f"{sum(r.use_m.get(use, 0.0) for r in ok):.0f}" for use in REPORTED_USES)
     return (
         f"共 {len(results)} 案例：成功 {len(ok)}、失敗 {len(results) - len(ok)}、"
         f"SLOW {slow}（> {PRODUCTION_TIMEOUT_MS} ms，僅供參考）；成功案例平均 overall {mean}；"
-        f"安全斷言（接點 ≤ {JOIN_TOLERANCE_M:g} m、不經過禁行 way）不安全 {unsafe}、無法判斷 {undetermined}"
+        f"安全斷言（接點 ≤ {JOIN_TOLERANCE_M:g} m、不經過禁行 way）不安全 {unsafe}、無法判斷 {undetermined}；"
+        f"footway／steps／parking_aisle 合計 {uses} m（成功案例，只量測）"
     )

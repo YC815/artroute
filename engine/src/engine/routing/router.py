@@ -34,6 +34,8 @@ class RouteResult:
 class EdgeInfo:
     way_id: int
     begin_heading: float
+    use: str = ""  # Valhalla 的 edge.use，例如 road、cycleway、footway、steps、parking_aisle
+    length_km: float = 0.0  # 折線經過這條 edge 的長度
 
 
 class RoutingError(Exception):
@@ -154,10 +156,21 @@ class Router:
                 "shape": _locations(shape),
                 "costing": COSTING,
                 "shape_match": "edge_walk",
-                "filters": {"attributes": ["edge.way_id", "edge.begin_heading"], "action": "include"},
+                "filters": {
+                    "attributes": ["edge.way_id", "edge.begin_heading", "edge.use", "edge.length"],
+                    "action": "include",
+                },
             },
         )
         try:
-            return [EdgeInfo(way_id=e["way_id"], begin_heading=e["begin_heading"]) for e in response["edges"]]
-        except (KeyError, TypeError) as error:
+            return [
+                EdgeInfo(
+                    way_id=e["way_id"],
+                    begin_heading=e["begin_heading"],
+                    use=e.get("use", ""),  # 量測用的欄位：缺了用預設值，建圖驗證不能因此失敗
+                    length_km=e.get("length", 0.0),
+                )
+                for e in response["edges"]
+            ]
+        except (KeyError, TypeError, AttributeError) as error:
             raise RoutingError(f"Valhalla 回應格式不符：{error!r}") from error

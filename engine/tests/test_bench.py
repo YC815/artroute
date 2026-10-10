@@ -11,17 +11,20 @@ from engine.bench import runner
 from engine.bench.cases import CASES, LOCATIONS, SHAPES, Case, Shape, place
 from engine.bench.runner import (
     PRODUCTION_TIMEOUT_MS,
+    REPORTED_USES,
     SAFETY_ERRORS,
     UNDETERMINED,
     UNSAFE,
     CaseResult,
     case_set_changes,
     compare,
+    format_header,
     format_row,
     load_baseline,
     run_cases,
     safety_problem,
     summarize,
+    use_meters,
 )
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.data.layout import DataLayout
@@ -540,3 +543,56 @@ def test_cli_update_with_force_refuses_safety_failures(
     assert not fake_run.baseline.exists()
     err = capsys.readouterr().err
     assert "b" in err and error in err and "--force" in err
+
+
+# ---- P1.5 Task 2：量 footway／steps／parking_aisle（只量測） ----
+
+ZERO_USES = {"footway": 0.0, "steps": 0.0, "parking_aisle": 0.0}
+
+
+class UseRouter:
+    """edges()：每段固定配到 footway 12 m、一般道路 500 m、steps 4 m。"""
+
+    def edges(self, points):
+        return [EdgeInfo(1, 0.0, "footway", 0.012), EdgeInfo(2, 0.0, "road", 0.5), EdgeInfo(3, 0.0, "steps", 0.004)]
+
+
+def test_reported_uses() -> None:
+    assert REPORTED_USES == ("footway", "steps", "parking_aisle")
+
+
+def test_use_meters_sums_only_the_reported_uses_over_every_segment() -> None:
+    assert use_meters(UseRouter(), [seg([A, B]), seg([B, C], "detour")]) == {
+        "footway": 24.0, "steps": 8.0, "parking_aisle": 0.0,
+    }
+
+
+def test_use_meters_skips_zero_length_fragments_and_unmatchable_segments() -> None:
+    assert use_meters(UseRouter(), [seg([A, A])]) == ZERO_USES
+    assert use_meters(EdgesRouter(error="boom"), [seg([A, B])]) == ZERO_USES
+
+
+def test_case_result_row_and_summary_carry_use_meters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result())
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(UseRouter(), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error is None
+    assert res.use_m == {"footway": 12.0, "steps": 4.0, "parking_aisle": 0.0}
+    assert format_header().split()[7:10] == ["foot_m", "steps_m", "park_m"]
+    assert format_row(res).split()[7:10] == ["12", "4", "0"]
+    assert "footway／steps／parking_aisle 合計 12／4／0 m" in summarize([res])
+
+
+def test_failed_case_has_no_use_meters_and_still_formats() -> None:
+    failed = result("x", 0, error="AllStrokesFailed")
+    assert failed.use_m == {}
+    assert format_row(failed).split()[7:10] == ["0", "0", "0"]
+
+
+@pytest.mark.valhalla
+def test_edges_report_use_and_length_on_real_tiles(grid_config: Path) -> None:
+    router = Router(grid_config)
+    route = router.route(grid_point(0, 1), grid_point(2, 1))
+    edges = router.edges(route.points)
+    assert edges and {e.use for e in edges} == {"road"}  # 合成地圖全是 residential
+    assert sum(e.length_km for e in edges) == pytest.approx(route.length_km, rel=0.05)

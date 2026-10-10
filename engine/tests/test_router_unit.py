@@ -3,7 +3,7 @@
 import pytest
 
 from engine.routing.polyline import encode
-from engine.routing.router import RouteResult, Router, RoutingError, _ensure_matched, _route_result
+from engine.routing.router import EdgeInfo, RouteResult, Router, RoutingError, _ensure_matched, _route_result
 
 A, B, C = (121.5, 25.05), (121.502, 25.05), (121.504, 25.05)
 FAR = (121.52, 25.05)  # 離 C 約 1.8 km
@@ -108,3 +108,23 @@ def test_edges_of_zero_length_polyline_is_empty_without_calling_valhalla(monkeyp
     # 起訖吸附到同一點的零長度路線沒有經過任何路段；edge_walk 對這種折線會直接失敗
     edges, seen = _edges_requests(monkeypatch, [A, A])
     assert edges == [] and seen == []
+
+
+def test_edges_request_use_and_length_and_carry_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = Router.__new__(Router)
+    seen: list[dict] = []
+
+    def fake_call(method: str, request: dict) -> dict:
+        seen.append(request)
+        return {"edges": [{"way_id": 7, "begin_heading": 90.0, "use": "footway", "length": 0.012}]}
+
+    monkeypatch.setattr(router, "_call", fake_call)
+    edges = router.edges([A, B, C])
+    assert {"edge.use", "edge.length"} <= set(seen[0]["filters"]["attributes"])
+    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="footway", length_km=0.012)]
+
+
+def test_edges_without_use_or_length_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 建圖驗證也呼叫 edges()：量測用的欄位缺了不能讓驗證失敗
+    edges, _ = _edges_requests(monkeypatch, [A, B, C])
+    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="", length_km=0.0)]
