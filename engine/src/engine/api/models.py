@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
+
 # JSON 解析器會放行 NaN / Infinity，要在模型層擋掉，否則它們會一路流進地理計算
 Finite = Annotated[float, Field(allow_inf_nan=False)]
 LonLatPair = tuple[Finite, Finite]
@@ -16,7 +18,9 @@ class StrokeIn(BaseModel):
 
 class MatchRequest(BaseModel):
     strokes: list[StrokeIn] = Field(min_length=1, max_length=40)
-    search_radius_m: float | None = Field(default=None, ge=30, le=150, allow_inf_nan=False)
+    search_radius_m: float | None = Field(
+        default=None, ge=MIN_SEARCH_RADIUS_M, le=MAX_SEARCH_RADIUS_M, allow_inf_nan=False
+    )
 
 
 class RouteOut(BaseModel):

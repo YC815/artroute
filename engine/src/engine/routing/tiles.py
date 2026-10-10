@@ -9,7 +9,9 @@ from pathlib import Path
 from valhalla import get_config
 
 
-MAX_SEARCH_RADIUS_M = 150  # spec §4.3 的 trace search_radius 上限（Valhalla 預設只有 100）
+# spec §4.3 的搜尋半徑範圍（唯一定義處）：API 驗證、自動半徑、Valhalla 設定共用。上限要寫進 Valhalla 設定（預設只有 100）
+MIN_SEARCH_RADIUS_M = 30
+MAX_SEARCH_RADIUS_M = 150
 
 
 class TileBuildError(Exception):

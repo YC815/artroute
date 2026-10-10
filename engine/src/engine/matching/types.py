@@ -5,11 +5,11 @@ from typing import Literal, Protocol
 
 from engine.matching.deadline import Deadline
 from engine.routing.geo import haversine_m
-from engine.routing.router import LonLat, RouteResult, RoutingError
+from engine.routing.router import JOIN_TOLERANCE_M, LonLat, RouteResult, RoutingError
+
+__all__ = ["JOIN_TOLERANCE_M", "MatchRouter", "MatchWarning", "Segment", "SegmentKind", "legal_route", "segment_from"]
 
 type SegmentKind = Literal["stroke", "detour", "connector"]
-
-JOIN_TOLERANCE_M = 1.0  # 相鄰路段接點容許誤差；超過就必須用 route 接，絕不畫直線
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,10 @@ from engine.data.pipeline import run_build
 from engine.matching.deadline import MatchTimeout
 from engine.matching.service import AllStrokesFailed, OutsideTaiwan, TargetTooSmall
 from engine.matching.types import MatchWarning
+from engine.matching import service, stroke, types
+from engine.routing import router
 from engine.routing.router import RoutingError
+from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
 
 LINE = {"points": [[121.5, 25.05], [121.6, 25.05]]}
 
@@ -89,3 +92,15 @@ def test_validation_errors_conform_to_the_declared_model(tmp_path: Path) -> None
     response = TestClient(create_app(tmp_path)).post("/match", json={"strokes": []})
     assert response.status_code == 422
     assert ValidationErrorResponse.model_validate(response.json()).detail
+
+
+def test_radius_bounds_come_from_the_single_definition() -> None:
+    """API、自動半徑、Valhalla 設定共用同一組半徑範圍（最終審查 M5）。"""
+    schema = MatchRequest.model_json_schema()["properties"]["search_radius_m"]["anyOf"][0]
+    assert (schema["minimum"], schema["maximum"]) == (MIN_SEARCH_RADIUS_M, MAX_SEARCH_RADIUS_M)
+    assert service.MIN_SEARCH_RADIUS_M is MIN_SEARCH_RADIUS_M and service.MAX_SEARCH_RADIUS_M is MAX_SEARCH_RADIUS_M
+
+
+def test_join_tolerance_and_snap_limit_have_one_definition() -> None:
+    assert types.JOIN_TOLERANCE_M is router.JOIN_TOLERANCE_M
+    assert stroke.MAX_SNAP_GAP_RADII is router.MAX_SNAP_GAP_RADII

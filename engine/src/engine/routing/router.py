@@ -16,7 +16,8 @@ type LonLat = tuple[float, float]
 COSTING = "bicycle"
 
 MIN_LENGTH_RATIO = 0.7  # 匹配長度至少要有輸入折線的這個比例；P1 benchmark 會調這個值
-LEG_JOIN_TOLERANCE_M = 1.0  # 相鄰 leg 的接點容許誤差，超過代表中間有跳點
+JOIN_TOLERANCE_M = 1.0  # 相鄰路段（leg、segment）接點的容許誤差（唯一定義處）：超過代表中間有跳點，絕不能用直線接
+MAX_SNAP_GAP_RADII = 2  # 吸附結果、route 端點離原始輸入點的上限（搜尋半徑的倍數，唯一定義處）
 # route 預設 node_snap_tolerance = 5 m：離路口 5 m 內的端點會被拉到路口，而 trace 只吸附 1 m 內的節點。
 # 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
 ROUTE_NODE_SNAP_TOLERANCE_M = 0
@@ -65,7 +66,7 @@ def _route_result(response: dict) -> RouteResult:
     for leg_points in legs:
         if points and leg_points:
             gap_m = haversine_m(points[-1], leg_points[0])
-            if gap_m > LEG_JOIN_TOLERANCE_M:
+            if gap_m > JOIN_TOLERANCE_M:
                 # 直接串起來會在地圖上憑空畫出一條直線
                 raise RoutingError(f"路線的 leg 之間不連續，缺口 {gap_m:.1f} m")
             leg_points = leg_points[1:]
@@ -84,7 +85,7 @@ def _ensure_matched(result: RouteResult, points: list[LonLat], search_radius_m: 
             f"吸附只覆蓋輸入的 {matched_m / input_m:.0%}（{matched_m:.0f} m / {input_m:.0f} m），"
             f"低於下限 {MIN_LENGTH_RATIO:.0%}"
         )
-    max_gap_m = search_radius_m * 2
+    max_gap_m = MAX_SNAP_GAP_RADII * search_radius_m
     if haversine_m(result.points[0], points[0]) > max_gap_m:
         raise RoutingError(f"吸附結果的起點離輸入起點超過 {max_gap_m:.0f} m")
     if haversine_m(result.points[-1], points[-1]) > max_gap_m:

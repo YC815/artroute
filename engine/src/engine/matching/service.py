@@ -10,11 +10,12 @@ from engine.matching.stroke import match_stroke
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
+from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
 
 TAIWAN_BBOX = (118.1, 21.8, 122.1, 26.4)  # (min_lon, min_lat, max_lon, max_lat)，含金門、馬祖
 MIN_TARGET_LENGTH_M = 50.0
 MIN_DIAGONAL_M = 2.0  # 範圍太小 score() 無法評分（它的下限是 1 m，量法不同，多留一倍餘裕）
-RADIUS_RATIO, MIN_RADIUS_M, MAX_RADIUS_M = 0.02, 30.0, 150.0
+RADIUS_RATIO = 0.02  # 自動半徑 = 圖形對角線 × 這個比例，夾在 MIN_SEARCH_RADIUS_M–MAX_SEARCH_RADIUS_M
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +65,14 @@ def _diagonal_m(strokes: list[StrokeInput]) -> float:
 
 
 def default_search_radius(strokes: list[StrokeInput]) -> float:
-    return min(MAX_RADIUS_M, max(MIN_RADIUS_M, _diagonal_m(strokes) * RADIUS_RATIO))
+    return float(min(MAX_SEARCH_RADIUS_M, max(MIN_SEARCH_RADIUS_M, _diagonal_m(strokes) * RADIUS_RATIO)))
 
 
 def _resolve_radius(search_radius_m: float | None, strokes: list[StrokeInput]) -> float:
     if search_radius_m is None:
         return default_search_radius(strokes)
-    if not MIN_RADIUS_M <= search_radius_m <= MAX_RADIUS_M:  # NaN 的比較恆為 False，也會被擋下
-        raise ValueError(f"搜尋半徑必須在 {MIN_RADIUS_M:.0f}–{MAX_RADIUS_M:.0f} m 之間：{search_radius_m}")
+    if not MIN_SEARCH_RADIUS_M <= search_radius_m <= MAX_SEARCH_RADIUS_M:  # NaN 的比較恆為 False，也會被擋下
+        raise ValueError(f"搜尋半徑必須在 {MIN_SEARCH_RADIUS_M}–{MAX_SEARCH_RADIUS_M} m 之間：{search_radius_m}")
     return search_radius_m
 
 

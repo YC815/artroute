@@ -15,10 +15,9 @@ from itertools import groupby
 from engine.matching.deadline import Deadline
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, legal_route, segment_from
 from engine.routing.geo import haversine_m, polyline_length_m
-from engine.routing.router import MIN_LENGTH_RATIO, LonLat, RoutingError
+from engine.routing.router import MAX_SNAP_GAP_RADII, MIN_LENGTH_RATIO, LonLat, RoutingError
 
 DENSIFY_STEP_M = 25.0
-MAX_SNAP_GAP_RADII = 2  # route 端點離要求位置的上限（搜尋半徑的倍數），與 Router.trace 的檢查一致
 
 
 @dataclass(frozen=True)
