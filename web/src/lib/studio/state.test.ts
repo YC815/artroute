@@ -5,13 +5,11 @@ import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import { buildGpx, gpxFileName } from "@/lib/export/gpx";
 import type { Point, Shape, Stroke } from "@/lib/shape/types";
 import {
-  NO_OUTCOME,
   canDownloadGpx,
   gpxName,
   isSavable,
   outcomeWarnings,
   shapeKey,
-  trackOutcome,
   visibleOutcome,
   type Outcome,
 } from "@/lib/studio/state";
@@ -116,53 +114,31 @@ describe("shapeKey", () => {
   });
 });
 
-describe("trackOutcome / visibleOutcome", () => {
-  const first: Outcome = { response: SAMPLE_MATCH_RESPONSE, error: null };
+describe("visibleOutcome", () => {
+  const routed: Outcome = { response: SAMPLE_MATCH_RESPONSE, error: null };
+  const failed: Outcome = { response: null, error: ERROR };
 
-  it("新的結果記在目前的圖形底下，並且顯示", () => {
-    const owned = trackOutcome(NO_OUTCOME, first, "A");
-    expect(owned).toEqual({ ...first, shapeKey: "A" });
-    expect(visibleOutcome(owned, first, "A")).toEqual(first);
+  it("結果送出時標記的圖形就是目前的圖形：顯示", () => {
+    expect(visibleOutcome(routed, "A", "A")).toEqual(routed);
+    expect(visibleOutcome(failed, "A", "A")).toEqual(failed);
   });
 
-  it("同一個結果再出現時不改歸屬（回傳同一個物件）", () => {
-    const owned = trackOutcome(NO_OUTCOME, first, "A");
-    expect(trackOutcome(owned, first, "B")).toBe(owned);
+  it("K1 的結果在圖形換成 K2 之後才回來（K2 還沒送出）：不把 K1 的路線畫在 K2 上", () => {
+    expect(visibleOutcome(routed, "K1", "K2")).toEqual(NONE);
   });
 
-  it("結果被遮掉（request 為 null）時保留歸屬", () => {
-    const owned = trackOutcome(NO_OUTCOME, first, "A");
-    expect(trackOutcome(owned, NONE, null)).toBe(owned);
-    expect(visibleOutcome(owned, NONE, null)).toEqual(NONE);
+  it("圖形換了，舊圖形的錯誤與 warnings 也不顯示", () => {
+    expect(visibleOutcome(failed, "K1", "K2")).toEqual(NONE);
   });
 
-  it("圖形從不合法變回另一個圖形：吸附中仍回傳舊路線時不顯示", () => {
-    let owned = trackOutcome(NO_OUTCOME, first, "A");
-    owned = trackOutcome(owned, NONE, null);
-    owned = trackOutcome(owned, first, "B");
-    expect(visibleOutcome(owned, first, "B")).toEqual(NONE);
+  it("目前沒有圖形時什麼都不顯示", () => {
+    expect(visibleOutcome(routed, "A", null)).toEqual(NONE);
+    expect(visibleOutcome(NONE, null, null)).toEqual(NONE);
   });
 
-  it("變回同一個圖形（請求內容相同、不會重送）時照常顯示", () => {
-    let owned = trackOutcome(NO_OUTCOME, first, "A");
-    owned = trackOutcome(owned, NONE, null);
-    owned = trackOutcome(owned, first, "A");
-    expect(visibleOutcome(owned, first, "A")).toEqual(first);
-  });
-
-  it("新圖形的結果回來後顯示", () => {
-    let owned = trackOutcome(NO_OUTCOME, first, "A");
-    const second: Outcome = { response: { ...SAMPLE_MATCH_RESPONSE }, error: null };
-    owned = trackOutcome(owned, second, "B");
-    expect(visibleOutcome(owned, second, "B")).toEqual(second);
-  });
-
-  it("錯誤也一樣：圖形換了就不顯示舊錯誤", () => {
-    const failed: Outcome = { response: null, error: ERROR };
-    let owned = trackOutcome(NO_OUTCOME, failed, "A");
-    expect(visibleOutcome(owned, failed, "A")).toEqual(failed);
-    owned = trackOutcome(owned, failed, "B");
-    expect(visibleOutcome(owned, failed, "B")).toEqual(NONE);
+  it("變回同一個圖形（請求內容相同、不會重送）時照常顯示原本的結果", () => {
+    // 不合法 → 改回原樣：useLiveMatch 保留著 A 的結果與 tag，排程器不重送
+    expect(visibleOutcome(routed, "A", "A")).toEqual(routed);
   });
 });
 

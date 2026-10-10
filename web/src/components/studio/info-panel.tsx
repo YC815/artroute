@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { MatchError } from "@/lib/engine/client";
@@ -24,6 +25,9 @@ type Props = {
   workName: string;
 };
 
+/** object URL 保留多久才釋放：iOS Safari 與較慢的下載處理可能在 click 之後一段時間才讀檔。 */
+const REVOKE_AFTER_MS = 60_000;
+
 /** 下載 GPX。不加 BOM：有些匯入器會把 BOM 當成 XML 宣告前的非法字元。 */
 function downloadGpx(points: LonLat[], name: string) {
   const blob = new Blob([buildGpx(points, name)], { type: "application/gpx+xml" });
@@ -31,8 +35,12 @@ function downloadGpx(points: LonLat[], name: string) {
   const link = document.createElement("a");
   link.href = url;
   link.download = gpxFileName(name);
+  // 有些瀏覽器（舊版 Firefox 等）不在文件裡的 <a> 點了不會下載
+  link.hidden = true;
+  document.body.append(link);
   link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -49,17 +57,21 @@ const LEGEND = [
   { label: "路線", className: "border-t-4 border-blue-600" },
   { label: "繞路（禁行或單行道）", className: "border-t-[6px] border-orange-500" },
   { label: "連接線", className: "border-t-[3px] border-dotted border-slate-400" },
+  { label: "吸附失敗的筆畫", className: "border-t-[3px] border-dashed border-red-600" },
 ];
 
 export function InfoPanel(props: Props) {
   const { targetLengthM, response, error, pending, warnings, problem, dataVersion, workName } = props;
   const score = response?.score;
   const downloadable = canDownloadGpx(response, pending);
+  const headingId = useId();
   return (
-    <section className="flex flex-col gap-3" aria-label="資訊">
+    <section className="flex flex-col gap-3" aria-labelledby={headingId}>
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">路線資訊</h2>
-        {pending && <Badge variant="secondary">吸附中…</Badge>}
+        <h2 id={headingId} className="text-sm font-semibold">
+          路線資訊
+        </h2>
+        <div role="status">{pending && <Badge variant="secondary">吸附中…</Badge>}</div>
       </div>
       <div className="flex flex-col gap-1">
         <Row label="目標長度" value={targetLengthM === null ? "—" : formatDistance(targetLengthM)} />
@@ -70,17 +82,24 @@ export function InfoPanel(props: Props) {
         <Row label="路網資料" value={formatDataVersion(response?.data_version ?? dataVersion ?? "—")} />
       </div>
 
-      {problem && <p className="text-sm text-destructive">{problem}</p>}
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {warnings.length > 0 && (
-        <ul className="flex flex-col gap-1 text-sm text-destructive">
-          {warnings.map((w) => (
-            <li key={`${w.stroke_index}-${w.code}`}>
-              第 {w.stroke_index + 1} 筆：{w.message}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* live region 一直留在 DOM 裡（不用 hidden）：內容出現時才念得出來 */}
+      <div className="flex flex-col gap-1 text-sm text-destructive">
+        <div role="alert" className="flex flex-col gap-1">
+          {problem && <p>{problem}</p>}
+          {error && <p>{error.message}</p>}
+        </div>
+        <div aria-live="polite">
+          {warnings.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {warnings.map((w) => (
+                <li key={`${w.stroke_index}-${w.code}`}>
+                  第 {w.stroke_index + 1} 筆：{w.message}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
 
       <div className="flex flex-col gap-1.5">
         <Button
