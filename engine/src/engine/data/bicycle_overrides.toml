@@ -1,0 +1,4 @@
+# 人工修正快速道路判斷：deny 強制禁騎、allow 強制可騎（OSM way id）。allow 優先。
+# 被判定為快速道路的 way 一律改成 bicycle=no，連圖資編輯者明確標的 bicycle=yes 也會被蓋掉；要放行就把 way id 加進 allow。
+deny = []
+allow = []
