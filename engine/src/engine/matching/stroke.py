@@ -1,11 +1,13 @@
 """單一部件的分治吸附（spec §4.3）。
 
-整段 trace → 失敗就對半切 → 短於 min_piece_m 仍失敗的小段改用合法 route 繞路。
+整段 trace → 失敗就對半切 → 短於 min_piece_m 仍失敗的小段標記為失敗。
+連續的失敗小段合併成一次合法 route 繞路（見 _merge）。
 相鄰段落接不上時用 route 補；補不起來就斷成新的 chain，絕不畫直線。
 """
 
 import math
 from dataclasses import dataclass
+from itertools import groupby
 
 from engine.matching.deadline import Deadline
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, segment_from
@@ -19,6 +21,14 @@ DENSIFY_STEP_M = 25.0
 class StrokeMatch:
     chains: list[list[Segment]]
     warnings: list[MatchWarning]
+
+
+@dataclass(frozen=True)
+class _Failed:
+    """trace 切到最小仍失敗的小段，還沒決定怎麼繞。"""
+
+    start: LonLat
+    end: LonLat
 
 
 @dataclass(frozen=True)
@@ -46,17 +56,39 @@ def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
         return None
 
 
-def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | None]:
-    """回傳依序排列的段落；None 代表這一小段找不到任何合法路徑。"""
+def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
+    """回傳依序排列的結果：trace 成功的 Segment，或切到最小仍失敗的 _Failed。這裡不呼叫 route。"""
     ctx.deadline.check()
     try:
         return [segment_from("stroke", ctx.stroke_index, ctx.router.trace(piece, search_radius_m=ctx.search_radius_m))]
     except RoutingError:
         pass
     if len(piece) < 3 or polyline_length_m(piece) <= ctx.min_piece_m:
-        return [_route(ctx, piece[0], piece[-1])]
+        return [_Failed(piece[0], piece[-1])]
     mid = len(piece) // 2
     return _solve(ctx, piece[: mid + 1]) + _solve(ctx, piece[mid:])
+
+
+def _detour_run(ctx: _Context, run: list[_Failed]) -> list[Segment | None]:
+    """連續失敗的小段：整串只 route 一次；整串找不到路才退回逐段 route，保住繞得過去的部分。"""
+    whole = _route(ctx, run[0].start, run[-1].end)
+    if whole is not None:
+        return [whole]
+    if len(run) == 1:
+        return [None]  # 整串就是這一段，剛剛已經試過了
+    return [_route(ctx, failed.start, failed.end) for failed in run]
+
+
+def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | None]:
+    """把每一串連續的 _Failed 合成一次繞路。
+
+    逆向單行道上每個小段各自繞路，每段都得繞完整個街區（約 800 m）；
+    整串合在一起只繞一圈。所以失敗的小段一定要先合併再 route。
+    """
+    pieces: list[Segment | None] = []
+    for is_failed, group in groupby(leaves, key=lambda leaf: isinstance(leaf, _Failed)):
+        pieces.extend(_detour_run(ctx, list(group)) if is_failed else group)
+    return pieces
 
 
 def _link(ctx: _Context, pieces: list[Segment | None]) -> list[list[Segment]]:
@@ -88,7 +120,7 @@ def match_stroke(
     deadline: Deadline,
 ) -> StrokeMatch:
     ctx = _Context(router, stroke_index, search_radius_m, min_piece_m, deadline)
-    pieces = _solve(ctx, densify(points))
+    pieces = _merge(ctx, _solve(ctx, densify(points)))
     chains = _link(ctx, pieces)
     if not chains:
         warning = MatchWarning(stroke_index, "no_route", "這個部件附近找不到可騎的道路")

@@ -16,11 +16,18 @@ def line(lon_from: float, lon_to: float, n: int = 40) -> list[tuple[float, float
 
 
 class FakeRouter:
-    """trace：只要點落在 bad 區間就失敗；route：直接回兩端點，但端點落在 dead 區間就失敗。"""
+    """trace：只要點落在 bad 區間就失敗；route：直接回兩端點，但直線經過 dead 區間，
+    或兩端相距超過 max_route_m 就失敗。"""
 
-    def __init__(self, bad: tuple[float, float] | None = None, dead: tuple[float, float] | None = None) -> None:
-        self.bad, self.dead = bad, dead
+    def __init__(
+        self,
+        bad: tuple[float, float] | None = None,
+        dead: tuple[float, float] | None = None,
+        max_route_m: float | None = None,
+    ) -> None:
+        self.bad, self.dead, self.max_route_m = bad, dead, max_route_m
         self.trace_calls = 0
+        self.route_calls = 0
 
     @staticmethod
     def _inside(lon: float, zone: tuple[float, float] | None) -> bool:
@@ -33,6 +40,9 @@ class FakeRouter:
         return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
 
     def route(self, start, end):
+        self.route_calls += 1
+        if self.max_route_m is not None and haversine_m(start, end) > self.max_route_m:
+            raise RoutingError("too long")
         lo, hi = sorted((start[0], end[0]))
         if self.dead is not None and lo <= self.dead[1] and hi >= self.dead[0]:  # 直線經過 dead 區間就找不到路
             raise RoutingError("dead")
@@ -77,6 +87,22 @@ def test_bad_middle_becomes_detour_and_shape_elsewhere_is_kept() -> None:
     stroke_m = sum(s.length_m for s in chain if s.kind == "stroke")
     assert stroke_m > 0.7 * polyline_length_m(line(121.50, 121.52))
     assert router.trace_calls < 40  # 分治只在壞的地方細切
+    assert [s.kind for s in chain].count("detour") == 1  # 連續失敗的小段合併成一次繞路
+    assert router.route_calls == 1
+    assert result.warnings == []
+
+
+def test_failed_run_falls_back_to_individual_routes() -> None:
+    # 壞區約 300 m 寬，但單次 route 最多 150 m：整串繞不過去，要退回逐段繞
+    router = FakeRouter(bad=(121.5085, 121.5115), max_route_m=150)
+    result = run(router, line(121.50, 121.52))
+    assert len(result.chains) == 1
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    detours = [s for s in chain if s.kind == "detour"]
+    assert len(detours) > 1
+    assert all(s.length_m <= 150.5 for s in detours)
+    assert {s.kind for s in chain} == {"stroke", "detour"}
     assert result.warnings == []
 
 
