@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchStatus } from "@/lib/engine/client";
 
 export type EngineStatus = {
@@ -14,11 +14,16 @@ export type EngineStatus = {
 export function useEngineStatus(): EngineStatus & { retry: () => void; markDown: () => void } {
   const [state, setState] = useState<EngineStatus>({ status: "checking", dataVersion: null });
   const [attempt, setAttempt] = useState(0);
+  // markDown 的次數：查詢開始後才回報離線，這次查詢的結果可能是離線前的狀態
+  const downCountRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    const downCount = downCountRef.current;
     void fetchStatus().then((dataVersion) => {
-      if (!cancelled) setState({ status: dataVersion ? "ok" : "down", dataVersion });
+      // 不能讓過時的結果把 down 翻回 ok、重新啟用吸附；要等使用者按「重試」重新查
+      if (cancelled || downCount !== downCountRef.current) return;
+      setState({ status: dataVersion ? "ok" : "down", dataVersion });
     });
     return () => {
       cancelled = true;
@@ -30,7 +35,10 @@ export function useEngineStatus(): EngineStatus & { retry: () => void; markDown:
     setAttempt((n) => n + 1);
   }, []);
 
-  const markDown = useCallback(() => setState((s) => ({ ...s, status: "down" })), []);
+  const markDown = useCallback(() => {
+    downCountRef.current += 1;
+    setState((s) => ({ ...s, status: "down" }));
+  }, []);
 
   return { ...state, retry, markDown };
 }
