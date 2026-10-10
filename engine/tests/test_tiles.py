@@ -50,3 +50,5 @@ def test_build_tiles_works_without_venv_bin_on_path(tmp_path: Path, monkeypatch:
 def test_config_raises_trace_search_radius_limit_to_150m(grid_config: Path) -> None:
     config = json.loads(grid_config.read_text())
     assert config["service_limits"]["trace"]["max_search_radius"] == 150
+    # 只調 service_limits 沒用：meili 的預設上限 100 會把請求的半徑悄悄壓回 100 m
+    assert config["meili"]["default"]["max_search_radius"] == 150

@@ -21,7 +21,10 @@ def write_config(tile_dir: Path, config_path: Path) -> dict:
     tile_dir = tile_dir.resolve()  # 設定檔存絕對路徑，Actor 從任何 cwd 載入都讀得到
     tile_dir.mkdir(parents=True, exist_ok=True)
     config = get_config(tile_extract="", tile_dir=tile_dir)
+    # 兩個上限都要調：service_limits 決定請求會不會被拒絕，meili.default 決定 Valhalla 實際用多大的半徑；
+    # 只調前者的話，請求 150 m 會被悄悄壓回 meili 預設的 100 m，不報錯也不生效
     config["service_limits"]["trace"]["max_search_radius"] = MAX_SEARCH_RADIUS_M
+    config["meili"]["default"]["max_search_radius"] = MAX_SEARCH_RADIUS_M
     config_path.write_text(json.dumps(config))
     return config
 

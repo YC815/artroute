@@ -88,6 +88,22 @@ def test_trace_far_from_roads_raises(router: Router) -> None:
         router.trace(densify((121.0, 24.0), (121.001, 24.0)))
 
 
-def test_trace_accepts_search_radius_up_to_150m(router: Router) -> None:
-    result = router.trace(densify(grid_point(0, 0), grid_point(2, 0)), search_radius_m=150)
-    assert result.length_km == pytest.approx(0.40, abs=0.05)
+def parallel_trace_offset_north(offset_m: float) -> list[tuple[float, float]]:
+    """沿 row 1（雙向住宅街）從 col 1.5 到 col 4.5，整條往北平移 offset_m。
+
+    row 1 以北 120 m 內沒有其他路（往北最近的是 row 3 的快速道路，約 444 m），所以能吸附的只有 row 1。
+    """
+    (x1, y1), (x2, y2) = grid_point(1.5, 1), grid_point(4.5, 1)
+    dlat = offset_m / 111_195  # 緯度 1 度約 111.195 km
+    return [(x1 + (x2 - x1) * i / 24, y1 + dlat) for i in range(25)]
+
+
+def test_trace_accepts_search_radius_150m_for_trace_120m_off_road(router: Router) -> None:
+    # 軌跡離路 120 m：只有 meili.default.max_search_radius 也調到 150，search_radius=150 才真的生效
+    result = router.trace(parallel_trace_offset_north(120), search_radius_m=150)
+    assert result.length_km == pytest.approx(0.60, abs=0.05)
+
+
+def test_trace_with_search_radius_100m_fails_for_trace_120m_off_road(router: Router) -> None:
+    with pytest.raises(RoutingError):
+        router.trace(parallel_trace_offset_north(120), search_radius_m=100)
