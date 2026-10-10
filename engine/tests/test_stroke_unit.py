@@ -49,6 +49,19 @@ class FakeRouter:
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
 
 
+class SnapRouter(FakeRouter):
+    """trace 回傳的點整體往北偏 snap_lat：模擬吸附到道路後，端點不等於輸入點。"""
+
+    def __init__(self, snap_lat: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.snap_lat = snap_lat
+
+    def trace(self, points, *, search_radius_m):
+        result = super().trace(points, search_radius_m=search_radius_m)
+        shifted = [(lon, lat + self.snap_lat) for lon, lat in result.points]
+        return RouteResult(points=shifted, length_km=result.length_km)
+
+
 def run(router, points, deadline=None):
     return match_stroke(
         router, points, stroke_index=3, search_radius_m=50, min_piece_m=100,
@@ -128,3 +141,52 @@ def test_deadline_exceeded_raises_timeout() -> None:
     deadline = Deadline(5, clock=lambda: next(ticks))
     with pytest.raises(MatchTimeout):
         run(FakeRouter(), line(121.50, 121.52), deadline=deadline)
+
+
+def test_merged_detour_joins_the_neighbours_snapped_endpoints() -> None:
+    # trace 的端點會被吸附到道路上，跟輸入點不同；繞路必須從前一段的實際終點接到後一段的實際起點，
+    # 否則 _link 得再補橋，而在單行道上往回補橋就是再繞一整圈街區
+    router = SnapRouter(snap_lat=0.0001, bad=(121.509, 121.511))  # 偏移約 11 m，超過 JOIN_TOLERANCE_M
+    result = run(router, line(121.50, 121.52))
+    assert len(result.chains) == 1
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    kinds = [s.kind for s in chain]
+    assert kinds.count("detour") == 1
+    i = kinds.index("detour")
+    assert chain[i].points[0] == chain[i - 1].points[-1]
+    assert chain[i].points[-1] == chain[i + 1].points[0]
+    assert router.route_calls == 1  # 沒有補橋
+    assert result.warnings == []
+
+
+def test_closed_stroke_with_failing_trace_is_not_collapsed_to_zero_length() -> None:
+    out = line(121.50, 121.51)
+    closed = out + out[::-1][1:]  # 起點與終點相同的封閉筆畫
+    result = run(FakeRouter(bad=(121.0, 122.0)), closed)
+    segments = [s for chain in result.chains for s in chain]
+    assert segments, "不能整段消失"
+    assert all(s.length_m > 0 for s in segments)  # route(p, p) 塌縮成 0 m 的繞路不算數
+    assert sum(s.length_m for s in segments) >= 0.7 * polyline_length_m(closed)
+    for chain in result.chains:
+        assert_chain_continuous(chain)
+
+
+def test_corner_cutting_run_is_not_replaced_by_one_straight_detour() -> None:
+    # U 形：起訖直線只有 330 m，畫出來的有 3.3 km；整串繞路太短代表在切角，要拆開重繞
+    hairpin = [(121.50, LAT), (121.515, LAT), (121.515, LAT + 0.003), (121.50, LAT + 0.003)]
+    result = run(FakeRouter(bad=(121.0, 122.0)), hairpin)
+    assert len(result.chains) == 1
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    detours = [s for s in chain if s.kind == "detour"]
+    assert len(detours) > 1
+    assert not any(d.points[0] == hairpin[0] and d.points[-1] == hairpin[-1] for d in detours)
+    assert sum(d.length_m for d in detours) >= 0.7 * polyline_length_m(hairpin)
+
+
+def test_single_point_stroke_warns_no_route() -> None:
+    # 只有一個點：route(p, p) 回傳同一點，長度 0，不能當成成功
+    result = run(FakeRouter(bad=(121.0, 122.0)), [(121.5, LAT)])
+    assert result.chains == []
+    assert [w.code for w in result.warnings] == ["no_route"]

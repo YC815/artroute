@@ -1,7 +1,7 @@
 """單一部件的分治吸附（spec §4.3）。
 
 整段 trace → 失敗就對半切 → 短於 min_piece_m 仍失敗的小段標記為失敗。
-連續的失敗小段合併成一次合法 route 繞路（見 _merge）。
+連續的失敗小段合併成一次合法 route 繞路（見 _merge、_detour_run）。
 相鄰段落接不上時用 route 補；補不起來就斷成新的 chain，絕不畫直線。
 """
 
@@ -12,7 +12,7 @@ from itertools import groupby
 from engine.matching.deadline import Deadline
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, segment_from
 from engine.routing.geo import haversine_m, polyline_length_m
-from engine.routing.router import LonLat, RoutingError
+from engine.routing.router import MIN_LENGTH_RATIO, LonLat, RoutingError
 
 DENSIFY_STEP_M = 25.0
 
@@ -25,10 +25,11 @@ class StrokeMatch:
 
 @dataclass(frozen=True)
 class _Failed:
-    """trace 切到最小仍失敗的小段，還沒決定怎麼繞。"""
+    """trace 切到最小仍失敗的小段，還沒決定怎麼繞。drawn_m 是這一小段畫出來的長度。"""
 
     start: LonLat
     end: LonLat
+    drawn_m: float
 
 
 @dataclass(frozen=True)
@@ -51,9 +52,12 @@ def densify(points: list[LonLat], step_m: float = DENSIFY_STEP_M) -> list[LonLat
 def _route(ctx: _Context, start: LonLat, end: LonLat) -> Segment | None:
     ctx.deadline.check()
     try:
-        return segment_from("detour", ctx.stroke_index, ctx.router.route(start, end))
+        result = ctx.router.route(start, end)
     except RoutingError:
         return None
+    if len(set(result.points)) < 2:
+        return None  # 起訖相同（封閉筆畫、單點）會塌縮成同一點：不能當成功，否則整段無聲消失
+    return segment_from("detour", ctx.stroke_index, result)
 
 
 def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
@@ -64,19 +68,27 @@ def _solve(ctx: _Context, piece: list[LonLat]) -> list[Segment | _Failed]:
     except RoutingError:
         pass
     if len(piece) < 3 or polyline_length_m(piece) <= ctx.min_piece_m:
-        return [_Failed(piece[0], piece[-1])]
+        return [_Failed(piece[0], piece[-1], polyline_length_m(piece))]
     mid = len(piece) // 2
     return _solve(ctx, piece[: mid + 1]) + _solve(ctx, piece[mid:])
 
 
-def _detour_run(ctx: _Context, run: list[_Failed]) -> list[Segment | None]:
-    """連續失敗的小段：整串只 route 一次；整串找不到路才退回逐段 route，保住繞得過去的部分。"""
-    whole = _route(ctx, run[0].start, run[-1].end)
-    if whole is not None:
+def _detour_run(
+    ctx: _Context, run: list[_Failed], start: LonLat, end: LonLat
+) -> list[Segment | None]:
+    """連續失敗的小段：整串只 route 一次，一次就繞完，不是每小段各繞一圈。
+
+    繞路比畫出來的線短太多代表塌縮或切角（合法繞路只會更長），不能收；
+    整串繞不出來或被拒絕就對半切，各自重試，直到單一小段為止，保住繞得過去的部分。
+    """
+    whole = _route(ctx, start, end)
+    if whole is not None and whole.length_m >= MIN_LENGTH_RATIO * sum(failed.drawn_m for failed in run):
         return [whole]
     if len(run) == 1:
-        return [None]  # 整串就是這一段，剛剛已經試過了
-    return [_route(ctx, failed.start, failed.end) for failed in run]
+        return [None]
+    mid = len(run) // 2
+    cut = run[mid].start  # 兩半共用的切點，兩邊從同一個輸入點出發，吸附結果會一致
+    return _detour_run(ctx, run[:mid], start, cut) + _detour_run(ctx, run[mid:], cut, end)
 
 
 def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | None]:
@@ -84,10 +96,22 @@ def _merge(ctx: _Context, leaves: list[Segment | _Failed]) -> list[Segment | Non
 
     逆向單行道上每個小段各自繞路，每段都得繞完整個街區（約 800 m）；
     整串合在一起只繞一圈。所以失敗的小段一定要先合併再 route。
+
+    繞路的起訖接前一段 trace 的實際終點、後一段 trace 的實際起點，而不是原始輸入點：
+    trace 的端點會被吸附到道路上（最多差 2 倍搜尋半徑），route 又會各自吸附輸入點，
+    兩邊對不上就得補橋，而在單行道上往回補橋又是一整圈。
     """
+    groups = [(is_failed, list(group)) for is_failed, group in groupby(leaves, key=lambda x: isinstance(x, _Failed))]
     pieces: list[Segment | None] = []
-    for is_failed, group in groupby(leaves, key=lambda leaf: isinstance(leaf, _Failed)):
-        pieces.extend(_detour_run(ctx, list(group)) if is_failed else group)
+    for i, (is_failed, group) in enumerate(groups):
+        if not is_failed:
+            pieces.extend(group)
+            continue
+        before = groups[i - 1][1][-1] if i > 0 else None  # 相鄰的一定是 trace 成功的 Segment
+        after = groups[i + 1][1][0] if i + 1 < len(groups) else None
+        start = before.points[-1] if before else group[0].start
+        end = after.points[0] if after else group[-1].end
+        pieces.extend(_detour_run(ctx, group, start, end))
     return pieces
 
 
