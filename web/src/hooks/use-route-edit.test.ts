@@ -5,8 +5,10 @@ import {
   type PostEdit,
   type SaveDraft,
 } from "@/hooks/use-route-edit";
+import { STALE_DATA_MESSAGE, toEditOutcome } from "@/lib/edit/edit-bridge";
 import type { EditedRoute, EditOp, EditState, RoutePos } from "@/lib/edit/edit-state";
-import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import { postEdit as postEditRequest, type FetchLike } from "@/lib/engine/client";
+import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 
 function route(sig: string): EditedRoute {
   return {
@@ -154,6 +156,62 @@ describe("createRouteEditController", () => {
     expect(t.state()).toMatchObject({ pending: false, message: "這裡沒有圈可以剪", errorCode: "nothing_to_cut" });
     expect(t.state().history.present).toBe(R0);
     expect(t.saves).toHaveLength(0);
+  });
+
+  it("409 stale_data：保留原路線、顯示「路網已更新」、帶著錯誤碼讓介面提供重新驗證；不存草稿", async () => {
+    const t = setup();
+    t.controller.enter(R0, null);
+    cutOnce(t);
+    t.edits[0].reply.resolve({ ok: false, code: "stale_data", message: STALE_DATA_MESSAGE });
+    await flush();
+    expect(t.state()).toMatchObject({ pending: false, errorCode: "stale_data", message: STALE_DATA_MESSAGE });
+    expect(t.state().history.present).toBe(R0);
+    expect(t.saves).toHaveLength(0);
+    // 用完還能接著操作（例如先重新驗證，或改成別的操作）
+    cutOnce(t, Q);
+    expect(t.edits).toHaveLength(2);
+    expect(t.state()).toMatchObject({ pending: true, errorCode: null, message: null });
+  });
+
+  it("接上真的 client：HTTP 409／422 與成功的回應各自走到對的狀態（整條 toEditOutcome 鏈）", async () => {
+    const replies = [
+      new Response(JSON.stringify({ detail: { code: "stale_data", message: "引擎的說法" } }), { status: 409 }),
+      new Response(JSON.stringify({ detail: { code: "turn_not_rideable", message: "這個接點不能直騎" } }), { status: 422 }),
+      new Response(JSON.stringify(SAMPLE_EDIT_RESPONSE), { status: 200 }),
+    ];
+    const bodies: unknown[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return replies.shift()!;
+    };
+    const controller = createRouteEditController({
+      postEdit: async (op, r, signal) =>
+        toEditOutcome(
+          await postEditRequest(
+            { segments: r.segments, data_version: r.dataVersion, route_sig: r.routeSig, strokes: [{ points: [[0, 0], [1, 1]], closed: false }], op },
+            signal,
+            fetchImpl,
+          ),
+        ),
+      saveDraft: async () => "d1",
+      onChange: () => {},
+    });
+    controller.enter(R0, null);
+    for (const expected of [
+      { errorCode: "stale_data", message: STALE_DATA_MESSAGE },
+      { errorCode: "turn_not_rideable", message: "這個接點不能直騎" },
+    ]) {
+      controller.selectTool("cut");
+      controller.pick(P);
+      await flush();
+      expect(controller.getState()).toMatchObject({ pending: false, ...expected });
+      expect(controller.getState()!.history.present).toBe(R0);
+    }
+    controller.selectTool("cut");
+    controller.pick(P);
+    await flush();
+    expect(controller.getState()!.history.present.routeSig).toBe(SAMPLE_EDIT_RESPONSE.route_sig);
+    expect(bodies[0]).toMatchObject({ route_sig: "sig-0", data_version: R0.dataVersion, op: { type: "cut" } });
   });
 
   it("postEdit 丟例外時不會一直卡在等待中", async () => {
