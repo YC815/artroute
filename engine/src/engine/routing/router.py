@@ -34,6 +34,8 @@ class RouteResult:
 class EdgeInfo:
     way_id: int
     begin_heading: float
+    use: str = ""  # Valhalla 的 edge.use，例如 road、cycleway、footway、steps、parking_aisle
+    length_km: float = 0.0  # 折線經過這條 edge 的長度
 
 
 class RoutingError(Exception):
@@ -136,10 +138,14 @@ class Router:
         _ensure_matched(result, points, search_radius_m)
         return result
 
-    def route(self, start: LonLat, end: LonLat) -> RouteResult:
+    def route(self, start: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult:
+        """shortest=True：bicycle 成本改成取最短距離（costing_options.bicycle.shortest）；
+        只換成本函數，通行權、單行道、轉向限制照舊。"""
         locations = [{**loc, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M} for loc in _locations([start, end])]
-        response = self._call("route", {"locations": locations, "costing": COSTING})
-        return _route_result(response)
+        request: dict = {"locations": locations, "costing": COSTING}
+        if shortest:
+            request["costing_options"] = {COSTING: {"shortest": True}}
+        return _route_result(self._call("route", request))
 
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]:
         # edge_walk 把折線的點逐一對上路段形狀的點，多一個重複點整條就配不上。
@@ -154,10 +160,21 @@ class Router:
                 "shape": _locations(shape),
                 "costing": COSTING,
                 "shape_match": "edge_walk",
-                "filters": {"attributes": ["edge.way_id", "edge.begin_heading"], "action": "include"},
+                "filters": {
+                    "attributes": ["edge.way_id", "edge.begin_heading", "edge.use", "edge.length"],
+                    "action": "include",
+                },
             },
         )
         try:
-            return [EdgeInfo(way_id=e["way_id"], begin_heading=e["begin_heading"]) for e in response["edges"]]
-        except (KeyError, TypeError) as error:
+            return [
+                EdgeInfo(
+                    way_id=e["way_id"],
+                    begin_heading=e["begin_heading"],
+                    use=e.get("use", ""),  # 量測用的欄位：缺了用預設值，建圖驗證不能因此失敗
+                    length_km=e.get("length", 0.0),
+                )
+                for e in response["edges"]
+            ]
+        except (KeyError, TypeError, AttributeError) as error:
             raise RoutingError(f"Valhalla 回應格式不符：{error!r}") from error

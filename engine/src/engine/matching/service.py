@@ -3,10 +3,11 @@
 import logging
 from dataclasses import dataclass
 
-from engine.matching.compose import Part, compose
+from engine.matching.compose import Part, Rematch, compose
 from engine.matching.deadline import Deadline
+from engine.matching.join import adjacent, connect
 from engine.matching.score import Score, score
-from engine.matching.stroke import match_stroke
+from engine.matching.stroke import match_stroke, trace_whole
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
@@ -15,7 +16,7 @@ from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
 TAIWAN_BBOX = (118.1, 21.8, 122.1, 26.4)  # (min_lon, min_lat, max_lon, max_lat)，含金門、馬祖
 MIN_TARGET_LENGTH_M = 50.0
 MIN_DIAGONAL_M = 2.0  # 範圍太小 score() 無法評分（它的下限是 1 m，量法不同，多留一倍餘裕）
-RADIUS_RATIO = 0.02  # 自動半徑 = 圖形對角線 × 這個比例，夾在 MIN_SEARCH_RADIUS_M–MAX_SEARCH_RADIUS_M
+RADIUS_RATIO = 0.035  # 自動半徑 = 圖形對角線 × 這個比例，夾在 MIN_SEARCH_RADIUS_M–MAX_SEARCH_RADIUS_M（品質調查：0.02 太小，trace 大量斷段）
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +84,28 @@ def _check_inside_taiwan(strokes: list[StrokeInput]) -> None:
         raise OutsideTaiwan("圖形不在台灣範圍內")
 
 
-def _closes(chain: list[Segment]) -> bool:
-    return haversine_m(chain[-1].points[-1], chain[0].points[0]) <= JOIN_TOLERANCE_M
+def _stitch_closed(
+    router: MatchRouter, deadline: Deadline, chains: list[list[Segment]]
+) -> tuple[list[list[Segment]], bool]:
+    """封閉筆畫：照筆畫順序把相鄰的 chain 接起來（connect：相鄰直接串，否則 connector＋裁切重試，與串接器同一套規則）。
+
+    回傳 (chains, closed)。全部接上、而且最後一點與第一點相鄰（≤ 1 m，且接縫的轉彎能直接騎）→ 一條 chain、closed=True。
+    收尾只接受相鄰、不另外補 route：只有一個部件時那段路沒有用，只會讓路線變長。
+    中間有接不上的地方 → 從那裡斷開；最後一條與第一條相鄰就合成一條（最後一條在前），
+    斷點只剩真正接不上的地方，不會在收尾處多出一個部件（star@taipei_daan@r30）。
+    """
+    runs = [chains[0]]
+    for chain in chains[1:]:
+        merged = connect(router, deadline, runs[-1], chain, "connector", None)
+        if merged is None:
+            runs.append(chain)
+        else:
+            runs[-1] = merged
+    if len(runs) == 1:
+        return runs, adjacent(router, deadline, runs[0], runs[0])
+    if adjacent(router, deadline, runs[-1], runs[0]):
+        return [runs[-1] + runs[0], *runs[1:-1]], False
+    return runs, False
 
 
 def _check_continuous(segments: list[Segment]) -> None:
@@ -114,6 +135,7 @@ def _match_parts(
     """逐筆畫吸附。回傳 (部件, 每個部件所屬的筆畫索引, 吸附階段的警告)。
 
     部件一律取自吸附結果的 chain（端點在道路上），不用原始輸入點。
+    封閉筆畫的 chain 先依筆畫順序接回（_stitch_closed）。
     """
     parts: list[Part] = []
     owners: list[int] = []
@@ -123,10 +145,30 @@ def _match_parts(
             router, target, stroke_index=index, search_radius_m=radius, min_piece_m=2 * radius, deadline=deadline
         )
         warnings.extend(matched.warnings)
-        closed = strokes[index].closed and len(matched.chains) == 1 and _closes(matched.chains[0])
-        parts.extend(Part(chain, closed) for chain in matched.chains)
-        owners.extend(index for _ in matched.chains)
+        chains, closed = matched.chains, False
+        if strokes[index].closed and chains:
+            chains, closed = _stitch_closed(router, deadline, chains)
+        reversible = not strokes[index].closed and len(chains) == 1 and not matched.warnings
+        parts.extend(Part(chain, closed, reversible) for chain in chains)
+        owners.extend(index for _ in chains)
     return parts, owners, warnings
+
+
+def _rematcher(
+    router: MatchRouter, targets: list[list[LonLat]], owners: list[int], radius: float, deadline: Deadline
+) -> Rematch:
+    """串接器選了反向時呼叫：把整筆畫的點倒過來，整段只 trace 一次（trace_whole）。
+    逆向走不通（RoutingError，含錯向保護）就回傳 None，部件照畫的方向走；不對半切、不補繞路，
+    不然反向會用一條沒騎到畫的那條街的繞路，換掉乾淨的正向吸附。每個反向部件最多多 1 次 trace。"""
+
+    def rematch(part_index: int) -> list[Segment] | None:
+        owner = owners[part_index]
+        backwards = trace_whole(
+            router, targets[owner][::-1], stroke_index=owner, search_radius_m=radius, deadline=deadline
+        )
+        return None if backwards is None else [backwards]
+
+    return rematch
 
 
 def _dropped_warnings(owners: list[int], dropped: list[int]) -> list[MatchWarning]:
@@ -169,7 +211,7 @@ def match_shape(
     if not parts:
         raise AllStrokesFailed(warnings)
 
-    composition = compose(router, parts, deadline)
+    composition = compose(router, parts, deadline, rematch=_rematcher(router, targets, owners, radius, deadline))
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
     _check_continuous(composition.segments)
     route = _route_points(composition.segments)

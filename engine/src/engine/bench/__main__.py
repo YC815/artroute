@@ -9,6 +9,7 @@ from pathlib import Path
 
 from engine.bench.cases import CASES
 from engine.bench.runner import (
+    SAFETY_ERRORS,
     CaseResult,
     case_set_changes,
     compare,
@@ -30,7 +31,9 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR", "/data")))
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--force", action="store_true", help="搭配 --update-baseline：有案例失敗時仍寫入")
+    parser.add_argument(
+        "--force", action="store_true", help="搭配 --update-baseline：有案例失敗時仍寫入（安全斷言沒過的案例除外）"
+    )
     args = parser.parse_args(argv)
     if args.force and not args.update_baseline:
         parser.error("--force 只能搭配 --update-baseline")
@@ -38,6 +41,12 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _update_baseline(args: argparse.Namespace, results: list[CaseResult]) -> None:
+    unsafe = [r for r in results if r.error in SAFETY_ERRORS]
+    if unsafe:
+        print("拒絕更新 baseline：安全斷言沒過的案例不能寫進 baseline（加 --force 也一樣）：", file=sys.stderr)
+        for r in unsafe:
+            print(f"  {r.name}：{r.error}（{r.safety}）", file=sys.stderr)
+        sys.exit(1)
     failed = [r for r in results if r.error]
     if failed and not args.force:
         print("拒絕更新 baseline：以下案例失敗（確認是預期的再加 --force）：", file=sys.stderr)
@@ -77,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
     router = Router.from_build(build)
 
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)
-    print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way；沒過的案例算失敗。", flush=True)
+    print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way、接點轉彎能直接騎；沒過的案例算失敗。", flush=True)
     print(format_header(), flush=True)
     results = run_cases(router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True))
     print(summarize(results), flush=True)

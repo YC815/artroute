@@ -31,7 +31,7 @@ class MatchWarning:
 
 class MatchRouter(Protocol):
     def trace(self, points: list[LonLat], *, search_radius_m: float) -> RouteResult: ...
-    def route(self, start: LonLat, end: LonLat) -> RouteResult: ...
+    def route(self, start: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult: ...
 
 
 def segment_from(kind: SegmentKind, stroke_index: int | None, result: RouteResult) -> Segment:
@@ -42,10 +42,12 @@ def try_route(router: MatchRouter, deadline: Deadline, start: LonLat, end: LonLa
     """先檢查期限再呼叫 route；找不到路，或起訖吸附到同一處而塌縮（不到 2 個不同的點、長度 0），回傳 None。
 
     塌縮的結果不能收：收下就是零長度的一段，後面的路段實際上沒接上（封閉筆畫、單點也會這樣）。
+    吸附流程的 route（繞路、橋接、connector）一律取最短：預設的 bicycle 成本偏好自行車道，繞路常繞遠
+    （品質調查：match_rect 的繞路＋橋接 3021 → 2653 m）。shortest 只換成本，通行規則不變。
     """
     deadline.check()
     try:
-        result = router.route(start, end)
+        result = router.route(start, end, shortest=True)
     except RoutingError:
         return None
     return result if len(set(result.points)) >= 2 else None

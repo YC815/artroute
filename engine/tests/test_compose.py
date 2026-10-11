@@ -4,11 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from engine.matching.compose import MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
+from engine.matching.compose import ANCHOR_TIE_M, MAX_CLOSED_ENTRIES, Part, _greedy, _options, _plan, _two_opt, compose, rotate
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
+from engine.matching.stroke import densify
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, Router, RoutingError
+from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
 
@@ -18,14 +20,11 @@ def seg(points, kind="stroke", index=0) -> Segment:
 
 
 class StraightRouter:
-    def __init__(self, fail_to=None) -> None:
-        self.fail_to = fail_to
+    def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
-        if self.fail_to is not None and end == self.fail_to:
-            raise RoutingError("no path")
         return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
 
     def trace(self, points, *, search_radius_m):
@@ -66,9 +65,9 @@ def test_closed_part_entered_at_point_nearest_previous_end() -> None:
 
 
 def test_unconnectable_part_is_dropped() -> None:
-    a = Part([seg([(121.50, LAT), (121.51, LAT)], index=0)], closed=False)
+    a = Part([seg([(121.48, LAT), (121.51, LAT)], index=0)], closed=False)
     b = Part([seg([(121.52, LAT), (121.53, LAT)], index=1)], closed=False)
-    result = compose(StraightRouter(fail_to=(121.52, LAT)), [a, b], Deadline(10))
+    result = compose(IslandStraightRouter(island=frozenset(b.segments[0].points)), [a, b], Deadline(10))
     assert result.dropped == [1]
     assert [s.stroke_index for s in result.segments] == [0]
 
@@ -150,7 +149,7 @@ def test_empty_parts() -> None:
 class CollapsingRouter(StraightRouter):
     """模擬真 Valhalla：起訖吸附到同一處時 route 成功，但只回傳一個點、長度 0。"""
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         return RouteResult(points=[start, start], length_km=0.0)
 
@@ -162,7 +161,7 @@ class OffsetRouter(StraightRouter):
         super().__init__()
         self.start_off_m, self.end_off_m = start_off_m, end_off_m
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         moved_start = (start[0], start[1] + self.start_off_m / 110_574)
         moved_end = (end[0], end[1] + self.end_off_m / 110_574)
@@ -207,10 +206,10 @@ def test_collapsed_route_is_failed_connection_not_zero_length_connector() -> Non
 
 
 def test_dropped_part_does_not_break_following_connections() -> None:
-    a = Part([seg([(121.50, LAT), (121.51, LAT)], index=0)], closed=False)
+    a = Part([seg([(121.48, LAT), (121.51, LAT)], index=0)], closed=False)
     bad = Part([seg([(121.52, LAT), (121.53, LAT)], index=1)], closed=False)
     c = Part([seg([(121.60, LAT), (121.61, LAT)], index=2)], closed=False)
-    result = compose(StraightRouter(fail_to=(121.52, LAT)), [a, bad, c], Deadline(10))
+    result = compose(IslandStraightRouter(island=frozenset(bad.segments[0].points)), [a, bad, c], Deadline(10))
     assert result.dropped == [1]
     assert_continuous(result.segments)
     assert [s.stroke_index for s in result.segments if s.kind == "stroke"] == [0, 2]
@@ -355,7 +354,7 @@ class BlockedStartRouter(StraightRouter):
         super().__init__()
         self.blocked = blocked
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.calls.append((start, end))
         if haversine_m(end, self.blocked) <= 5:
             end = (end[0], end[1] + 5 / 110_574)
@@ -372,3 +371,277 @@ def test_connector_retries_with_trimmed_head_before_dropping_a_part() -> None:
     assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
     tail = result.segments[2].points
     assert b_points[len(b_points) - len(tail):] == tail and len(tail) < len(b_points)  # 只裁掉開頭
+
+
+# ---- P1.5 Task 3：錨點改成最長的部件、兩端往外接、接不上原定那一端就試另一端（ledger L64） ----
+
+
+class IslandStraightRouter(StraightRouter):
+    """起點或終點在 island 裡的 route 一律找不到路（那個部件兩頭都出不去、也進不來）；其餘走直線。"""
+
+    def __init__(self, island=frozenset()) -> None:
+        super().__init__()
+        self.island = island
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if start in self.island or end in self.island:
+            raise RoutingError("island")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+class NoExitRouter(StraightRouter):
+    """從 stuck 出發的 route 一律找不到路（像 star@taipei_daan@r30 那條 chain 的尾巴）；其餘走直線。"""
+
+    def __init__(self, stuck) -> None:
+        super().__init__()
+        self.stuck = stuck
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if start == self.stuck:
+            raise RoutingError("no exit")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def strokes_in(result) -> list[int]:
+    return [s.stroke_index for s in result.segments if s.kind == "stroke"]
+
+
+def test_longest_part_is_kept_when_part_zero_is_an_island() -> None:
+    small = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    big = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    router = IslandStraightRouter(island=frozenset(small.points))
+    result = compose(router, [Part([small], False), Part([big], False)], Deadline(10))
+    assert result.dropped == [0]  # 舊版從第 0 個部件往後接：丟掉的是 2 km 的 big
+    assert result.segments == [big]
+
+
+def test_part_that_cannot_be_reached_on_its_planned_side_is_attached_at_the_other_end() -> None:
+    # 第 0 個部件的尾巴出不去（star@taipei_daan@r30）：舊版會把其餘部件全部丟掉
+    first = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    rest = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    result = compose(NoExitRouter(stuck=first.points[-1]), [Part([first], False), Part([rest], False)], Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [1, 0]  # 錨點（最長）先騎，接不上它開頭的部件改接在它後面
+    assert_continuous(result.segments)
+
+
+def test_a_stuck_tail_after_the_anchor_does_not_drop_the_parts_after_it() -> None:
+    anchor = seg([(121.50, LAT), (121.53, LAT)], index=0)
+    stuck = seg([(121.54, LAT), (121.55, LAT)], index=1)
+    after = seg([(121.56, LAT), (121.57, LAT)], index=2)
+    parts = [Part([anchor], False), Part([stuck], False), Part([after], False)]
+    result = compose(NoExitRouter(stuck=stuck.points[-1]), parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [2, 0, 1]
+    assert_continuous(result.segments)
+
+
+def test_parts_before_the_anchor_are_joined_in_riding_order() -> None:
+    # 特性測試（舊版也會過）：沒有部件被丟掉時，順序與接點都跟舊版相同
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    b = seg([(121.52, LAT), (121.55, LAT)], index=1)  # 最長：錨點
+    c = seg([(121.56, LAT), (121.57, LAT)], index=2)
+    result = compose(StraightRouter(), [Part([a], False), Part([b], False), Part([c], False)], Deadline(10))
+    assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke", "connector", "stroke"]
+    assert strokes_in(result) == [0, 1, 2]
+    connector = result.segments[1]
+    assert connector.points[0] == a.points[-1] and connector.points[-1] == b.points[0]  # 方向仍是 a → b
+
+
+def test_parts_of_equal_length_keep_part_zero_as_anchor() -> None:
+    # b 比 a 長一點點，但差距不到 ANCHOR_TIE_M：視為一樣長，取索引小的（拿掉容差，b 會變成錨點、a 被丟掉）
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    b = seg([(121.60, LAT), (121.61 + 5e-7, LAT)], index=1)  # 比 a 長約 0.05 m
+    assert 0 < b.length_m - a.length_m < ANCHOR_TIE_M
+    router = IslandStraightRouter(island=frozenset(b.points))
+    result = compose(router, [Part([a], False), Part([b], False)], Deadline(10))
+    assert result.dropped == [1]
+
+
+def test_a_single_part_is_returned_as_a_new_list() -> None:
+    # 沒有其他部件可接時，輸出不能與輸入共用同一個 list
+    a = seg([(121.50, LAT), (121.51, LAT)], index=0)
+    part = Part([a], False)
+    result = compose(StraightRouter(), [part], Deadline(10))
+    assert result.segments == [a] and result.segments is not part.segments
+
+
+def test_anchor_counts_matched_stroke_length_not_detour_length() -> None:
+    # letter_l@taipei_riverside：part1 因為一段繞路總長比較長，但貼著畫線的部分比 part0 短；
+    # 錨點要選最能代表圖形的 part0，不是被繞路灌水的 part1
+    clean = seg([(121.50, LAT), (121.51, LAT)], index=0)  # 約 1 km，全是 stroke
+    short_stroke = seg([(121.60, LAT), (121.603, LAT)], index=1)  # 約 0.3 km
+    detour = seg([(121.603, LAT), (121.603, LAT + 0.009), (121.6031, LAT)], kind="detour", index=1)  # 約 2 km，兩端相距約 10 m
+    inflated = Part([short_stroke, detour], False)
+    assert sum(s.length_m for s in inflated.segments) > clean.length_m > short_stroke.length_m
+    router = IslandStraightRouter(island=frozenset(p for s in inflated.segments for p in s.points))
+    result = compose(router, [Part([clean], False), inflated], Deadline(10))
+    assert result.dropped == [1]  # 總長當錨點會留下 part1、丟掉乾淨的 part0
+    assert result.segments == [clean]
+
+
+# ---- P1.5 Task 13（決策 A7）：接不上原定那一端的部件先擱著，其他部件照規劃接完再補 ----
+
+
+class NoEntryRouter(StraightRouter):
+    """終點在 no_entry 的 route 都停在 7 m 外的平行道路上（像網站預設文字筆畫 12 的 ramp：出得去、進不來）；其餘走直線。"""
+
+    def __init__(self, no_entry) -> None:
+        super().__init__()
+        self.no_entry = no_entry
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if end in self.no_entry:
+            beside = (end[0], end[1] + 7 / 110_574)
+            return RouteResult(points=[start, beside], length_km=haversine_m(start, beside) / 1000)
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_part_that_cannot_be_entered_does_not_take_the_place_of_the_planned_head() -> None:
+    # 規劃 0 → 1 → 2 → 3，錨點 1。3 進不去：舊版立刻把 3 接到開頭，0 接開頭也得進 3，
+    # 只好橫越整張圖接到尾巴（strokes 3, 1, 2, 0）。改成 3 先擱著：0 照規劃接在 1 前面，3 最後接在 0 前面。
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    middle = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    ramp = seg([(121.550 + 0.001 * k, LAT) for k in range(6)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([middle], False), Part([ramp], False)]
+    result = compose(NoEntryRouter(no_entry=frozenset(ramp.points)), parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [3, 0, 1, 2]
+    assert_continuous(result.segments)
+    links = [(s.points[0], s.points[-1]) for s in result.segments if s.kind == "connector"]
+    assert links == [  # 0 → 1 → 2 的接點與規劃相同；多出來的只有 3 出發的那一條
+        (ramp.points[-1], head.points[0]),
+        (head.points[-1], anchor.points[0]),
+        (anchor.points[-1], middle.points[0]),
+    ]
+
+
+def test_part_that_still_cannot_be_attached_after_the_others_is_dropped() -> None:
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    island = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    tail = seg([(121.55, LAT), (121.555, LAT)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([island], False), Part([tail], False)]
+    result = compose(IslandStraightRouter(island=frozenset(island.points)), parts, Deadline(10))
+    assert result.dropped == [2]
+    assert strokes_in(result) == [0, 1, 3]
+    assert_continuous(result.segments)
+
+
+class PairBlockedRouter(StraightRouter):
+    """起點在 src、終點在 dst 附近（300 m 內）的 route 找不到路：只有這一個方向的這一對接不上，
+    其他走直線。2 個點的部件沒有可裁的地方，所以一次 join 嘗試 = 1 次 route。"""
+
+    def __init__(self, src, dst) -> None:
+        super().__init__()
+        self.src, self.dst = src, dst
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if haversine_m(start, self.src) < 300 and haversine_m(end, self.dst) < 300:
+            raise RoutingError("這一對接不上")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_deferred_part_is_retried_at_its_planned_end_once_another_part_took_that_end() -> None:
+    # 規劃 0 → 1 → 2 → 3，錨點 1。anchor 尾 → 2 接不上，2 先擱著；3 接在尾端，尾端換了：
+    # 補的時候在原定那端（3 的尾）接得上，不必改接開頭
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    middle = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    tail = seg([(121.55, LAT), (121.555, LAT)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([middle], False), Part([tail], False)]
+    router = PairBlockedRouter(src=anchor.points[-1], dst=middle.points[0])
+    result = compose(router, parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [0, 1, 3, 2]  # 補接在原定那端（尾端）；改接開頭會是 [2, 0, 1, 3]
+    assert_continuous(result.segments)
+    assert router.calls == [
+        (anchor.points[-1], middle.points[0]),  # 2 原定的接點：失敗，擱著
+        (anchor.points[-1], tail.points[0]),  # 3 接在同一端
+        (head.points[-1], anchor.points[0]),  # 0 接在開頭
+        (tail.points[-1], middle.points[0]),  # 補 2：尾端已經換成 3 的終點，在原端接上
+    ]
+
+
+def test_deferred_part_does_not_retry_the_same_join_when_its_end_did_not_change() -> None:
+    # 擱著的部件，原定那一端後來沒有接任何別的部件：同一個接點、同樣的結果，不再打一次 route，直接試另一端
+    anchor = seg([(121.50, LAT), (121.53, LAT)], index=0)
+    after = seg([(121.54, LAT), (121.545, LAT)], index=1)
+    router = PairBlockedRouter(src=anchor.points[-1], dst=after.points[0])
+    result = compose(router, [Part([anchor], False), Part([after], False)], Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [1, 0]  # 改接在開頭
+    assert_continuous(result.segments)
+    assert router.calls == [
+        (anchor.points[-1], after.points[0]),  # 只有一次：失敗後沒有重打
+        (after.points[-1], anchor.points[0]),
+    ]
+
+
+# ---- P1.5 Task 9：開放筆畫可以反向走（以反向的點重新吸附，不是把路線倒過來） ----
+
+
+class RematchSpy:
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[int] = []
+
+    def __call__(self, index: int):
+        self.calls.append(index)
+        return self.result
+
+
+A_DRAWN = seg([(121.50, LAT), (121.51, LAT)], index=0)
+B_DRAWN = seg([(121.53, LAT), (121.52, LAT)], index=1)  # 畫的方向由東往西
+B_BACK = seg([(121.52, LAT), (121.53, LAT)], index=1)  # 反向重新吸附的結果
+
+
+def test_open_part_is_ridden_backwards_when_that_is_closer() -> None:
+    spy = RematchSpy([B_BACK])
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    result = compose(StraightRouter(), parts, Deadline(10), spy)
+    assert spy.calls == [1]
+    assert result.segments[-1] == B_BACK
+    assert result.segments[1].kind == "connector"
+    assert result.segments[1].length_m == pytest.approx(haversine_m((121.51, LAT), (121.52, LAT)))
+
+
+def test_reverse_falls_back_to_the_drawn_direction_when_rematch_fails() -> None:
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    spy = RematchSpy(None)
+    result = compose(StraightRouter(), parts, Deadline(10), spy)
+    assert spy.calls == [1]  # 確實選了反向、重新吸附失敗才照畫的方向走
+    assert result.segments[-1] == B_DRAWN
+    assert_continuous(result.segments)
+
+
+def test_without_rematch_parts_keep_their_drawn_direction() -> None:
+    parts = [Part([A_DRAWN], False), Part([B_DRAWN], False, reversible=True)]
+    assert compose(StraightRouter(), parts, Deadline(10)).segments[-1] == B_DRAWN
+
+
+def test_only_reversible_open_parts_get_a_reverse_option() -> None:
+    assert [o.reverse for o in _options(Part([B_DRAWN], False))] == [False]
+    assert [o.reverse for o in _options(Part([B_DRAWN], False, reversible=True))] == [False, True]
+    loop = Part([seg(ring(121.50, 0.001, 120))], closed=True, reversible=True)
+    assert not any(o.reverse for o in _options(loop))
+
+
+# ---- P1.5 Task 10：部件之間的接點轉彎不能騎就不能直接接 ----
+
+CORNER = (121.505, LAT)
+
+
+def test_parts_meeting_at_a_turn_valhalla_would_not_ride_get_a_connector() -> None:
+    a = Part([seg(densify([east(CORNER, -510), CORNER]), index=0)], False)
+    b = Part([seg(densify([CORNER, north(CORNER, 510)]), index=1)], False)
+    result = compose(TurnBlockRouter(blocked=CORNER), [a, b], Deadline(10))
+    assert result.dropped == []
+    assert [s.kind for s in result.segments] == ["stroke", "connector", "stroke"]
+    assert_continuous(result.segments)
+    assert every_junction_rideable(TurnBlockRouter(blocked=CORNER), result.segments)

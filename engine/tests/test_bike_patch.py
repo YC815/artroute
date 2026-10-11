@@ -4,20 +4,33 @@ from pathlib import Path
 import osmium
 import pytest
 
-from engine.data.bike_patch import Overrides, is_expressway, load_overrides, patch_pbf
+from engine.data.bike_patch import DeniedWay, Overrides, is_expressway, load_overrides, patch_pbf
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.routing.router import Router, RoutingError
 from engine.routing.tiles import build_tiles, config_path
 from osm_fixture import (
+    CLOSED_FOOTWAY_MAP,
     EXPRESSWAY_MAP,
     EXPRESSWAY_ONLY_MAP,
     EXPRESSWAY_ONLY_WAY_ID,
     EXPRESSWAY_WAY_ID,
+    SIDEWALK_MAP,
+    SIDEWALK_ONLY_MAP,
+    SIDEWALK_ONLY_WAY_ID,
+    SIDEWALK_WAY_ID,
+    STEPS_MAP,
+    STEPS_ONLY_MAP,
+    STEPS_ONLY_WAY_ID,
+    STEPS_WAY_ID,
     GridWay,
     PLAIN_TRUNK_WAY_ID,
     X0,
     X1,
+    OPPOSITE_FOOTWAY_WAY_ID,
+    X4,
     grid_point,
+    opposite_footway_map,
+    steps_only_map,
     write_grid_pbf,
 )
 
@@ -210,37 +223,40 @@ def test_patch_strips_other_bicycle_tags_and_keeps_the_rest(tmp_path: Path) -> N
     }
 
 
+# 會（或曾被懷疑會）讓 bicycle=no 的路重新可騎的 tag 組合：快速道路與樓梯共用
+REOPENING_EXTRAS = [
+    {"bicycle:forward": "yes", "bicycle:backward": "yes"},
+    {"cycleway:both": "track"},
+    {"cycleway:right": "lane", "cycleway:left": "lane"},
+    {"cycleway": "lane"},
+    {"bicycle": "designated"},
+    {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
+    {"oneway": "yes", "oneway:bicycle": "no"},
+    # Valhalla lua：bk_forward = bicycle:forward or vehicle:forward，會蓋過 bicycle=no
+    {"vehicle:forward": "yes"},
+    {"vehicle:backward": "yes"},
+    {"oneway": "yes", "vehicle:forward": "yes"},
+    {"oneway": "-1", "vehicle:backward": "yes"},
+    # lua 會讀，但 bicycle=no 在 or 鏈裡先判定，所以保留也不會重新放行（升級 pyvalhalla 時靠這兩組把關）
+    {"bicycle_road": "yes"},
+    {"cyclestreet": "yes"},
+    # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
+    {"access:forward": "yes"},
+    {"access:backward": "yes"},
+    {"vehicle": "yes", "access": "yes"},
+    # lua：service=driveway 且沒有 access 時所有交通方式都放行，實測會蓋過 trunk 的 bicycle=no
+    {"service": "driveway"},
+]
+REOPENING_IDS = [
+    "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
+    "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
+    "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "bicycle-road", "cyclestreet",
+    "access-forward", "access-backward", "vehicle-access-yes", "service-driveway",
+]
+
+
 @pytest.mark.valhalla
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"bicycle:forward": "yes", "bicycle:backward": "yes"},
-        {"cycleway:both": "track"},
-        {"cycleway:right": "lane", "cycleway:left": "lane"},
-        {"cycleway": "lane"},
-        {"bicycle": "designated"},
-        {"bicycle": "yes", "bicycle:conditional": "yes @ (Sa,Su)"},
-        {"oneway": "yes", "oneway:bicycle": "no"},
-        # Valhalla lua：bk_forward = bicycle:forward or vehicle:forward，會蓋過 bicycle=no
-        {"vehicle:forward": "yes"},
-        {"vehicle:backward": "yes"},
-        {"oneway": "yes", "vehicle:forward": "yes"},
-        {"oneway": "-1", "vehicle:backward": "yes"},
-        # lua 會讀，但 bicycle=no 在 or 鏈裡先判定，所以保留也不會重新放行（升級 pyvalhalla 時靠這兩組把關）
-        {"bicycle_road": "yes"},
-        {"cyclestreet": "yes"},
-        # 實測不會重新放行（Valhalla 不讀這些），留作回歸護欄
-        {"access:forward": "yes"},
-        {"access:backward": "yes"},
-        {"vehicle": "yes", "access": "yes"},
-    ],
-    ids=[
-        "bicycle-direction-yes", "cycleway-both-track", "cycleway-sides-lane", "cycleway-lane", "bicycle-designated",
-        "bicycle-yes-conditional", "oneway-bicycle-no", "vehicle-forward", "vehicle-backward",
-        "oneway-vehicle-forward", "oneway-reversed-vehicle-backward", "bicycle-road", "cyclestreet",
-        "access-forward", "access-backward", "vehicle-access-yes",
-    ],
-)
+@pytest.mark.parametrize("extra", REOPENING_EXTRAS, ids=REOPENING_IDS)
 def test_other_bicycle_tags_cannot_reopen_expressway(tmp_path: Path, extra: Tags) -> None:
     src = tmp_path / "src.osm.pbf"
     write_grid_pbf(src, [GridWay(EXPRESSWAY_ONLY_WAY_ID, [(X1 + c, 1) for c in range(5)], {**EXPRESSWAY_TAGS, **extra})])
@@ -293,6 +309,13 @@ def test_build_with_patch_writes_null_coordinates_and_loads_them_back(tmp_path: 
     assert not list(build_dir.glob("*.osm.pbf"))
 
 
+def test_load_denied_reads_old_format_without_highway(tmp_path: Path) -> None:
+    """Task 14 之前建的清單（例如已部署的 build 20261010T183449Z）沒有 highway 欄位：讀成空字串，bench 與驗證照常運作。"""
+    old = [{"id": 1075104270, "name": "洲美快速道路", "ref": "", "first": [121.4974, 25.0946], "last": None}]
+    (tmp_path / DENIED_FILE).write_text(json.dumps(old, ensure_ascii=False))
+    assert load_denied(tmp_path) == [DeniedWay(1075104270, "洲美快速道路", "", (121.4974, 25.0946), None, "")]
+
+
 def test_patch_passes_nodes_and_relations_through_unchanged(tmp_path: Path) -> None:
     src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
     relation = osmium.osm.mutable.Relation(
@@ -324,3 +347,215 @@ def test_allow_beats_deny_when_same_way_is_in_both(tmp_path: Path) -> None:
     assert patch_pbf(src, dst, Overrides(deny=both, allow=both)) == []
     _, ways, _ = read_pbf(dst)
     assert all("bicycle" not in tags for tags, _ in ways.values())
+
+
+# ---- 樓梯禁行（使用者決定：禁走樓梯，沒有例外）----
+
+
+def test_patch_marks_every_steps_way_and_strips_reopening_tags(tmp_path: Path) -> None:
+    src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
+    write_raw_pbf(
+        src,
+        [node(1, 0), node(2, 1), node(3, 2), node(4, 3)],
+        [
+            way(700, [1, 2], {"highway": "steps"}),
+            # 有自行車牽引道的樓梯也一樣禁行；ramp:bicycle 不是 Valhalla 會讀的 tag，照樣保留
+            way(701, [2, 3], {"highway": "steps", "bicycle": "yes", "ramp:bicycle": "yes", "step_count": "12"}),
+            way(702, [3, 4], {
+                "highway": "steps", "bicycle": "designated", "bicycle:forward": "yes", "cycleway": "lane",
+                "oneway": "yes", "oneway:bicycle": "no", "vehicle:forward": "yes", "service": "driveway",
+            }),
+        ],
+    )
+    denied = patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset()))
+    assert [(d.id, d.highway) for d in denied] == [(700, "steps"), (701, "steps"), (702, "steps")]
+    assert denied[0].first == pytest.approx(grid_point(0, 1))
+    assert denied[0].last == pytest.approx(grid_point(1, 1))
+    _, ways, _ = read_pbf(dst)
+    assert ways[700][0] == {"highway": "steps", "bicycle": "no"}
+    assert ways[701][0] == {"highway": "steps", "bicycle": "no", "ramp:bicycle": "yes", "step_count": "12"}
+    assert ways[702][0] == {"highway": "steps", "bicycle": "no", "oneway": "yes"}
+
+
+def test_allow_override_does_not_exempt_steps(tmp_path: Path) -> None:
+    src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
+    write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(700, [1, 2], {"highway": "steps"})])
+    denied = patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset({700})))
+    assert [d.id for d in denied] == [700]
+    assert read_pbf(dst)[1][700][0]["bicycle"] == "no"
+
+
+@pytest.mark.valhalla
+def test_steps_shortcut_is_never_taken_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, STEPS_MAP)
+    start, end = grid_point(X4 - 1, 1), grid_point(X4 + 2, 1)
+
+    # 對照組：未修補時 shortest 走樓梯（預設成本本來就重罰樓梯，所以只有 shortest 能證明 patch 有作用）
+    control = Router(build_tiles(src, tmp_path / "control"))
+    control_route = control.route(start, end, shortest=True)
+    assert STEPS_WAY_ID in {e.way_id for e in control.edges(control_route.points)}
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    assert [(d.id, d.highway) for d in load_denied(build_dir)] == [(STEPS_WAY_ID, "steps")]
+    for shortest in (False, True):
+        route = router.route(start, end, shortest=shortest)
+        assert STEPS_WAY_ID not in {e.way_id for e in router.edges(route.points)}
+        assert route.length_km > 2.0  # 走住宅街繞路
+
+
+@pytest.mark.valhalla
+def test_steps_only_path_becomes_unroutable_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, STEPS_ONLY_MAP)
+    start, end = grid_point(X4 + 3, 1), grid_point(X4 + 6, 1)
+
+    control = Router(build_tiles(src, tmp_path / "control"))
+    for shortest in (False, True):
+        route = control.route(start, end, shortest=shortest)
+        assert STEPS_ONLY_WAY_ID in {e.way_id for e in control.edges(route.points)}
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    for shortest in (False, True):
+        for a, b in ((start, end), (end, start)):
+            with pytest.raises(RoutingError):
+                router.route(a, b, shortest=shortest)
+
+
+@pytest.mark.valhalla
+@pytest.mark.parametrize("extra", REOPENING_EXTRAS, ids=REOPENING_IDS)
+def test_other_bicycle_tags_cannot_reopen_steps(tmp_path: Path, extra: Tags) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, steps_only_map({"highway": "steps", **extra}))
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    west, east = grid_point(X4 + 3, 1), grid_point(X4 + 6, 1)
+    for start, end in ((west, east), (east, west)):
+        for shortest in (False, True):
+            with pytest.raises(RoutingError):
+                router.route(start, end, shortest=shortest)
+
+
+# ---- 人行道盡量避免：自行車本來就能走的人行道標成 bicycle=dismount；本來不能走的維持不能走 ----
+
+
+@pytest.mark.parametrize(
+    "tags, bicycle",
+    [
+        ({"highway": "footway", "footway": "sidewalk", "bicycle": "yes"}, "dismount"),
+        ({"highway": "footway", "bicycle": "designated", "segregated": "yes"}, "dismount"),
+        ({"highway": "footway", "bicycle": "permissive"}, "dismount"),
+        ({"highway": "footway", "footway": "sidewalk", "bicycle": "use_sidepath"}, "dismount"),
+        ({"highway": "footway", "footway": "crossing", "bicycle": "yes"}, "dismount"),
+        ({"highway": "pedestrian", "bicycle": "yes"}, "dismount"),
+        ({"highway": "footway", "bicycle": "dismount"}, "dismount"),
+        # 沒有 bicycle tag 時，lua 也讀 cycleway 與 cycleway:both
+        ({"highway": "footway", "footway": "sidewalk", "cycleway": "shared"}, "dismount"),
+        ({"highway": "footway", "cycleway:both": "track"}, "dismount"),
+        # 自行車本來就不能走：不能因為標記反而放行
+        ({"highway": "footway", "footway": "sidewalk"}, None),
+        ({"highway": "footway", "bicycle": "no"}, "no"),
+        ({"highway": "pedestrian"}, None),
+        ({"highway": "footway", "cycleway": "no"}, None),
+        ({"highway": "footway", "cycleway:both": "yes"}, None),  # lua 的 cycleway:both 只認 lane／track／shared 類
+        ({"highway": "footway", "cycleway:left": "track"}, None),  # 只有一側不會放行
+        # opposite* 只在 lua 的 bike_reverse 表：只放行逆向。標 dismount 會連順向一起打開（等於放行逆向騎）
+        ({"highway": "footway", "cycleway": "opposite"}, None),
+        ({"highway": "footway", "cycleway": "opposite_lane"}, None),
+        ({"highway": "pedestrian", "cycleway": "opposite_track"}, None),
+        # path、cycleway 不動
+        ({"highway": "path", "bicycle": "yes"}, "yes"),
+        ({"highway": "cycleway"}, None),
+        ({"highway": "residential", "sidewalk": "both"}, None),
+    ],
+)
+def test_patch_marks_rideable_footways_as_dismount(tmp_path: Path, tags: Tags, bicycle: str | None) -> None:
+    src, dst = tmp_path / "src.osm.pbf", tmp_path / "out.osm.pbf"
+    write_raw_pbf(src, [node(1, 0), node(2, 1)], [way(720, [1, 2], tags)])
+    assert patch_pbf(src, dst, Overrides(deny=frozenset(), allow=frozenset())) == []  # 人行道不是禁行
+    patched = read_pbf(dst)[1][720][0]
+    assert patched.get("bicycle") == bicycle
+    assert {k: v for k, v in patched.items() if k != "bicycle"} == {k: v for k, v in tags.items() if k != "bicycle"}
+
+
+@pytest.mark.valhalla
+def test_sidewalk_shortcut_is_avoided_by_default_costing_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, SIDEWALK_MAP)
+    start, end = grid_point(X4 + 7, 1), grid_point(X4 + 11, 1)
+
+    # 對照組：未修補時預設成本與 shortest 都走人行道捷徑（預設成本還偏好它勝過道路）
+    control = Router(build_tiles(src, tmp_path / "control"))
+    for shortest in (False, True):
+        route = control.route(start, end, shortest=shortest)
+        assert SIDEWALK_WAY_ID in {e.way_id for e in control.edges(route.points)}
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    route = router.route(start, end)
+    assert SIDEWALK_WAY_ID not in {e.way_id for e in router.edges(route.points)}
+    assert route.length_km > 1.2  # 改走稍長的道路
+    # 實測（Valhalla 3.9.1）：shortest 的成本只看長度，dismount 對它沒有作用，照樣走人行道。
+    # 升級 pyvalhalla 後這裡變了，就要重新評估繞路用哪種成本（docs/p1-5-quality-findings.md「樓梯與人行道」）
+    shortest = router.route(start, end, shortest=True)
+    assert SIDEWALK_WAY_ID in {e.way_id for e in router.edges(shortest.points)}
+
+
+@pytest.mark.valhalla
+def test_sidewalk_only_path_stays_reachable_after_patch(tmp_path: Path) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, SIDEWALK_ONLY_MAP)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    west, east = grid_point(X4 + 12, 1), grid_point(X4 + 16, 1)
+    for start, end in ((west, east), (east, west)):
+        for shortest in (False, True):
+            route = router.route(start, end, shortest=shortest)
+            assert SIDEWALK_ONLY_WAY_ID in {e.way_id for e in router.edges(route.points)}
+
+
+@pytest.mark.valhalla
+def test_footways_closed_to_bicycles_stay_closed_after_patch(tmp_path: Path) -> None:
+    """Valhalla 3.9.1 的 footway／pedestrian 預設不給自行車走（實測）；bicycle=dismount 反而會放行，所以不能一律標記。"""
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, CLOSED_FOOTWAY_MAP)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    for row in (1, 3):  # 列 1：沒有自行車 tag 的人行道；列 3：bicycle=no 的 pedestrian
+        west, east = grid_point(X4 + 18, row), grid_point(X4 + 22, row)
+        for start, end in ((west, east), (east, west)):
+            for shortest in (False, True):
+                with pytest.raises(RoutingError):
+                    router.route(start, end, shortest=shortest)
+
+
+@pytest.mark.valhalla
+@pytest.mark.parametrize("cycleway", ["opposite", "opposite_lane", "opposite_track"])
+def test_patch_does_not_open_the_closed_direction_of_a_contraflow_footway(tmp_path: Path, cycleway: str) -> None:
+    src = tmp_path / "src.osm.pbf"
+    write_grid_pbf(src, opposite_footway_map(cycleway))
+    west, east = grid_point(X4 + 24, 1), grid_point(X4 + 28, 1)
+
+    # 對照組：未修補時只有東→西走得通（證明這張圖真的是單向，下面「修補後西→東仍不通」不是空洞的）
+    control = Router(build_tiles(src, tmp_path / "control"))
+    back = control.route(east, west)
+    assert OPPOSITE_FOOTWAY_WAY_ID in {e.way_id for e in control.edges(back.points)}
+    with pytest.raises(RoutingError):
+        control.route(west, east)
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    router = Router(build_with_patch(src, build_dir))
+    for shortest in (False, True):
+        with pytest.raises(RoutingError):
+            router.route(west, east, shortest=shortest)
+        route = router.route(east, west, shortest=shortest)
+        assert OPPOSITE_FOOTWAY_WAY_ID in {e.way_id for e in router.edges(route.points)}

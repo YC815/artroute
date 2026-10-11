@@ -11,16 +11,21 @@ from engine.bench import runner
 from engine.bench.cases import CASES, LOCATIONS, SHAPES, Case, Shape, place
 from engine.bench.runner import (
     PRODUCTION_TIMEOUT_MS,
+    REPORTED_USES,
+    SAFETY_ERRORS,
     UNDETERMINED,
     UNSAFE,
     CaseResult,
+    bad_turns,
     case_set_changes,
     compare,
+    format_header,
     format_row,
     load_baseline,
     run_cases,
     safety_problem,
     summarize,
+    use_meters,
 )
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.data.layout import DataLayout
@@ -33,7 +38,8 @@ from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import EdgeInfo, Router, RoutingError
 from engine.routing.tiles import build_tiles
 from grid_helpers import densify
-from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, grid_point, write_grid_pbf
+from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, X3, grid_point, write_grid_pbf
+from turn_router import TurnBlockRouter, east, north
 
 UNIT_SQUARE = Shape("square", [([(0, 0), (1, 0), (1, 1), (0, 1)], True)])
 LINE = Shape("line", [([(0, 0.5), (1, 0.5)], False)])
@@ -405,7 +411,7 @@ def test_unsafe_case_is_a_failed_case_and_marked(monkeypatch: pytest.MonkeyPatch
     assert res.overall == 75  # 分數照記，但案例算失敗
     assert UNSAFE in format_row(res) and "缺口" in format_row(res)
     assert "失敗 1" in summarize([res]) and "不安全 1" in summarize([res])
-    assert compare([res], {"sq": {"overall": 75, "error": None}}) == ["sq：原本成功，現在失敗（UnsafeRoute）"]
+    assert compare([res], {"sq": {"overall": 75, "error": None}})[0].startswith("sq：安全斷言沒過（UnsafeRoute：")
 
 
 def test_undetermined_case_is_counted_separately(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -490,3 +496,168 @@ def test_safety_splits_a_segment_edge_walk_cannot_match_whole() -> None:
     assert safety_problem(UturnRouter(), [spur], frozenset({9})) is None
     flagged = safety_problem(UturnRouter(split=C[0]), [spur], frozenset({9}))
     assert flagged is not None and flagged[0] == UNSAFE and "9" in flagged[1]
+
+
+# ---- P1.5 Task 1：安全斷言沒過一律算退步，--force 也不能寫進 baseline ----
+
+
+def unsafe(name: str, error: str = UNSAFE) -> CaseResult:
+    return replace(result(name, 80), error=error, safety="第 0、1 段之間缺口 12.0 m")
+
+
+def test_safety_errors_are_exactly_the_two_assertion_outcomes() -> None:
+    assert SAFETY_ERRORS == frozenset({UNSAFE, UNDETERMINED})
+
+
+def test_compare_flags_a_safety_failure_even_when_the_baseline_entry_failed_the_same_way() -> None:
+    baseline = {"a": {"overall": 80, "coverage": 80, "error": UNSAFE}}
+    assert compare([unsafe("a")], baseline) == ["a：安全斷言沒過（UnsafeRoute：第 0、1 段之間缺口 12.0 m）"]
+
+
+def test_compare_flags_a_safety_failure_of_a_case_missing_from_the_baseline() -> None:
+    assert compare([unsafe("fresh", UNDETERMINED)], {}) == [
+        "fresh：安全斷言沒過（SafetyUndetermined：第 0、1 段之間缺口 12.0 m）"
+    ]
+
+
+def test_compare_still_ignores_an_ordinary_failure_the_baseline_already_had() -> None:
+    baseline = {"b": {"overall": 0, "coverage": 0, "error": "AllStrokesFailed"}}
+    assert compare([result("b", 0, error="AllStrokesFailed")], baseline) == []
+
+
+def test_cli_check_fails_on_a_safety_failure_whatever_the_baseline_says(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_run.baseline.write_text(json.dumps({"a": {"overall": 80, "coverage": 80, "error": UNSAFE}}))
+    with pytest.raises(SystemExit) as failed:
+        fake_run([unsafe("a")])
+    assert failed.value.code == 1
+    assert "退步：a：安全斷言沒過" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [UNSAFE, UNDETERMINED])
+def test_cli_update_with_force_refuses_safety_failures(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str], error: str
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80), unsafe("b", error)], "--update-baseline", "--force")
+    assert refused.value.code == 1
+    assert not fake_run.baseline.exists()
+    err = capsys.readouterr().err
+    assert "b" in err and error in err and "--force" in err
+
+
+# ---- P1.5 Task 2：量 footway／steps／parking_aisle（只量測） ----
+
+ZERO_USES = {"footway": 0.0, "steps": 0.0, "parking_aisle": 0.0}
+
+
+class UseRouter:
+    """edges()：每段固定配到 footway 12 m、一般道路 500 m、steps 4 m。"""
+
+    def edges(self, points):
+        return [EdgeInfo(1, 0.0, "footway", 0.012), EdgeInfo(2, 0.0, "road", 0.5), EdgeInfo(3, 0.0, "steps", 0.004)]
+
+
+def test_reported_uses() -> None:
+    assert REPORTED_USES == ("footway", "steps", "parking_aisle")
+
+
+def test_use_meters_sums_only_the_reported_uses_over_every_segment() -> None:
+    assert use_meters(UseRouter(), [seg([A, B]), seg([B, C], "detour")]) == {
+        "footway": 24.0, "steps": 8.0, "parking_aisle": 0.0,
+    }
+
+
+def test_use_meters_skips_zero_length_fragments_and_unmatchable_segments() -> None:
+    assert use_meters(UseRouter(), [seg([A, A])]) == ZERO_USES
+    assert all(isinstance(m, float) for m in use_meters(UseRouter(), [seg([A, A])]).values())  # 沒有路段也是 0.0，不是 int 0
+    assert use_meters(EdgesRouter(error="boom"), [seg([A, B])]) == ZERO_USES
+
+
+def test_case_result_row_and_summary_carry_use_meters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result())
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(UseRouter(), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error is None
+    assert res.use_m == {"footway": 12.0, "steps": 4.0, "parking_aisle": 0.0}
+    assert format_header().split()[7:10] == ["foot_m", "steps_m", "park_m"]
+    assert format_row(res).split()[7:10] == ["12", "4", "0"]
+    assert "footway／steps／parking_aisle 合計 12／4／0 m" in summarize([res])
+
+
+def test_summarize_use_totals_exclude_failed_and_unsafe_cases() -> None:
+    uses = {"footway": 10.0, "steps": 2.0, "parking_aisle": 1.0}
+    ok = replace(result("ok", 80), use_m=uses)
+    failed = replace(result("failed", 0, error="AllStrokesFailed"), use_m={"footway": 500.0, "steps": 500.0, "parking_aisle": 500.0})
+    unsafe = replace(result("unsafe", 80, error=UNSAFE), use_m={"footway": 700.0, "steps": 700.0, "parking_aisle": 700.0})
+    assert "footway／steps／parking_aisle 合計 10／2／1 m" in summarize([ok, failed, unsafe])
+
+
+def test_failed_case_has_no_use_meters_and_still_formats() -> None:
+    failed = result("x", 0, error="AllStrokesFailed")
+    assert failed.use_m == {}
+    assert format_row(failed).split()[7:10] == ["0", "0", "0"]
+
+
+@pytest.mark.valhalla
+def test_edges_report_use_and_length_on_real_tiles(grid_config: Path) -> None:
+    router = Router(grid_config)
+    route = router.route(grid_point(0, 1), grid_point(2, 1))
+    edges = router.edges(route.points)
+    assert edges and {e.use for e in edges} == {"road"}  # 合成地圖全是 residential
+    assert sum(e.length_km for e in edges) == pytest.approx(route.length_km, rel=0.05)
+
+
+# ---- P1.5 Task 11：接點轉彎安全計數 ----
+
+CORNER = (121.505, 25.05)
+INTO = seg([east(CORNER, -100), CORNER])
+UP = seg([CORNER, north(CORNER, 100)])
+ON = seg([CORNER, east(CORNER, 100)])
+
+
+class TurnEdgesRouter(TurnBlockRouter):
+    """TurnBlockRouter 加上 edges()（安全斷言要用）：一律配到 way 1。"""
+
+    def edges(self, points):
+        return [EdgeInfo(1, 0.0)]
+
+
+def test_bad_turns_counts_joins_valhalla_would_not_ride() -> None:
+    router = TurnEdgesRouter(blocked=CORNER)
+    assert bad_turns(router, [INTO, UP]) == 1
+    assert bad_turns(router, [INTO, ON]) == 0
+    assert bad_turns(router, [INTO]) == 0
+
+
+def test_bad_turns_sees_through_a_zero_length_fragment() -> None:
+    # 封閉圈旋轉可能切出 [p, p]：它兩側的接點都量到同一個轉彎
+    assert bad_turns(TurnEdgesRouter(blocked=CORNER), [INTO, seg([CORNER, CORNER]), UP]) == 2
+
+
+def test_case_with_a_bad_turn_is_unsafe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result([INTO, UP]))
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(TurnEdgesRouter(blocked=CORNER), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error == UNSAFE and "轉彎" in res.safety
+    assert res.bad_turns == 1
+    assert "不安全 1" in summarize([res]) and "轉彎不能直接騎的接點 1 個" in summarize([res])
+    assert compare([res], {})[0].startswith("sq：安全斷言沒過（UnsafeRoute：1 個接點的轉彎")
+
+
+def test_case_without_bad_turns_is_unaffected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result([INTO, ON]))
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (res,) = run_cases(TurnEdgesRouter(blocked=CORNER), [case], denied_ids=frozenset(), warm_up=False)
+    assert res.error is None and res.bad_turns == 0
+
+
+@pytest.mark.valhalla
+def test_bad_turns_on_real_tiles(crossing_config: Path) -> None:
+    router = Router(crossing_config)
+    cross = grid_point(X3 + 1, 1)
+    bridge, under = seg([grid_point(X3, 1), cross]), seg([cross, grid_point(X3 + 1, 2)])
+    assert bad_turns(router, [bridge, under]) == 1
+    node = grid_point(X3, 1)
+    assert bad_turns(router, [seg([grid_point(X3, 0), node]), seg([node, cross])]) == 0

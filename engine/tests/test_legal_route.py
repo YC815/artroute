@@ -18,8 +18,10 @@ class ShiftRouter:
     def __init__(self, start_m: float = 0.0, end_m: float = 0.0, *, collapse: bool = False, fail: bool = False) -> None:
         self.start_m, self.end_m, self.collapse, self.fail = start_m, end_m, collapse, fail
         self.calls = 0
+        self.shortest: list[bool] = []
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
+        self.shortest.append(shortest)
         self.calls += 1
         if self.fail:
             raise RoutingError("no path")
@@ -66,3 +68,10 @@ def test_deadline_checked_before_calling_valhalla() -> None:
     with pytest.raises(MatchTimeout):
         call(router, deadline=expired)
     assert router.calls == 0
+
+
+def test_matching_routes_ask_for_the_shortest_path() -> None:
+    # 繞路、橋接、connector 都經過 try_route：一律最短，只換成本、不換通行規則
+    router = ShiftRouter()
+    assert call(router) is not None
+    assert router.shortest == [True]

@@ -90,3 +90,98 @@ EXPRESSWAY_ONLY_MAP: list[GridWay] = [
     # 快速公路是兩點之間唯一的路：未修補時走得通，標成 bicycle=no 後必須無路可走
     GridWay(EXPRESSWAY_ONLY_WAY_ID, [(X1 + c, 1) for c in range(5)], {"highway": "trunk", "ref": "台64"}),
 ]
+
+SHORT_PRIMARY_WAY_ID = 400
+X2 = 60  # 與其他地圖分開
+CYCLEWAY_DETOUR_ROW = -2
+
+SHORTEST_MAP: list[GridWay] = [
+    # 預設的 bicycle 成本偏好自行車道、懲罰主幹道：兩點之間走 cycleway 繞路（約 2.1 km）；
+    # shortest 只看距離：走 primary 直線（約 1.2 km）。primary 本身可騎（沒有 bicycle=no）。
+    GridWay(SHORT_PRIMARY_WAY_ID, [(X2 + c, 1) for c in range(7)], {"highway": "primary"}),
+    GridWay(410, [(X2, 1), (X2, CYCLEWAY_DETOUR_ROW)], {"highway": "cycleway"}),
+    GridWay(411, [(X2 + c, CYCLEWAY_DETOUR_ROW) for c in range(7)], {"highway": "cycleway"}),
+    GridWay(412, [(X2 + 6, CYCLEWAY_DETOUR_ROW), (X2 + 6, 1)], {"highway": "cycleway"}),
+]
+
+X3 = 80  # 與其他地圖分開
+BRIDGE_WAY_ID = 500
+UNDER_WAY_ID = 501
+
+CROSSING_MAP: list[GridWay] = [
+    # 橋由西往東跨過下面那條路：兩者在 (X3 + 1, 1) 交叉但沒有共用節點，平面上是同一點，實際上不相通
+    GridWay(BRIDGE_WAY_ID, [(X3, 1), (X3 + 2, 1)], {**RESIDENTIAL, "bridge": "yes", "layer": "1"}),
+    GridWay(UNDER_WAY_ID, [(X3 + 1, 0), (X3 + 1, 2)], RESIDENTIAL),
+    # 外圈：橋的兩端與下面那條路的兩端用一般道路連起來；從橋上到下面那條路只能繞外圈
+    GridWay(502, [(X3, 1), (X3, 0), (X3 + 1, 0)], RESIDENTIAL),
+    GridWay(503, [(X3 + 2, 1), (X3 + 2, 2), (X3 + 1, 2)], RESIDENTIAL),
+]
+
+# ---- 樓梯與人行道（Task 14）：每個情境各寫成獨立的 pbf，彼此不會互相吸附 ----
+X4 = 100  # 與其他地圖分開
+STEPS_WAY_ID = 700
+STEPS_ONLY_WAY_ID = 710
+STEPS = {"highway": "steps"}
+SIDEWALK_WAY_ID = 720
+SIDEWALK_ONLY_WAY_ID = 730
+CLOSED_FOOTWAY_WAY_ID = 740
+NO_BICYCLE_FOOTWAY_WAY_ID = 741
+OPPOSITE_FOOTWAY_WAY_ID = 750
+
+# edge_walk 遇到兩條 way 共用同一對端點時可能配錯 way（實測：2 點的捷徑被配成同端點的 4 點道路），
+# 所以捷徑與繞路不共用端點：兩端各接一段住宅街，繞路從住宅街的外端出發
+STEPS_MAP: list[GridWay] = [
+    # 樓梯捷徑（經樓梯約 0.6 km）對住宅街繞路（約 2.4 km）。未修補時 shortest 走樓梯，預設成本本來就繞開樓梯
+    GridWay(STEPS_WAY_ID, [(X4, 1), (X4 + 1, 1)], STEPS),
+    GridWay(701, [(X4 - 1, 1), (X4, 1)], RESIDENTIAL),
+    GridWay(702, [(X4 + 1, 1), (X4 + 2, 1)], RESIDENTIAL),
+    GridWay(703, [(X4 - 1, 1), (X4 - 1, DETOUR_ROW), (X4 + 2, DETOUR_ROW), (X4 + 2, 1)], RESIDENTIAL),
+]
+
+def steps_only_map(steps_tags: dict[str, str]) -> list[GridWay]:
+    """樓梯是兩段住宅街之間唯一的路。起訖要在住宅街上：Valhalla 不會把 route 的起訖吸附到樓梯上（實測）。"""
+    return [
+        GridWay(STEPS_ONLY_WAY_ID, [(X4 + 4, 1), (X4 + 5, 1)], steps_tags),
+        GridWay(711, [(X4 + 3, 1), (X4 + 4, 1)], RESIDENTIAL),
+        GridWay(712, [(X4 + 5, 1), (X4 + 6, 1)], RESIDENTIAL),
+    ]
+
+
+# 未修補時走得通，標成 bicycle=no 後必須無路可走
+STEPS_ONLY_MAP = steps_only_map(STEPS)
+
+SIDEWALK = {"highway": "footway", "footway": "sidewalk", "bicycle": "yes"}  # 明確允許自行車的人行道（台灣最常見）
+
+SIDEWALK_MAP: list[GridWay] = [
+    # 經人行道捷徑約 0.8 km（人行道 0.4 km）對稍長的道路（經列 0，約 1.25 km）
+    GridWay(SIDEWALK_WAY_ID, [(X4 + 8, 1), (X4 + 10, 1)], SIDEWALK),
+    GridWay(721, [(X4 + 7, 1), (X4 + 8, 1)], RESIDENTIAL),
+    GridWay(722, [(X4 + 10, 1), (X4 + 11, 1)], RESIDENTIAL),
+    GridWay(723, [(X4 + 7, 1), (X4 + 7, 0), (X4 + 11, 0), (X4 + 11, 1)], RESIDENTIAL),
+]
+
+SIDEWALK_ONLY_MAP: list[GridWay] = [
+    # 人行道是兩段住宅街之間唯一的路：盡量避免但仍要能到達
+    GridWay(SIDEWALK_ONLY_WAY_ID, [(X4 + 13, 1), (X4 + 15, 1)], SIDEWALK),
+    GridWay(731, [(X4 + 12, 1), (X4 + 13, 1)], RESIDENTIAL),
+    GridWay(732, [(X4 + 15, 1), (X4 + 16, 1)], RESIDENTIAL),
+]
+
+CLOSED_FOOTWAY_MAP: list[GridWay] = [
+    # Valhalla 3.9.1 的 footway／pedestrian 預設不給自行車走；沒有允許自行車的 tag、或明確 bicycle=no，修補後也必須照樣不通
+    GridWay(CLOSED_FOOTWAY_WAY_ID, [(X4 + 19, 1), (X4 + 21, 1)], {"highway": "footway", "footway": "sidewalk"}),
+    GridWay(742, [(X4 + 18, 1), (X4 + 19, 1)], RESIDENTIAL),
+    GridWay(743, [(X4 + 21, 1), (X4 + 22, 1)], RESIDENTIAL),
+    GridWay(NO_BICYCLE_FOOTWAY_WAY_ID, [(X4 + 19, 3), (X4 + 21, 3)], {"highway": "pedestrian", "bicycle": "no"}),
+    GridWay(744, [(X4 + 18, 3), (X4 + 19, 3)], RESIDENTIAL),
+    GridWay(745, [(X4 + 21, 3), (X4 + 22, 3)], RESIDENTIAL),
+]
+
+
+def opposite_footway_map(cycleway: str) -> list[GridWay]:
+    """沒有 bicycle tag、只有 cycleway=opposite* 的人行道：lua 只把逆向（東→西）放行給自行車，順向（西→東）不通。"""
+    return [
+        GridWay(OPPOSITE_FOOTWAY_WAY_ID, [(X4 + 25, 1), (X4 + 27, 1)], {"highway": "footway", "cycleway": cycleway}),
+        GridWay(751, [(X4 + 24, 1), (X4 + 25, 1)], RESIDENTIAL),
+        GridWay(752, [(X4 + 27, 1), (X4 + 28, 1)], RESIDENTIAL),
+    ]

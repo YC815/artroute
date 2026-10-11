@@ -8,6 +8,7 @@ from engine.matching.types import JOIN_TOLERANCE_M
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
 from island_router import IslandRouter, across_island
+from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
 
@@ -40,7 +41,7 @@ class FakeRouter:
             raise RoutingError("bad")
         return RouteResult(points=list(points), length_km=polyline_length_m(points) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.route_calls += 1
         if self.max_route_m is not None and haversine_m(start, end) > self.max_route_m:
             raise RoutingError("too long")
@@ -51,7 +52,7 @@ class FakeRouter:
 
 
 class SnapRouter(FakeRouter):
-    """trace 回傳的點整體往北偏 snap_lat：模擬吸附到道路後，端點不等於輸入點。"""
+    """trace 把點投影到北邊 snap_lat 的那條路：模擬吸附到道路後，端點不等於輸入點；已經在那條路上的點不動。"""
 
     def __init__(self, snap_lat: float, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -59,7 +60,7 @@ class SnapRouter(FakeRouter):
 
     def trace(self, points, *, search_radius_m):
         result = super().trace(points, search_radius_m=search_radius_m)
-        shifted = [(lon, lat + self.snap_lat) for lon, lat in result.points]
+        shifted = [(lon, LAT + self.snap_lat) for lon, _ in result.points]
         return RouteResult(points=shifted, length_km=result.length_km)
 
 
@@ -200,7 +201,7 @@ class FarSnapRouter(FakeRouter):
         super().__init__(**kwargs)
         self.start_deg, self.end_deg = start_m / 110_574, end_m / 110_574
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         result = super().route(start, end)
         (lon0, lat0), (lon1, lat1) = result.points[0], result.points[-1]
         return RouteResult(
@@ -240,7 +241,7 @@ def test_island_endpoint_never_leaves_a_straight_gap_inside_a_chain() -> None:
 class ShortcutRouter(FakeRouter):
     """route 回傳的長度只有 1 m：任何繞路都會被 MIN_LENGTH_RATIO 拒絕（模擬塌縮、切角）。"""
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         result = super().route(start, end)
         return RouteResult(points=result.points, length_km=0.001)
 
@@ -267,7 +268,7 @@ def test_split_point_of_a_failed_run_is_an_input_point_and_may_snap() -> None:
 
 
 class SplitSnapRouter(FakeRouter):
-    """整條 trace 失敗、左右兩半各自成功，但兩半在切點各自吸到不同的位置（北 2 m、南 2 m）；
+    """整條 trace 失敗、左右兩半各自成功，但左右兩半各自投影到北 2 m、南 2 m 的路；
     route 的終點若是右半的起點，會被吸到 5 m 外（右半開頭落在 route 用不了的 edge 上）。"""
 
     MID = 121.51
@@ -279,10 +280,10 @@ class SplitSnapRouter(FakeRouter):
         if min(lons) < self.MID - 1e-9 and max(lons) > self.MID + 1e-9:  # 容許切點本身的浮點誤差
             raise RoutingError("跨過切點")
         shift = self.SHIFT if sum(lons) / len(lons) < self.MID else -self.SHIFT
-        snapped = [(lon, lat + shift) for lon, lat in points]
+        snapped = [(lon, LAT + shift) for lon, _ in points]
         return RouteResult(points=snapped, length_km=polyline_length_m(snapped) / 1000)
 
-    def route(self, start, end):
+    def route(self, start, end, *, shortest=False):
         self.route_calls += 1
         right_start = (self.MID, LAT - self.SHIFT)
         if haversine_m(end, right_start) <= 5:
@@ -311,3 +312,72 @@ def test_detour_that_cannot_join_the_next_piece_still_ends_the_chain() -> None:
         assert_chain_continuous(chain)
     assert result.chains[0][-1].kind == "detour"
     assert [w.code for w in result.warnings] == ["partial"]
+
+
+# ---- P1.5 Task 7：串接——右半從左半的實際終點開始 ----
+
+
+class TwoRoadsRouter:
+    """畫線夾在兩條平行的路中間：切點 MID 以西吸到北邊的路（LAT + SHIFT），以東吸到南邊的路（LAT - SHIFT）。
+    跨過 MID 的 trace 失敗。piece 的第一個點已經在某條路上時保留原位（真實的 map matching 對路上的點吸附距離是 0），
+    其餘的點投影到該半邊的路上。route 走直線並計數。"""
+
+    MID = 121.51
+    SHIFT = 2 / 110_574
+    ROADS = (LAT + SHIFT, LAT - SHIFT)
+
+    def __init__(self) -> None:
+        self.trace_inputs: list[list[tuple[float, float]]] = []
+        self.trace_outputs: list[RouteResult] = []
+        self.route_calls = 0
+
+    def trace(self, points, *, search_radius_m):
+        self.trace_inputs.append(list(points))
+        lons = [lon for lon, _ in points]
+        if min(lons) < self.MID - 1e-9 and max(lons) > self.MID + 1e-9:
+            raise RoutingError("跨過切點")
+        road = self.ROADS[0] if sum(lons) / len(lons) < self.MID else self.ROADS[1]
+        on_road = any(abs(points[0][1] - r) < 1e-12 for r in self.ROADS)
+        head = points[0] if on_road else (points[0][0], road)
+        snapped = [head] + [(lon, road) for lon, _ in points[1:]]
+        result = RouteResult(points=snapped, length_km=polyline_length_m(snapped) / 1000)
+        self.trace_outputs.append(result)
+        return result
+
+    def route(self, start, end, *, shortest=False):
+        self.route_calls += 1
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_right_half_starts_where_the_left_half_actually_ended() -> None:
+    router = TwoRoadsRouter()
+    run(router, line(121.50, 121.52))
+    assert len(router.trace_inputs) == 3  # 整段失敗、左半、右半
+    assert router.trace_inputs[2][0] == router.trace_outputs[0].points[-1]
+
+
+def test_chained_halves_meet_without_a_bridge() -> None:
+    router = TwoRoadsRouter()
+    result = run(router, line(121.50, 121.52))
+    assert [[s.kind for s in c] for c in result.chains] == [["stroke", "stroke"]]
+    chain = result.chains[0]
+    assert chain[1].points[0] == chain[0].points[-1]
+    assert router.route_calls == 0  # 舊版：兩半在切點吸到不同的路（差約 3.6 m），要補一條橋
+    assert result.warnings == []
+
+
+# ---- P1.5 Task 10：吸附出來的相鄰兩段，接點轉彎不能騎就不能直接接 ----
+
+CORNER = (121.505, LAT)
+L_SHAPE = [east(CORNER, -510), CORNER, north(CORNER, 510)]  # 往東 510 m，在 CORNER 左轉往北 510 m
+
+
+def test_trace_pieces_meeting_at_a_turn_valhalla_would_not_ride_are_not_joined_directly() -> None:
+    dense = densify(L_SHAPE)
+    assert haversine_m(dense[len(dense) // 2], CORNER) < 0.01  # 前提：對半切正好切在轉角
+    result = run(TurnBlockRouter(blocked=CORNER), L_SHAPE)
+    assert [[s.kind for s in c] for c in result.chains] == [["stroke", "detour", "stroke"]]
+    chain = result.chains[0]
+    assert_chain_continuous(chain)
+    assert every_junction_rideable(TurnBlockRouter(blocked=CORNER), chain)
+    assert result.warnings == []
