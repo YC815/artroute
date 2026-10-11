@@ -1,6 +1,6 @@
 import type { Placement, SearchRequest, SearchStage, StartCircle } from "@/lib/engine/contract";
 import { toLocal } from "@/lib/geo/local-plane";
-import { MAX_SEARCH_KM, MAX_SEARCH_ROTATION_DEG, MIN_SEARCH_KM } from "@/lib/limits";
+import { MAX_SEARCH_KM, MIN_SEARCH_KM } from "@/lib/limits";
 import { MAX_SIZE_M, MIN_SIZE_M, type Transform } from "@/lib/shape/transform";
 import type { LonLat, Shape } from "@/lib/shape/types";
 
@@ -29,9 +29,14 @@ export function defaultKmRange(targetLengthM: number): KmRange {
   return { min, max };
 }
 
-/** 預設的旋轉範圍（±度）：文字 ±15° 才讀得出來，圖片不限。 */
+/**
+ * 預設的旋轉範圍（±度）：Strava 的地圖北朝上，轉太多就認不出來，文字與圖片都 ±15°（P2.5 spec §5.3）。
+ * 使用者仍可在搜尋面板放寬到 ±180°（不限）。
+ */
+const DEFAULT_ROTATION_SPAN: Record<Shape["kind"], number> = { text: 15, image: 15 };
+
 export function defaultRotationSpan(kind: Shape["kind"]): number {
-  return kind === "text" ? 15 : MAX_SEARCH_ROTATION_DEG;
+  return DEFAULT_ROTATION_SPAN[kind];
 }
 
 /** 使用者輸入的公里數 → 數字；不是 1–300 的有限數字時回傳 null。 */
