@@ -1,15 +1,22 @@
-# 交接：P2 自動搜尋（2026-10-11）
+# 交接：P2 自動搜尋完成、精算候選數調整（2026-10-11）
 
 ## 目前狀態
 
-- P0、P1、P1.5、P2 都已完成並部署在 m1。P2 的真實路網量測已在 2026-10-11 做完，下面「本機待辦」1–7 都完成了，數字見 `docs/p2-search-findings.md`。
-- 完成條件（R = 5 km 時 30 秒內前 5 名）達成：搜尋 bench 12 個案例都有 5 個候選，最慢 13.5 s、中位數 4.7 s。粗篩最多 1.3 s。記憶體峰值 1.345 GiB。60 個候選全部通過安全斷言。`SEARCH_ROUTERS` 維持預設 2。
+- P0、P1、P1.5、P2 都已完成並部署在 m1（PR #1，merge commit `0478462`）。P2 的真實路網量測見 `docs/p2-search-findings.md`。
+- 完成條件（R = 5 km 時 30 秒內前 5 名）達成：搜尋 bench 12 個案例都有 5 個候選，最慢 13.5 s、中位數 4.7 s。粗篩最多 1.3 s。記憶體峰值 1.345 GiB。60 個候選全部通過安全斷言、樓梯 0 m。`SEARCH_ROUTERS` 維持預設 2。
 - 部署中：
   - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access），含自動搜尋面板。
-  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker，`/status` 的 `search_ready: true`。
+  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker，`/status` 的 `search_ready: true`。部署的是 `dc48f8a` 的程式（K = 10）。
   - 路網 build `20261011T040535Z`：有可騎道路索引，654,328 條 way、5,777,571 個路段、93.9 MB。pbf 與 `20261010T235143Z` 相同，回滾用 `20261010T235143Z`。
 - 吸附 bench 的 baseline 已換成評分 v2：路線與 P1.5 完全相同，v2 overall 中位數 61、平均 53.6；不安全 0、不能直騎的接點 0、樓梯 0 m。
-- 待觀察（不阻擋）：粗篩與精算排名的 Spearman 中位數只有 +0.04，時間預算還很寬，可以考慮調大 K。建圖記憶體這次是每 30 秒取樣一次，峰值 1.996 GiB，可能偏低。
+- **本分支（`claude/p2-search-validation-jn70st`）還沒部署**：精算改成 16 個候選全部跑完（spec §8 第 29 列），搜尋 bench 多了 `late`、`gain` 兩欄。`/match` 與 API 契約都沒變，網站不用重新部署。
+
+## 這個分支做了什麼
+
+- **精算全部候選**（`engine/src/engine/search/fine.py`，§4.6、§8 第 29 列）：粗篩與精算排名的 Spearman 中位數只有 +0.04，最慢的案例只用了 30 秒預算的 45%，所以把 NMS 後的 16 個全部精算（原本 K = 10 而且有 5 個合格就停）。25 秒且已有 5 個起點在圈內仍提前停。已有 5 個之後才開始的吸附，時限縮到第 28 秒為止，避免一個慢候選把搜尋拖過 30 秒。
+- **搜尋 bench 的新量測**（`engine/src/engine/bench/search.py`，§6.3）：每個候選記粗篩名次（`origin`）；每個案例算 `late`（前 5 名裡來自粗篩第 11 名以後的個數）與 `gain`（前 5 名平均 overall 比只精算前 10 名高多少，從同一次搜尋的結果篩出，是下限）；最後印一行彙總；`--json` 另外輸出每一次精算的粗篩名次與分數（`evaluations`）。
+- 文件：spec §4.6、§6.3、§7（P2 改成已完成）、§8 第 29 列；本檔；`docs/backlog.md`。
+- 確認本機的 `dc48f8a`（預設文字 fixture 的座標比到 1e-12）：測試仍逐項比對文字、字型、closed、點數，座標容差對正規化座標（約 1 單位大小）足夠嚴，雲端也通過。
 
 ## P2 做了什麼（細節見 spec §4.2、§4.4–§4.7、§6.1、§6.3、§8 第 21–28 列）
 
@@ -30,24 +37,34 @@
 
 順序重要。完整的步驟、接受條件與停止條件寫在 PR 說明的「給本機 Agent 的 prompt」。
 
-1. 合併 PR（或 checkout 分支），部署引擎：`cd engine && hl deploy artroute-engine --internal`；容器測試 `docker build --target test .`。
-2. **在舊 build 上**跑吸附 bench：P2 沒有改 `/match` 的路線，v1 分數必須與 committed baseline 逐案例相同；不同就是程式行為改變，停下回報。
-3. 重建路網（產生可騎道路索引）：`docker exec -d artroute-engine sh -c "uv run --no-sync python -m engine.data.cli > /data/build.log 2>&1; echo EXIT=\$? >> /data/build.log"`。驗證沒過就停，不准強制。量建圖的記憶體峰值（萃取估計約 1.5 GB，在建 tiles 之前）。
-4. 新 build 上跑吸附 bench（安全全過），接受後 `--update-baseline`（baseline 換成 v2＋v1 欄位）並 commit。
-5. 搜尋 bench：`uv run --no-sync python -m engine.bench.search --json /data/p2-search.json`。完成條件：12 個案例都 ≤ 30 s、5 個候選、安全全過。
-6. 部署網站：`cd web && hl deploy artroute`（維持私人），在 hl 網路內驗證 `/api/status`（`search_ready: true`）、首頁、worker、`/api/search`。
-7. 實測數字寫進 `docs/p2-search-findings.md`。
+1. 本機驗證：`cd engine && uv run pytest -q -W error`（網站沒有改，不用跑網站全套）。
+2. 部署引擎：`cd engine && hl deploy artroute-engine --internal`；先跑容器測試 `docker build --target test .`。不重建路網。
+3. 搜尋 bench（重量）：`docker exec artroute-engine uv run --no-sync python -m engine.bench.search --json /data/p2-k16-search.json`，同時每 2 秒取樣 `docker stats`。
+   - 接受條件：12 個案例都 ≤ 30 s、都有 5 個候選、安全斷言全過、不能直騎的接點 0、樓梯 0 m。和上次一樣。
+   - 要記錄：每個案例的 total／coarse 秒數、精算次數、`late`、`gain`、Spearman，最後一行彙總，記憶體峰值。
+   - 有案例超過 30 s：先試 `SEARCH_ROUTERS=3` 再跑一次；還是超過就停下回報（不要在現場改常數）。
+   - 判讀（寫進 findings，不在現場改程式）：`late` 全是 0 而且 `gain` 中位數 ≤ 0 → 多精算沒有幫助，下個雲端 session 退回 K = 10；`late` 常不是 0、最慢案例 < 20 s → 下個雲端 session 評估 `FINE_KEEP` 24。
+4. 吸附 bench 不用跑：`/match` 的程式沒有改。
+5. 實測數字寫進 `docs/p2-search-findings.md`（新增一節「精算 16 個」），與上次 K = 10 的逐案例數字並列。
+6. **下次重建路網時**（手動或 P3 的第一次排程）：建圖期間每 2–3 秒取樣一次記憶體，取代這次每 30 秒一次的量測（1.996 GiB，可能漏掉峰值；P1.5 每 3 秒量到 2.763 GiB）。
+   - 照上次搜尋 bench 的做法，每 2 秒在背景啟動一次 `docker stats --no-stream`、不等上一次結束（`docker stats` 本身要 1–2 秒，串著跑會變成每 3–4 秒一次），帶 UTC 時間寫進主機上的暫存檔，建完就停。
+   - 容器的 cgroup 有 `memory.peak` 的話（`docker exec artroute-engine cat /sys/fs/cgroup/memory.peak`），建圖前後各讀一次作為對照；它是容器啟動以來的峰值，建圖前剛重新部署才準。
 
 - 禁止：對其他 app 下 `hl rm`／`hl public`／`hl private`；`hl logs -f`；手動刪 build 或改 `current`。`hl public artroute` 已授權，但排在 P3。
 
 ## 已知限制與風險
 
-- 搜尋的時間只在合成資料上量過粗篩（R = 5 km：1–3 s，大圖形約 6.5 s）；精算（每個候選一次完整吸附）只能在真實路網量。超標時先試 `SEARCH_ROUTERS=3`。
-- 粗篩參數（繞路係數、截斷 × 3、方向權重、K）只在合成地圖調過。
+- 精算 16 個的時間還沒在真實路網量：最慢的案例推估約 21 s（K = 10 時 13.5 s），最壞由 25 秒軟性預算與 28 秒的單一吸附時限擋住。網站的等待時間中位數也會變長（推估 4.7 → 約 7 s）。
+- 粗篩的排名幾乎預測不了精算分數（Spearman 中位數 +0.04）。粗篩參數（繞路係數、截斷 × 3、方向權重、`KEEP_A`）只在合成地圖調過；現在靠多精算彌補，粗篩本身變準要在真實資料上多量幾次。
+- 建圖的記憶體峰值沒有精確量（每 30 秒取樣，1.996 GiB）。建圖仍在服務中的容器裡跑（`docs/backlog.md` P3）。
 - 「trace 吸得到、route 進不去」的部件（ramp）可能讓搜尋的起點跑出圈外而被淘汰。
 - 排隊位置只算同一個 worker 內的等待者（近似值）。
 - 雲端環境的 Playwright 1.64 要 `chromium_headless_shell-1248`，映像只有 1194：e2e 是用 symlink 指到 1194 跑的（`PLAYWRIGHT_BROWSERS_PATH`）；m1 或 CI 照常。
 - 其餘見 `docs/backlog.md` 的 P2 一節（每項附延後原因）。
+
+## 下一步
+
+- 本機待辦做完、判讀 K 之後進入 P3：每週自動更新資料（先處理 `docs/backlog.md` P3 一節的建圖鎖、原子寫入、一次性容器）、Cloudflare rate limiting、公開部署（`hl public artroute` 已授權，但公開前要再經使用者確認）。
 
 ## 過去的流程紀錄
 
