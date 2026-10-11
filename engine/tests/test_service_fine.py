@@ -126,6 +126,74 @@ def test_steps_are_taken_in_plan_order_even_when_ranges_tie(monkeypatch) -> None
     assert result.warnings == []
 
 
+class NoRoutes(Router):
+    """route 一律找不到路：轉彎檢查（> 30° 要 route 量）一律不放行，connect 也補不了。"""
+
+    def route(self, start, end, *, shortest=False):
+        raise RoutingError("沒有路")
+
+
+def test_touching_pieces_still_need_a_rideable_turn(monkeypatch) -> None:
+    """兩段照著走的結果剛好相接（≤ 1 m），但接點是 90° 轉彎、Valhalla 不會直接騎（route 量不到）：
+    不能因為相接就直接串，要經過 connect 的轉彎檢查；接不上就斷成兩條 chain、給 partial。
+    把 connect 換成「≤ 1 m 就直接串」時這裡會紅。"""
+    east = row(121.50, 121.51, n=4)
+    north = [(121.51, LAT + 0.001 * k) for k in range(5)]
+    use_plans(monkeypatch, [StrokePlan([piece(east, (0, 4)), piece(north, (4, 8))], [])])
+    target = [*east, *north[1:]]
+    result = fine(NoRoutes(), [StrokeInput(target, False)])
+    assert [w.code for w in result.warnings] == ["partial"]
+    assert len(result.segments) == 1  # 另一段接不上（route 都找不到路），被串接器丟掉
+
+
+class Band(Router):
+    """lon 在 band 裡的點 trace 失敗；跨過或落在 band 裡的 route 也失敗（fast 在那裡斷開、給 partial）。"""
+
+    def __init__(self, low: float, high: float) -> None:
+        super().__init__()
+        self.low, self.high = low, high
+
+    def trace(self, points, *, search_radius_m):
+        if any(self.low <= lon <= self.high for lon, _ in points):
+            self.traces.append((list(points), search_radius_m))
+            raise RoutingError("band")
+        return super().trace(points, search_radius_m=search_radius_m)
+
+    def route(self, start, end, *, shortest=False):
+        lo, hi = sorted((start[0], end[0]))
+        if hi >= self.low and lo <= self.high:
+            raise RoutingError("band")
+        return super().route(start, end, shortest=shortest)
+
+
+def test_fast_block_with_warnings_is_not_joined_on_either_side(monkeypatch) -> None:
+    """退回 fast 的那段自己斷開了（partial）：看不出斷點是不是在它的頭尾，兩側都不接，交給串接器。
+    拿掉「有警告的 fast 段兩側不接」時，照著走那段會和 fast 的第一條 chain 串成同一個部件。"""
+    first = row(121.50, 121.51, n=4)
+    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), (4, 12)], [])])
+    seen: list[list[Segment]] = []
+    compose = service.compose
+
+    def spy(router, parts, deadline, rematch=None, start=None):
+        seen.extend(part.segments for part in parts)
+        return compose(router, parts, deadline, rematch=rematch, start=start)
+
+    monkeypatch.setattr(service, "compose", spy)
+    result = fine(Band(121.519, 121.521), [StrokeInput(TARGET, False)])
+    assert seen[0] == [Segment("stroke", 0, followed(first), seen[0][0].length_m)]
+    assert len(seen) == 3
+    assert [w.code for w in result.warnings] == ["partial"]
+
+
+def test_fallback_without_any_road_gives_partial(monkeypatch) -> None:
+    """筆畫尾端那段退回 fast 也找不到路（沒有 chain）：照著走的那段照樣輸出，但要給 partial。"""
+    first = row(121.50, 121.515, n=6)
+    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 6)), (5, 12)], [])])
+    result = fine(Band(121.5151, 121.6), [StrokeInput(TARGET, False)])
+    assert [s.points for s in result.segments] == [followed(first)]
+    assert [w.code for w in result.warnings] == ["partial"]
+
+
 def test_follow_failure_falls_back_to_fast_for_that_range(monkeypatch) -> None:
     """照著走失敗（第二段落在 trace 失敗的區間）：那段與相鄰的沒規劃範圍合成一個範圍交給 fast。"""
     first, second = row(121.50, 121.5085, n=4), row(121.5215, 121.53, n=4)

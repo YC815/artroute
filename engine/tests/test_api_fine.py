@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from engine.app import create_app
+from engine.app import _CurrentGraph, create_app
 from engine.data.layout import DataLayout
 from engine.data.pipeline import run_build
 from engine.matching.score import Score
@@ -121,3 +121,13 @@ def test_fine_match_over_http_uses_the_planner(tmp_path: Path, planner_build: Pa
     assert fast.status_code == fine.status_code == 200
     assert fine.json()["score"]["direction"] >= fast.json()["score"]["direction"] + 30
     assert fine.json()["route"]["length_m"] < fast.json()["route"]["length_m"]
+
+
+def test_graph_of_another_build_is_never_handed_out(tmp_path: Path) -> None:
+    """Router 是哪個 build 的（版本名稱）就只給那個 build 的圖；current 已經換成別的 build 時不給（這次走 fast）。"""
+    current = build(tmp_path, "20261011T000000Z")
+    loader = Loader()
+    cache = _CurrentGraph(DataLayout(tmp_path), loader)
+    assert cache.get("20261010T000000Z") is None
+    assert loader.loaded == []
+    assert cache.get(current.name) == ("graph", current.name)
