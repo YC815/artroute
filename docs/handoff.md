@@ -3,15 +3,15 @@
 ## 目前狀態
 
 - P0、P1、P1.5、P2 已完成。P2.5 的設計：`docs/superpowers/specs/2026-10-11-p2-5-likeness-design.md`；實作計畫：`docs/superpowers/plans/2026-10-11-p2-5-likeness.md`。
-- **雲端已做（2026-10-11，還沒在真實路網上跑過）**：
-  - **PR A**（#3，分支 `claude/p2-5-likeness-rl4bgr`）：Q1＋Q2。評分 v3、搜尋排名 rank、A 參數（轉彎懲罰 500）、剪小刺與小圈、旋轉 ±15°、隱藏原圖、bench 的 v3／v2／SVG／改前旗標、標註樣本工具。校正沒達到 80%，**使用者決定改成防退步**（findings §1、主 spec §8 第 38、39 列）。
-  - **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖（建圖流程新增，要重建路網）、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`、網站放開後換精緻版。
-  - 兩個 PR 的說明各有「本機待辦」與「給本機 Agent 的 prompt」。**本機先驗 PR A、再驗 PR B**。
-- 部署中（m1，和 P2 收尾時相同，P2.5 還沒部署）：
-  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。程式是 P2（`dc48f8a`）。
-  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。程式是 PR #2 的 `d69e0ca`。`/status` 的 `search_ready: true`。
+- **PR A**（#3，分支 `claude/p2-5-likeness-rl4bgr`）：Q1＋Q2。評分 v3、搜尋排名 rank、A 參數（轉彎懲罰 500）、剪小刺與小圈、旋轉 ±15°、隱藏原圖、bench 的 v3／v2／SVG／改前旗標、標註樣本工具。校正沒達到 80%，**使用者決定改成防退步**（findings §1、主 spec §8 第 38、39 列）。**本機已驗證並部署**（2026-10-11，findings §2）：安全全過、v3 平均 68.1 → 67.9、搜尋最慢 28.5 s；baseline 已換成 v3。
+- **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖（建圖流程新增，要重建路網）、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`、網站放開後換精緻版。雲端完成，**等本機驗證**（PR 說明有「給本機 Agent 的 prompt」）。
+- 部署中（m1）：
+  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。程式是 PR A（`14c849d`）。
+  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。程式是 PR A（`14c849d`）。`/status` 的 `search_ready: true`。
   - 路網 build `20261011T040535Z`（有可騎道路索引，沒有路網圖），回滾用 `20261010T235143Z`。
-- 下一步：本機照 PR A 的 prompt 驗證、給使用者看縮圖、部署；再照 PR B 的 prompt 重建路網、比較 fast 與 fine、做下一輪標註（Q2、P2、F）。Q4 要等本機判定規劃器是否贏過 Q2。P3（每週重建、rate limiting、公開）排在 P2.5 之後。
+- 下一步：本機照 PR B 的 prompt 部署引擎、重建路網、比較 fast 與 fine、做下一輪標註（Q2、P2、F）。Q4 要等本機判定規劃器是否贏過 Q2。
+- **使用者新提的方向（2026-10-11，看 PR A 縮圖後）**：開放使用者手動微調路線（例如剪掉多繞的小圈），改過的路線在瀏覽器裡自動保存，移走底圖也不會不見，很久沒動又從沒打開過才自動清掉。還沒設計；硬限制是不能直接刪點（會畫直線），要改成「選一段、由 Valhalla 重新規劃並過轉彎檢查」。
+- P3（每週重建、rate limiting、公開）排在 P2.5 之後。
 
 ## 為什麼做 P2.5
 
@@ -34,7 +34,7 @@
 
 ## 雲端的工作（三個 PR，每個 PR 一輪本機驗證）
 
-1. **PR A：Q1＋Q2** — 雲端完成，等本機驗證（見 PR 說明）。
+1. **PR A：Q1＋Q2** — 完成：本機驗證並部署（2026-10-11，findings §2）。
 2. **PR B：Q3 描形規劃器** — 雲端完成，等本機驗證（見 PR 說明）。規劃器以 `quality: "fine"` 選用；本機在真實路網上判定它是否贏過 Q2，使用者看縮圖同意後才設成放開時的預設（網站已經是「planner_ready 時放開就送 fine」，所以部署 PR B 等於設成預設：本機要先量、先給使用者看再部署）。
 3. **PR C：Q4**（§7）：變形、連接線輕量版、搜尋改用規劃器與 60 秒預算。**等 PR B 的本機判定之後才開始。**
 
