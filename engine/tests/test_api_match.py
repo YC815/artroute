@@ -31,7 +31,7 @@ def test_match_returns_contract(tmp_path: Path, grid_config: Path) -> None:
     response = client(tmp_path, grid_config).post("/match", json=body(densify(grid_point(0, 1), grid_point(6, 1), n=24)))
     assert response.status_code == 200
     data = response.json()
-    assert set(data) == {"route", "segments", "score", "target_length_m", "warnings", "data_version"}
+    assert set(data) == {"route", "segments", "score", "target_length_m", "warnings", "data_version", "route_sig"}
     assert data["data_version"] == "20261010T000000Z"
     assert data["route"]["length_m"] == pytest.approx(1206, abs=60)
     assert {s["kind"] for s in data["segments"]} <= {"stroke", "detour", "connector"}

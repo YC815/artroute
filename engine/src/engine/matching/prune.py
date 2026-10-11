@@ -47,7 +47,7 @@ _QUERY_SLACK = 1.01  # 局部平面的比例尺與 haversine 差不到 1%：KD-t
 
 
 @dataclass(frozen=True)
-class _Loop:
+class Loop:
     """攤平後第 start 點到第 end 點（start < end，平面近似下兩點相距不到 JOIN_TOLERANCE_M）之間沿路線 length_m 公尺。"""
 
     start: int
@@ -56,7 +56,7 @@ class _Loop:
 
 
 @dataclass(frozen=True)
-class _Pruned:
+class Pruned:
     """剪完的路線；新的邊界在 segments[junction] 與 segments[junction + 1] 之間
     （junction = -1：剪掉的是路線開頭；junction = len(segments) - 1：剪掉的是結尾，這兩種沒有新接點）。"""
 
@@ -64,9 +64,9 @@ class _Pruned:
     junction: int
 
 
-def _candidates(points: list[LonLat], max_m: float) -> list[_Loop]:
+def loop_candidates(points: list[LonLat], max_m: float) -> list[Loop]:
     """路線兩次經過同一點的 (i, j)：由短到長、同長依 i、j 排序（確定性）。
-    距離是局部平面的近似（而且多抓 _QUERY_SLACK）：接點是否 ≤ JOIN_TOLERANCE_M 一律由 _cut_loop 以 haversine 確認。"""
+    距離是局部平面的近似（而且多抓 _QUERY_SLACK）：接點是否 ≤ JOIN_TOLERANCE_M 一律由 cut_loop 以 haversine 確認。"""
     if len(points) < 3:
         return []
     arr = np.asarray(points, dtype=float)
@@ -82,7 +82,7 @@ def _candidates(points: list[LonLat], max_m: float) -> list[_Loop]:
     # 連續重複的點（route 的結果常在頭尾重複一點）是同一個位置：i 取一串重複的最後一個、j 取第一個，同一個圈只試一次
     repeated = np.concatenate(((arr[1:] == arr[:-1]).all(axis=1), [False]))  # repeated[k]：第 k 點與下一點相同
     keep &= ~repeated[pairs[:, 0]] & ~np.concatenate(([False], repeated[:-1]))[pairs[:, 1]]
-    loops = [_Loop(int(i), int(j), float(length)) for (i, j), length in zip(pairs[keep], lengths[keep])]
+    loops = [Loop(int(i), int(j), float(length)) for (i, j), length in zip(pairs[keep], lengths[keep])]
     return sorted(loops, key=lambda loop: (loop.length_m, loop.start, loop.end))
 
 
@@ -90,7 +90,7 @@ def _has_length(segment: Segment) -> bool:
     return len(set(segment.points)) >= 2
 
 
-def _cut_loop(segments: list[Segment], first: Pos, last: Pos) -> _Pruned | None:
+def cut_loop(segments: list[Segment], first: Pos, last: Pos) -> Pruned | None:
     """保留 first 之前（含 first 那一點）與 last 之後（含 last 那一點），中間的段整個拿掉；同一段就切成兩段。
 
     新邊界兩側的點一律用 haversine 量，超過 JOIN_TOLERANCE_M 就回 None（不剪）：候選是平面近似找的，這裡是最後的確認。
@@ -107,17 +107,17 @@ def _cut_loop(segments: list[Segment], first: Pos, last: Pos) -> _Pruned | None:
     pruned = before + after
     if not any(_has_length(s) for s in pruned):
         return None
-    return _Pruned(pruned, len(before) - 1)
+    return Pruned(pruned, len(before) - 1)
 
 
-def _has_new_junction(pruned: _Pruned) -> bool:
+def has_new_junction(pruned: Pruned) -> bool:
     return 0 <= pruned.junction < len(pruned.segments) - 1
 
 
-type _Junction = tuple[LonLat, LonLat]  # 接點兩側的點（前一段的終點、後一段的起點）：剪了別處之後索引會變，用點辨識
+type Junction = tuple[LonLat, LonLat]  # 接點兩側的點（前一段的終點、後一段的起點）：剪了別處之後索引會變，用點辨識
 
 
-def _junction_at(segments: list[Segment], k: int) -> _Junction:
+def _junction_at(segments: list[Segment], k: int) -> Junction:
     return segments[k].points[-1], segments[k + 1].points[0]
 
 
@@ -130,22 +130,22 @@ def _stroke_lengths(segments: list[Segment]) -> dict[int, float]:
     return lengths
 
 
-def _cheap_ok(pruned: _Pruned, stroke_lengths: dict[int, float]) -> bool:
+def _cheap_ok(pruned: Pruned, stroke_lengths: dict[int, float]) -> bool:
     """不用 Valhalla 的判斷：剪前存在的每個筆畫至少保留 min(剪前長度, TURN_PROBE_M)；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎。"""
     after = _stroke_lengths(pruned.segments)
     if any(after.get(index, 0.0) < min(before_m, TURN_PROBE_M) for index, before_m in stroke_lengths.items()):
         return False
-    return not _has_new_junction(pruned) or not strict_needs_no_route_to_reject(
+    return not has_new_junction(pruned) or not strict_needs_no_route_to_reject(
         *junction_arms(pruned.segments, pruned.junction)
     )
 
 
-def _turns_ok(router: MatchRouter, deadline: Deadline, pruned: _Pruned, created: set[_Junction]) -> bool:
+def turns_ok(router: MatchRouter, deadline: Deadline, pruned: Pruned, created: set[Junction]) -> bool:
     """新接點用 rideable_strict；離它不到 TURN_PROBE_M 的既有接點（探針會伸進新幾何）重量（同 join）：
     原本的接點用 rideable，created（前幾次剪出來的接點）用 rideable_strict。
     剪掉的是開頭或結尾時沒有新接點，但離新端點不到 TURN_PROBE_M 的既有接點的探針變短了，一樣重量。"""
     segments, k = pruned.segments, pruned.junction
-    if _has_new_junction(pruned) and not junction_ok(router, deadline, segments, k, strict=True):
+    if has_new_junction(pruned) and not junction_ok(router, deadline, segments, k, strict=True):
         return False
     neighbours = chain(before_neighbours(segments, k), after_neighbours(segments, k))
     return all(junction_ok(router, deadline, segments, i, strict=_junction_at(segments, i) in created) for i in neighbours)
@@ -158,7 +158,7 @@ class _State:
     segments: list[Segment]
     baseline: float | None = None  # segments 的 v3（exact）；第一次要比較時才算
     attempts: int = 0
-    created: set[_Junction] = field(default_factory=set)  # 剪出來的新接點
+    created: set[Junction] = field(default_factory=set)  # 剪出來的新接點
     rejected: set[tuple[LonLat, ...]] = field(default_factory=set)  # 沒剪的圈（以它的點辨識）：不重試同一個圈
 
 
@@ -167,12 +167,12 @@ def _prune(router: MatchRouter, state: _State, targets: list[list[LonLat]], dead
         flattened = flat(state.segments)
         points = [p.point for p in flattened]
         stroke_lengths = _stroke_lengths(state.segments)
-        for loop in _candidates(points, max_m):
+        for loop in loop_candidates(points, max_m):
             deadline.check()
             key = tuple(points[loop.start : loop.end + 1])
             if key in state.rejected:
                 continue
-            pruned = _cut_loop(state.segments, flattened[loop.start], flattened[loop.end])
+            pruned = cut_loop(state.segments, flattened[loop.start], flattened[loop.end])
             if pruned is None or not _cheap_ok(pruned, stroke_lengths):
                 state.rejected.add(key)
                 continue
@@ -184,10 +184,10 @@ def _prune(router: MatchRouter, state: _State, targets: list[list[LonLat]], dead
                 deadline.check()  # 第一次嘗試要算兩次全路線評分：中間也看一次，大路線不會連算兩次才發現到期
             after = score(targets, route_points(pruned.segments)).exact
             deadline.check()  # 全路線評分可能就花掉不少時間：到期就不再呼叫 route
-            if after < state.baseline or not _turns_ok(router, deadline, pruned, state.created):
+            if after < state.baseline or not turns_ok(router, deadline, pruned, state.created):
                 state.rejected.add(key)
                 continue
-            if _has_new_junction(pruned):
+            if has_new_junction(pruned):
                 state.created.add(_junction_at(pruned.segments, pruned.junction))
             state.segments, state.baseline = pruned.segments, after
             break  # 剪了：索引全變了，重新找候選

@@ -85,7 +85,7 @@ P2.5 的自動吸附與剪小刺仍會漏掉一些地方。實例：`heart@taipe
 - 新的部分只來自 Valhalla（`route`，或「貼圖形」時的現行吸附）。保留的部分只切既有的 Valhalla 幾何（在段落內內插的切點也在原本的折線上）。
 - 新接點與切點相距 ≤ 1 m（`JOIN_TOLERANCE_M`）；Valhalla 的起訖點吸到別處時，先試切點前後的頂點，仍不行就回 `no_route`。
 - 兩個新接點用嚴格版轉彎檢查（`turns.rideable_strict`：原地迴轉、原路折回不放行，≤ 30° 也用 route 量）；離新接點 8 m 內的既有接點用原本的規則重量（與剪小刺相同，主 spec §8 第 43 列）。
-- 最後跑一次連續性檢查（`service._check_continuous`）。
+- 最後跑一次連續性檢查（`service.check_continuous`）。
 - 新換上的段落 `kind` 是 `"edit"`，`stroke_index` 沿用被換掉範圍的筆畫（跨筆畫時為 null）。
 
 ### 3.3 各操作的細節
