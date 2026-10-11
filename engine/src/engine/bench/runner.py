@@ -224,7 +224,7 @@ def compare(results: list[CaseResult], baseline: dict[str, dict], tolerance: int
     否則一筆寫進 baseline 的 UnsafeRoute 之後就永遠不會再被抓到。
     其餘只比 baseline 有的案例：overall 或 coverage 比 baseline 低超過 tolerance，或從成功變失敗。
     只看 overall 會漏掉「cleanliness 上升抵掉 coverage 掉到 0」的退步（ledger L120）。
-    條目有 score_version == SCORE_VERSION 就比 v2 分數，否則（v1 baseline）比本次的 legacy（v1）分數。
+    條目有 score_version == SCORE_VERSION 就比 score() 的分數，v1 baseline 比本次的 legacy（v1）分數，其他版本明確失敗。
     """
     problems: list[str] = []
     for r in results:

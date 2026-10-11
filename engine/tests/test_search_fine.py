@@ -103,7 +103,11 @@ def test_start_hint_puts_route_start_inside_circle() -> None:
     )
     assert haversine_m(plain.route_points[0], CENTER) > 2500
     assert haversine_m(hinted.route_points[0], CENTER) < 1
-    assert hinted.score == plain.score  # 只換起點，畫的東西相同
+    # 只換起點，畫的東西相同。v3 的乾淨度在 1 px 格子裡留一個取樣點，代表點的位置隨取樣的相位移動
+    # （沒有提示時連接線沿著剛畫完的筆畫往回走，同一格的取樣點比較多），同一張圖 exact 會差一點點
+    assert hinted.score.overall == plain.score.overall
+    assert (hinted.score.coverage, hinted.score.direction) == (plain.score.coverage, plain.score.direction)
+    assert hinted.score.exact == pytest.approx(plain.score.exact, abs=0.5)
 
 
 def test_evaluates_every_coarse_candidate() -> None:

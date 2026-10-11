@@ -679,8 +679,8 @@ def test_bad_turns_on_real_tiles(crossing_config: Path) -> None:
 V2 = {"score_version": SCORE_VERSION}
 
 
-def test_score_version_is_two() -> None:
-    assert SCORE_VERSION == 2
+def test_score_version_is_three() -> None:
+    assert SCORE_VERSION == 3  # P2.5：score() 換成 v3
     assert result("a", 1).score_version == SCORE_VERSION
 
 
@@ -773,5 +773,6 @@ def test_unknown_score_version_is_not_compared_with_another_scale() -> None:
         "c", 80, 80, 80, 1000.0, 900.0, 1, None,
         legacy_coverage=80, legacy_cleanliness=80, legacy_overall=80,
     )
-    assert "score_version" in (_regression(r, {"overall": 70, "coverage": 70, "score_version": 3}, 3) or "")
+    unknown = {"overall": 70, "coverage": 70, "score_version": SCORE_VERSION + 1}
+    assert "score_version" in (_regression(r, unknown, 3) or "")
     assert _regression(r, {"overall": 70, "coverage": 70, "score_version": 1}, 3) is None
