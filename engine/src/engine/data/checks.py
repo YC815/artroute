@@ -8,6 +8,7 @@ from engine.data.bike_patch import STEPS, DeniedWay
 from engine.data.build import load_denied
 from engine.routing.geo import haversine_m
 from engine.routing.router import EdgeInfo, LonLat, RouteResult, Router, RoutingError
+from engine.search.roads import RoadDataMissing, RoadIndex
 
 # 洲美街單行段（OSM way 287016294，oneway=yes，節點順序由西往東）。座標取自該 way 的 geometry
 ZHOUMEI_ONEWAY_WAY_ID = 287016294
@@ -158,7 +159,18 @@ def _build_checks(router: RouterLike, denied: list[DeniedWay]) -> list[str]:
     return taiwan_checks(router, denied) + steps_checks(router, denied)
 
 
+def rideable_checks(build_dir: Path) -> list[str]:
+    """自動搜尋的粗篩要用可騎道路索引：讀得進來、而且至少有一個路段。"""
+    try:
+        roads = RoadIndex.load(build_dir)
+    except RoadDataMissing as error:
+        return [f"可騎道路資料讀不到或不完整：{error}"]
+    if not len(roads):
+        return ["可騎道路資料沒有任何路段：資料或萃取規則可能壞了"]
+    return []
+
+
 def validate_build(build_dir: Path) -> list[str]:
     router, denied = Router.from_build(build_dir), load_denied(build_dir)
     shortest = [f"（shortest）{failure}" for failure in _build_checks(ShortestRoutes(router), denied)]
-    return _build_checks(router, denied) + shortest
+    return _build_checks(router, denied) + shortest + rideable_checks(build_dir)
