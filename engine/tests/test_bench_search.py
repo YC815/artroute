@@ -7,19 +7,21 @@ from pathlib import Path
 import pytest
 
 from engine.bench import search as bench
-from engine.bench.search import CandidateRow, SearchCaseResult, problems_of, spearman
+from engine.bench.search import CandidateRow, SearchCaseResult, problems_of, spearman, summary, top_within
 from engine.bench.search_cases import SEARCH_CASES, SearchCase, default_text
 from engine.data.build import DENIED_FILE
 from engine.data.layout import DataLayout
 from engine.data.pipeline import run_build
 from engine.data.rideable import extract_rideable
 from engine.routing.tiles import build_tiles
-from engine.search.types import Evaluation, NormStroke
+from engine.matching.service import MatchResult
+from engine.matching.score import Score
+from engine.search.types import Candidate, Evaluation, NormStroke, Placement
 from osm_fixture import write_grid_pbf
 from search_city import CITY_CENTER, CITY_MAP
 
 SQUARE = [NormStroke([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)], closed=True)]
-GOOD = CandidateRow(90, 90, 90, 2.7, True, 100, 670, 0.0, None, 0, 0.0)
+GOOD = CandidateRow(90, 90, 90, 2.7, True, 100, 670, 0.0, None, 0, 0.0, 0)
 
 
 def result(**overrides) -> SearchCaseResult:
@@ -46,6 +48,29 @@ def test_spearman() -> None:
     assert spearman([ev(0, 60), ev(1, 70), ev(2, 80), ev(3, 90)]) == pytest.approx(-1.0)
     assert spearman([ev(0, 90), ev(1, None), ev(2, 70)]) is None  # 少於 3 個有效點
     assert spearman([ev(0, 90), ev(1, 80), ev(2, 70), ev(0, 10, rescaled=True)]) == pytest.approx(1.0)
+
+
+def scored(overall: int) -> Candidate:
+    result = MatchResult([(121.5, 25.0)], 3000.0, [], Score(overall, overall, overall), 3000.0, [])
+    return Candidate(Placement((121.5, 25.0), 700.0, 0.0), result, 100.0, True)
+
+
+def test_top_within_previous_k() -> None:
+    # 搜尋排好的順序：粗篩第 12、3、15、0、9、11、4 名
+    ranked = [(o, scored(s)) for o, s in [(12, 95), (3, 90), (15, 88), (0, 80), (9, 70), (11, 65), (4, 60)]]
+    assert top_within(ranked, 10) == [90, 80, 70, 60]
+    assert top_within(ranked, 16) == [95, 90, 88, 80, 70]
+
+
+def test_summary_counts_late_candidates_and_gain() -> None:
+    late = [replace(GOOD, overall=95, origin=12)] + [replace(GOOD, origin=k) for k in range(4)]  # 95 90 90 90 90
+    a = result(candidates=late, previous_k=[90, 90, 90, 90, 80])
+    b = result(candidates=[GOOD] * 5, previous_k=[90] * 5)
+    text = summary([a, b])
+    assert "第 11 名以後：1/10" in text
+    assert "（中位數）+3.0" in text  # 兩個案例的差 0.0、+3.0：偶數個時取較大的那個（與時間中位數同一個算法）
+    assert "第 1 名分數變高 1/2" in text
+    assert "少於 5 個候選 0 案例" in text
 
 
 def test_cases_cover_completion_condition() -> None:
@@ -79,6 +104,8 @@ def test_cli_runs_on_a_real_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     rows = json.loads(out.read_text())
     assert rows[0]["name"] == "square@city" and rows[0]["candidates"]
     assert rows[0]["candidates"][0]["unsafe"] is None and rows[0]["candidates"][0]["bad_turns"] == 0
+    assert rows[0]["evaluations"] and {"origin", "rescaled", "overall"} <= rows[0]["evaluations"][0].keys()
+    assert rows[0]["candidates"][0]["origin"] in {e["origin"] for e in rows[0]["evaluations"]}
     assert "square@city" in capsys.readouterr().out
 
 

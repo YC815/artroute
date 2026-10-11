@@ -79,3 +79,4 @@ class SearchOutcome:
     evaluated: int
     notice: str | None
     evaluations: list[Evaluation] = field(default_factory=list)
+    ranked: list[tuple[int, Candidate]] = field(default_factory=list)  # 所有起點在圈內的結果（粗篩名次, 候選），排好序

@@ -3,8 +3,9 @@
 - 每個候選都帶起點提示（StartHint = 搜尋的圓）吸附；路線起點不在圈內的直接淘汰（使用者的硬條件）。
 - 公里數不在範圍內的，依實際比例修正大小後重算一次（排在佇列最前面），兩個結果留比較好的那個。
 - 多個 Router 平行跑（每個 Router 一個 Actor，不能共用）：每個 thread 固定用自己的 Router。
-- 停止條件：至少跑完 MIN_EVALUATED 個、而且已有 TOP_N 個合格的候選；或超過 SOFT_BUDGET_S 且已有 TOP_N 個
-  起點在圈內的候選。都不成立就繼續，直到候選用完或整個搜尋的期限（Deadline）到期。
+- 粗篩交來的候選（最多 FINE_KEEP 個）與它們的公里數修正全部跑完；只有超過 SOFT_BUDGET_S 而且已有 TOP_N 個
+  起點在圈內的候選時提前停止。整個搜尋的期限（Deadline）到期也停。
+- 已有 TOP_N 個起點在圈內的候選之後才開始的吸附，最晚在 RESULT_BUDGET_S 結束（完成條件是 30 秒）。
 """
 
 import math
@@ -25,8 +26,8 @@ from engine.search.geometry import place
 from engine.search.types import Candidate, Evaluation, Placement, SearchParams
 
 TOP_N = 5
-MIN_EVALUATED = 10  # spec §4.6：前 K=10 名跑完整吸附
 SOFT_BUDGET_S = 25.0  # 完成條件是 30 秒內回傳前 5 名：超過這個時間、手上已有 5 個就不再開新的吸附
+RESULT_BUDGET_S = 28.0  # 手上已有 5 個之後才開始的吸附，最晚在這個時間結束（不讓一個慢候選拖過 30 秒）
 MATCH_TIMEOUT_S = 10.0  # 單一候選的吸附上限（/match 是 5 秒；搜尋的圖形可能比較大）
 RESCALE_MARGIN = 0.1  # 重算時把目標公里數放在範圍內側 10% 處，避免依比例修正後又剛好落在邊界外
 
@@ -74,11 +75,12 @@ class FineStage:
         self.evaluations: list[Evaluation] = []
         self.done = 0
         self.best: Candidate | None = None
+        self.ranked: list[tuple[int, Candidate]] = []  # 每個粗篩候選最好的結果（粗篩名次, 候選），依 rank_key 排序
         self.stop = False
         self.failure: BaseException | None = None
 
-    def _match(self, router: MatchRouter, placement: Placement) -> MatchResult | None:
-        deadline = Deadline(MATCH_TIMEOUT_S, parent=self.deadline)
+    def _match(self, router: MatchRouter, placement: Placement, timeout_s: float) -> MatchResult | None:
+        deadline = Deadline(timeout_s, parent=self.deadline)
         strokes = place(self.params.strokes, placement)
         start = StartHint(self.params.center, self.params.radius_m)
         try:
@@ -109,11 +111,12 @@ class FineStage:
         return _Job(Placement(job.placement.center, size, job.placement.rotation_deg), True, job.origin)
 
     def _enough(self) -> bool:
-        results = list(self.by_origin.values())
-        qualified = sum(c.length_ok for c in results)
-        if self.done >= MIN_EVALUATED and qualified >= TOP_N:
-            return True
-        return self.clock() - self.started >= SOFT_BUDGET_S and len(results) >= TOP_N
+        return self.clock() - self.started >= SOFT_BUDGET_S and len(self.by_origin) >= TOP_N
+
+    def _timeout_s(self) -> float:
+        if len(self.by_origin) < TOP_N:
+            return MATCH_TIMEOUT_S  # 還湊不到前 5 名：給足時間，最多拖到整個搜尋的期限
+        return min(MATCH_TIMEOUT_S, RESULT_BUDGET_S - (self.clock() - self.started))
 
     def _record(self, job: _Job, result: MatchResult | None) -> None:
         with self.lock:
@@ -143,8 +146,8 @@ class FineStage:
                 self.on_progress(self.done, self.done + len(self.queue))
                 self.lock.notify_all()
 
-    def _next(self) -> _Job | None:
-        """下一個要跑的候選；該停了回傳 None。佇列空了但別的 thread 還在吸附時要等：
+    def _next(self) -> tuple[_Job, float] | None:
+        """下一個要跑的候選與它的吸附時限；該停了回傳 None。佇列空了但別的 thread 還在吸附時要等：
         它回來可能排進修正大小的重算（審查：直接停掉的話，最後幾個候選的公里數修正會被丟掉）。"""
         with self.lock:
             while True:
@@ -154,7 +157,7 @@ class FineStage:
                     return None
                 if self.queue:
                     self.in_flight += 1
-                    return self.queue.popleft()
+                    return self.queue.popleft(), self._timeout_s()
                 if self.in_flight == 0:
                     self.stop = True
                     self.lock.notify_all()
@@ -163,11 +166,12 @@ class FineStage:
 
     def _worker(self, router: MatchRouter) -> None:
         while True:
-            job = self._next()
-            if job is None:
+            picked = self._next()
+            if picked is None:
                 return
+            job, timeout_s = picked
             try:
-                result = self._match(router, job.placement)
+                result = self._match(router, job.placement, timeout_s)
             except BaseException as error:  # MatchCancelled／整個搜尋 MatchTimeout：其他 thread 也停
                 with self.lock:
                     self.in_flight -= 1
@@ -191,7 +195,8 @@ class FineStage:
             with ThreadPoolExecutor(max_workers=len(self.routers), thread_name_prefix="search") as pool:
                 for future in [pool.submit(self._worker, router) for router in self.routers]:
                     future.result()
-        results = sorted(self.by_origin.values(), key=lambda c: rank_key(c, self.params))
+        self.ranked = sorted(self.by_origin.items(), key=lambda item: rank_key(item[1], self.params))
+        results = [candidate for _, candidate in self.ranked]
         if isinstance(self.failure, MatchCancelled):
             raise self.failure
         if self.failure is not None and not (isinstance(self.failure, MatchTimeout) and results):

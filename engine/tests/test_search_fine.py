@@ -106,13 +106,36 @@ def test_start_hint_puts_route_start_inside_circle() -> None:
     assert hinted.score == plain.score  # 只換起點，畫的東西相同
 
 
-def test_stops_after_min_evaluated_with_enough_qualified() -> None:
-    placements = [placement(east=100 * k, size=1200) for k in range(20)]  # 4.8 km：全部合格
+def test_evaluates_every_coarse_candidate() -> None:
+    # 粗篩前 16 名的排名幾乎預測不了精算分數（真實路網 Spearman 中位數 +0.04）：已有 5 個合格也全部跑完
+    placements = [placement(east=100 * k, size=1200) for k in range(16)]  # 4.8 km：全部合格
     s = stage(params())
     result = s.run(placements)
-    assert s.done == fine.MIN_EVALUATED
+    assert s.done == 16
     assert len(result) == fine.TOP_N
     assert all(c.length_ok for c in result)
+    assert sorted(origin for origin, _ in s.ranked) == list(range(16))
+    assert [c for _, c in s.ranked[: fine.TOP_N]] == result
+
+
+def test_jobs_started_with_enough_results_end_by_result_budget() -> None:
+    # 每個候選 4.5 秒：第 5 個回來時是 22.5 秒，第 6 個的時限只剩 28 − 22.5 = 5.5 秒；27 秒時超過 25 秒，停止
+    now = [0.0]
+    s = stage(params(), clock=lambda: now[0])
+    timeouts = []
+    original_match, original_record = s._match, s._record
+
+    def match(router, p, timeout_s):
+        timeouts.append(timeout_s)
+        return original_match(router, p, timeout_s)
+
+    def record(job, result):
+        original_record(job, result)
+        now[0] += 4.5
+
+    s._match, s._record = match, record
+    s.run([placement(east=100 * k, size=1200) for k in range(16)])
+    assert timeouts == [fine.MATCH_TIMEOUT_S] * 5 + [pytest.approx(fine.RESULT_BUDGET_S - 22.5)]
 
 
 def test_soft_budget_stops_with_enough_results() -> None:
@@ -153,11 +176,11 @@ def test_search_timeout_keeps_results_found_so_far() -> None:
     original = s._match
     calls = [0]
 
-    def match(router, p):
+    def match(router, p, timeout_s):
         calls[0] += 1
         if calls[0] > 2:
             deadline._end = 0.0  # 整個搜尋到期
-        return original(router, p)
+        return original(router, p, timeout_s)
 
     s._match = match
     result = s.run([placement(east=100 * k, size=1200) for k in range(8)])
