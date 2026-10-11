@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { matchRequestSchema, searchRequestSchema } from "@/lib/engine/contract";
+import { editRequestSchema, matchRequestSchema, searchRequestSchema, verifyRequestSchema } from "@/lib/engine/contract";
+import { SAMPLE_EDIT_REQUEST, SAMPLE_VERIFY_REQUEST as verify } from "@/lib/engine/fixtures";
 import {
+  MAX_DATA_VERSION_CHARS,
+  MAX_ROUTE_SEGMENTS,
+  MAX_ROUTE_SIG_CHARS,
+  MAX_SEGMENT_POINTS,
   MAX_NORM_COORD,
   MAX_SEARCH_AREA_RADIUS_M,
   MAX_SEARCH_CANDIDATES,
@@ -28,6 +33,9 @@ type Schemas = {
   };
   NormStrokeIn: { properties: { points: Bounds & { items: { prefixItems: Bounds[] } } } };
   SearchResult: { properties: { candidates: Bounds } };
+  EditRequest: { properties: Record<"segments" | "strokes", Bounds> & Record<"data_version" | "route_sig", { maxLength: number }> };
+  VerifyRequest: { properties: Record<"segments" | "strokes", Bounds> & Record<"data_version" | "route_sig", { maxLength: number }> };
+  SegmentIn: { properties: { points: Bounds } };
 };
 
 const path = fileURLToPath(new URL("../../../../engine/openapi.json", import.meta.url));
@@ -102,6 +110,38 @@ describe("limits.ts 與 engine/openapi.json 的限制一致", () => {
 
   it("/search 的結果最多 5 個候選", () => {
     expect(schemas.SearchResult.properties.candidates.maxItems).toBe(MAX_SEARCH_CANDIDATES);
+  });
+});
+
+describe("/edit、/verify 的上限與引擎的 openapi.json 一致", () => {
+  const segmentPoints = schemas.SegmentIn.properties.points;
+
+  it.each(["EditRequest", "VerifyRequest"] as const)("%s：segments 1–%i 段、strokes 同 /match、字串長度上限", (name) => {
+    const props = schemas[name].properties;
+    expect(props.segments.minItems).toBe(1);
+    expect(props.segments.maxItems).toBe(MAX_ROUTE_SEGMENTS);
+    expect(props.strokes.minItems).toBe(1);
+    expect(props.strokes.maxItems).toBe(MAX_STROKES);
+    expect(props.data_version.maxLength).toBe(MAX_DATA_VERSION_CHARS);
+    expect(props.route_sig.maxLength).toBe(MAX_ROUTE_SIG_CHARS);
+  });
+
+  it("每段 2–20000 點", () => {
+    expect(segmentPoints.minItems).toBe(2);
+    expect(segmentPoints.maxItems).toBe(MAX_SEGMENT_POINTS);
+    const [first] = SAMPLE_EDIT_REQUEST.segments;
+    const withPoints = (n: number) => ({
+      ...SAMPLE_EDIT_REQUEST,
+      segments: [{ ...first, points: Array.from({ length: n }, (_, i) => [121.5 + i * 1e-6, 25.03] as [number, number]) }],
+    });
+    expect(editRequestSchema.safeParse(withPoints(MAX_SEGMENT_POINTS)).success).toBe(true);
+    expect(editRequestSchema.safeParse(withPoints(MAX_SEGMENT_POINTS + 1)).success).toBe(false);
+  });
+
+  it("data_version、route_sig 超過長度上限不合法", () => {
+    expect(verifyRequestSchema.safeParse({ ...verify, route_sig: "s".repeat(MAX_ROUTE_SIG_CHARS) }).success).toBe(true);
+    expect(verifyRequestSchema.safeParse({ ...verify, route_sig: "s".repeat(MAX_ROUTE_SIG_CHARS + 1) }).success).toBe(false);
+    expect(verifyRequestSchema.safeParse({ ...verify, data_version: "v".repeat(MAX_DATA_VERSION_CHARS + 1) }).success).toBe(false);
   });
 });
 

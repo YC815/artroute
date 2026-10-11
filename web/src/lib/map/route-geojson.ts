@@ -1,6 +1,6 @@
 import type { FeatureCollection, LineString, Point } from "geojson";
 import type { LonLat } from "@/lib/shape/types";
-import type { Segment } from "@/lib/storage/drafts";
+import type { Segment } from "@/lib/engine/contract";
 
 export type SegmentProperties = { kind: Segment["kind"] };
 export type EndpointProperties = { role: "start" | "end" };

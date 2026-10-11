@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { matchResponseSchema, segmentKindSchema } from "@/lib/engine/contract";
+import { scoreSchema, segmentSchema, type Score, type Segment } from "@/lib/engine/contract";
 import type { Transform } from "@/lib/shape/transform";
 import { savedSourceSchema, savedTransformSchema, type SavedSource } from "@/lib/storage/work";
 
@@ -12,15 +12,6 @@ export const DRAFTS_CHANNEL = "artroute:drafts";
 const DB_NAME = "artroute";
 const DB_VERSION = 1;
 const STORE_NAME = "drafts";
-
-// 引擎回應的 segments 與 score；kind 多了微調產生的 "edit"（只有 /edit、/verify 會回）。D3 合併契約後改成引用 contract.ts。
-const segmentSchema = matchResponseSchema.shape.segments.element.extend({
-  kind: z.enum([...segmentKindSchema.options, "edit"]),
-});
-const scoreSchema = matchResponseSchema.shape.score;
-
-export type Segment = z.infer<typeof segmentSchema>;
-export type Score = z.infer<typeof scoreSchema>;
 
 export type DraftRoute = { segments: Segment[]; dataVersion: string; routeSig: string; score: Score; lengthM: number };
 

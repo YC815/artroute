@@ -1,6 +1,9 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { z } from "zod";
 import {
+  dragOpSchema,
+  editOpSchema,
+  editRequestSchema,
   errorBodySchema,
   errorDetailSchema,
   matchRequestSchema,
@@ -9,8 +12,17 @@ import {
   searchFailedEventSchema,
   searchRequestSchema,
   statusResponseSchema,
+  verifyRequestSchema,
 } from "@/lib/engine/contract";
-import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult } from "@/lib/engine/fixtures";
+import {
+  SAMPLE_EDIT_REQUEST,
+  SAMPLE_EDIT_RESPONSE,
+  SAMPLE_MATCH_RESPONSE,
+  SAMPLE_VERIFY_REQUEST,
+  sampleCandidate,
+  sampleResult,
+  without,
+} from "@/lib/engine/fixtures";
 import type { components } from "@/lib/engine/openapi";
 
 const stroke = (n: number) => ({
@@ -203,7 +215,106 @@ describe("errorBodySchema", () => {
   });
 });
 
+describe("matchResponseSchema：微調新增的部分", () => {
+  it("接受 kind: \"edit\" 的段落與 route_sig", () => {
+    const parsed = matchResponseSchema.parse(SAMPLE_EDIT_RESPONSE);
+    expect(parsed.segments[1].kind).toBe("edit");
+    expect(parsed.route_sig).toBe(SAMPLE_EDIT_RESPONSE.route_sig);
+  });
+
+  it("缺 route_sig 就不合法（沒有簽章的路線不能再送回 /edit）", () => {
+    const withoutSig = without(SAMPLE_MATCH_RESPONSE, "route_sig");
+    expect(matchResponseSchema.safeParse(withoutSig).success).toBe(false);
+    expect(matchResponseSchema.safeParse({ ...SAMPLE_MATCH_RESPONSE, route_sig: 1 }).success).toBe(false);
+  });
+
+  it("搜尋候選的 match 也要有 route_sig", () => {
+    const withoutSig = without(SAMPLE_MATCH_RESPONSE, "route_sig");
+    expect(searchEventSchema.safeParse({ type: "best", candidate: sampleCandidate({ match: withoutSig as never }) }).success).toBe(false);
+  });
+});
+
+describe("editRequestSchema", () => {
+  const ok = (patch: object) => editRequestSchema.safeParse({ ...SAMPLE_EDIT_REQUEST, ...patch }).success;
+  const at = { segment: 1, offset_m: 10 };
+
+  it("接受合法的 cut／reroute（兩種 mode）／drag", () => {
+    expect(editRequestSchema.parse(SAMPLE_EDIT_REQUEST)).toEqual(SAMPLE_EDIT_REQUEST);
+    for (const mode of ["shortest", "shape"] as const) {
+      expect(ok({ op: { type: "reroute", from: at, to: { segment: 2, offset_m: 0 }, mode } })).toBe(true);
+    }
+    expect(ok({ op: { type: "drag", grab: at, to: [121.52, 25.04] } })).toBe(true);
+  });
+
+  it("reroute 的起點欄位叫 from，缺了或寫成別的名字就不合法", () => {
+    const to = { segment: 2, offset_m: 0 };
+    expect(ok({ op: { type: "reroute", to, mode: "shape" } })).toBe(false);
+    expect(ok({ op: { type: "reroute", start: at, to, mode: "shape" } })).toBe(false);
+    expect(ok({ op: { type: "reroute", from: at, to, mode: "fastest" } })).toBe(false);
+  });
+
+  it("位置：segment 是非負整數、offset_m 非負", () => {
+    expect(ok({ op: { type: "cut", at: { segment: -1, offset_m: 0 } } })).toBe(false);
+    expect(ok({ op: { type: "cut", at: { segment: 1.5, offset_m: 0 } } })).toBe(false);
+    expect(ok({ op: { type: "cut", at: { segment: 0, offset_m: -0.1 } } })).toBe(false);
+  });
+
+  it("不認得的操作與缺欄位不合法", () => {
+    expect(ok({ op: { type: "erase", at } })).toBe(false);
+    expect(ok({ op: { type: "drag", grab: at } })).toBe(false);
+    expect(dragOpSchema.safeParse({ type: "drag", grab: at, to: [121.5] }).success).toBe(false);
+    expect(editOpSchema.safeParse({ type: "cut" }).success).toBe(false);
+    expect(editRequestSchema.safeParse(without(SAMPLE_EDIT_REQUEST, "route_sig")).success).toBe(false);
+    expect(editRequestSchema.safeParse(SAMPLE_VERIFY_REQUEST).success).toBe(false);
+  });
+
+  it("segments 可以含 kind: \"edit\"（上一次 /edit 的回應原樣送回）", () => {
+    expect(ok({ segments: SAMPLE_EDIT_RESPONSE.segments, route_sig: SAMPLE_EDIT_RESPONSE.route_sig })).toBe(true);
+  });
+
+  it("segments 1–2000 段、每段至少 2 點", () => {
+    const [first] = SAMPLE_EDIT_REQUEST.segments;
+    expect(ok({ segments: [] })).toBe(false);
+    expect(ok({ segments: Array.from({ length: 2000 }, () => first) })).toBe(true);
+    expect(ok({ segments: Array.from({ length: 2001 }, () => first) })).toBe(false);
+    expect(ok({ segments: [{ ...first, points: [first.points[0]] }] })).toBe(false);
+  });
+
+  it("strokes 與 /match 同樣的限制", () => {
+    expect(ok({ strokes: [] })).toBe(false);
+    expect(ok({ strokes: [stroke(1)] })).toBe(false);
+  });
+});
+
+describe("verifyRequestSchema", () => {
+  const VERIFY = SAMPLE_VERIFY_REQUEST;
+
+  it("接受路線與簽章，不收 op（多出來的欄位被丟掉，代理只轉發 schema 內的欄位）", () => {
+    expect(verifyRequestSchema.parse(VERIFY)).toEqual(VERIFY);
+    expect(verifyRequestSchema.parse(SAMPLE_EDIT_REQUEST)).toEqual(VERIFY);
+  });
+
+  it("缺 route_sig 或 data_version 不合法", () => {
+    expect(verifyRequestSchema.safeParse(without(VERIFY, "route_sig")).success).toBe(false);
+    expect(verifyRequestSchema.safeParse(without(VERIFY, "data_version")).success).toBe(false);
+  });
+});
+
 describe("errorDetailSchema", () => {
+  it("segments（verify_failed 的有問題段落）可以是陣列、null 或省略", () => {
+    const base = { code: "verify_failed", message: "舊路線有幾段不能騎了" };
+    expect(errorDetailSchema.parse({ ...base, segments: [2, 5] })).toEqual({ ...base, segments: [2, 5] });
+    expect(errorDetailSchema.parse({ ...base, segments: null })).toEqual({ ...base, segments: null });
+    expect(errorDetailSchema.parse(base)).toEqual(base);
+    expect(errorDetailSchema.safeParse({ ...base, segments: [-1] }).success).toBe(false);
+    expect(errorDetailSchema.safeParse({ ...base, segments: ["a"] }).success).toBe(false);
+  });
+
+  it("微調的錯誤碼都能解析", () => {
+    const codes = ["stale_data", "invalid_route", "not_on_route", "nothing_to_cut", "turn_not_rideable", "no_road", "verify_failed", "too_small"];
+    for (const code of codes) expect(errorDetailSchema.safeParse({ code, message: "x" }).success).toBe(true);
+  });
+
   it("warnings 可以是 null（引擎的 OpenAPI 宣告 array | null）、省略或陣列", () => {
     const base = { code: "timeout", message: "吸附超過時間上限" };
     expect(errorDetailSchema.parse({ ...base, warnings: null })).toEqual({ ...base, warnings: null });
@@ -222,6 +333,11 @@ describe("errorDetailSchema", () => {
 // contract.ts 的 `satisfies` 擋住「web 解析結果不符合引擎型別」；這裡補另一個方向：
 // 引擎的回應型別必須能被 zod 解析，引擎拿掉 web 需要的欄位時 tsc 會失敗（型別檢查，不是執行期斷言）。
 describe("引擎回應型別 → zod 解析結果", () => {
+  it("EditRequest、VerifyRequest 可被 zod 的解析結果接受", () => {
+    expectTypeOf<components["schemas"]["EditRequest"]>().toExtend<z.infer<typeof editRequestSchema>>();
+    expectTypeOf<components["schemas"]["VerifyRequest"]>().toExtend<z.infer<typeof verifyRequestSchema>>();
+  });
+
   it("MatchResponse、StatusResponse 可指派", () => {
     expectTypeOf<components["schemas"]["MatchResponse"]>().toExtend<z.infer<typeof matchResponseSchema>>();
     expectTypeOf<components["schemas"]["StatusResponse"]>().toExtend<z.infer<typeof statusResponseSchema>>();

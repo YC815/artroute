@@ -1,7 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchMatch, fetchStatus, readErrorBody, toMatchError, type FetchLike } from "@/lib/engine/client";
+import {
+  fetchMatch,
+  fetchStatus,
+  postEdit,
+  postVerify,
+  readErrorBody,
+  toMatchError,
+  type FetchLike,
+} from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
-import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import {
+  SAMPLE_EDIT_REQUEST,
+  SAMPLE_EDIT_RESPONSE,
+  SAMPLE_MATCH_RESPONSE,
+  SAMPLE_VERIFY_REQUEST,
+  without,
+} from "@/lib/engine/fixtures";
 
 const REQUEST: MatchRequest = { strokes: [{ points: [[121.5, 25.03], [121.51, 25.03]], closed: false }] };
 
@@ -153,19 +167,121 @@ describe("fetchMatch", () => {
   });
 });
 
+describe.each([
+  ["postEdit", postEdit, "/api/edit"],
+  ["postVerify", postVerify, "/api/verify"],
+] as const)("%s", (_name, post, path) => {
+  const request = path === "/api/edit" ? SAMPLE_EDIT_REQUEST : SAMPLE_VERIFY_REQUEST;
+  const run = (fetchImpl: FetchLike, signal = new AbortController().signal) => post(request as never, signal, fetchImpl);
+
+  it(`POST JSON 到 ${path}，帶上 signal`, async () => {
+    const fetchImpl = respond(200, SAMPLE_EDIT_RESPONSE);
+    const signal = new AbortController().signal;
+    await run(fetchImpl, signal);
+    expect(fetchImpl).toHaveBeenCalledWith(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+  });
+
+  it("200 且格式正確（含 kind: edit 與 route_sig）→ ok", async () => {
+    expect(await run(respond(200, SAMPLE_EDIT_RESPONSE))).toEqual({ ok: true, response: SAMPLE_EDIT_RESPONSE });
+  });
+
+  it("200 但缺 route_sig → 502，不把沒有簽章的路線交給畫面", async () => {
+    const outcome = await run(respond(200, without(SAMPLE_EDIT_RESPONSE, "route_sig")));
+    expect(outcome).toEqual({
+      ok: false,
+      error: { status: 502, code: undefined, message: "引擎回應的格式不符合契約", segments: [], engineDown: false },
+    });
+  });
+
+  it("409 stale_data：code 與引擎的訊息都帶出", async () => {
+    const outcome = await run(respond(409, { detail: { code: "stale_data", message: "路網已更新" } }));
+    expect(outcome).toEqual({
+      ok: false,
+      error: { status: 409, code: "stale_data", message: "路網已更新", segments: [], engineDown: false },
+    });
+  });
+
+  it("422 verify_failed：有問題的段落序號帶在 segments", async () => {
+    const outcome = await run(
+      respond(422, { detail: { code: "verify_failed", message: "有 2 段不能騎了", segments: [3, 7], warnings: null } }),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      error: { status: 422, code: "verify_failed", message: "有 2 段不能騎了", segments: [3, 7], engineDown: false },
+    });
+  });
+
+  it("422 操作做不到（segments 為 null）→ segments 是空陣列", async () => {
+    const outcome = await run(
+      respond(422, { detail: { code: "nothing_to_cut", message: "這裡沒有可以剪的圈", segments: null } }),
+    );
+    expect(outcome.ok === false && outcome.error).toMatchObject({ code: "nothing_to_cut", segments: [] });
+  });
+
+  it("pydantic 驗證錯誤（detail 是陣列）→ 沒有 code，用依狀態碼的預設訊息", async () => {
+    const outcome = await run(respond(422, { detail: [{ loc: ["body"], msg: "x" }] }));
+    expect(outcome).toEqual({
+      ok: false,
+      error: { status: 422, code: undefined, message: "這個操作做不到，或路線資料不合法", segments: [], engineDown: false },
+    });
+  });
+
+  it("503 與網路錯誤 → engineDown；504 → 逾時訊息", async () => {
+    const down = await run(respond(503, { detail: { code: "no_data", message: "沒有可用路網" } }));
+    expect(down.ok === false && down.error.engineDown).toBe(true);
+    const network = await run(
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    expect(network).toEqual({
+      ok: false,
+      error: { status: 0, code: undefined, message: "連不上伺服器", segments: [], engineDown: true },
+    });
+    const timeout = await run(respond(504, { detail: { code: "timeout", message: "微調超過時間上限" } }));
+    expect(timeout.ok === false && timeout.error).toMatchObject({ status: 504, code: "timeout", engineDown: false });
+  });
+
+  it("被取消 → 已取消、不是 engineDown", async () => {
+    const controller = new AbortController();
+    const fetchImpl: FetchLike = vi.fn(
+      (_input, init) =>
+        new Promise<Response>((_, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    const pending = run(fetchImpl, controller.signal);
+    controller.abort();
+    expect(await pending).toEqual({
+      ok: false,
+      error: { status: 0, code: undefined, message: "已取消", segments: [], engineDown: false },
+    });
+  });
+});
+
 describe("readErrorBody", () => {
+  it("verify_failed 的 segments 也讀出來", () => {
+    expect(readErrorBody({ detail: { code: "verify_failed", message: "m", segments: [1, 2] } }).segments).toEqual([1, 2]);
+  });
+
   it("領域錯誤物件帶出 code、message、warnings", () => {
     expect(readErrorBody({ detail: { code: "no_search_data", message: "要重建路網" } })).toEqual({
       code: "no_search_data",
       message: "要重建路網",
       warnings: [],
+      segments: [],
     });
   });
 
   it("字串 detail 只有訊息；其他形狀什麼都沒有", () => {
-    expect(readErrorBody({ detail: "壞了" })).toEqual({ code: undefined, message: "壞了", warnings: [] });
-    expect(readErrorBody({ detail: [{ msg: "x" }] })).toEqual({ code: undefined, message: undefined, warnings: [] });
-    expect(readErrorBody(null)).toEqual({ code: undefined, message: undefined, warnings: [] });
+    expect(readErrorBody({ detail: "壞了" })).toEqual({ code: undefined, message: "壞了", warnings: [], segments: [] });
+    expect(readErrorBody({ detail: [{ msg: "x" }] })).toEqual({ code: undefined, message: undefined, warnings: [], segments: [] });
+    expect(readErrorBody(null)).toEqual({ code: undefined, message: undefined, warnings: [], segments: [] });
   });
 });
 

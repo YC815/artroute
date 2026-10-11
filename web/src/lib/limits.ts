@@ -16,3 +16,9 @@ export const MAX_SEARCH_ROTATION_DEG = 180;
 export const MAX_NORM_COORD = 1;
 /** /search 的結果最多幾個候選。 */
 export const MAX_SEARCH_CANDIDATES = 5;
+
+// /edit、/verify：整條路線原封不動送回引擎（segments 與簽章的上限，引擎的 EditRequest／VerifyRequest／SegmentIn）。
+export const MAX_ROUTE_SEGMENTS = 2000;
+export const MAX_SEGMENT_POINTS = 20_000;
+export const MAX_DATA_VERSION_CHARS = 64;
+export const MAX_ROUTE_SIG_CHARS = 128;

@@ -1,4 +1,4 @@
-import type { MatchResponse, SearchCandidate, SearchEvent, SearchResult } from "@/lib/engine/contract";
+import type { EditRequest, MatchResponse, SearchCandidate, SearchEvent, SearchResult, VerifyRequest } from "@/lib/engine/contract";
 
 /** 測試用的 /match 200 回應（形狀照 spec §4.7）。 */
 export const SAMPLE_MATCH_RESPONSE: MatchResponse = {
@@ -20,7 +20,34 @@ export const SAMPLE_MATCH_RESPONSE: MatchResponse = {
   target_length_m: 2100.2,
   warnings: [{ stroke_index: 2, code: "no_route", message: "這一筆附近 150 m 內沒有可騎的道路" }],
   data_version: "20261010T145928Z",
+  route_sig: "c2lnbmF0dXJl",
 };
+
+/** 測試用的 /edit 200 回應：中間那段被換成 kind: "edit"。 */
+export const SAMPLE_EDIT_RESPONSE: MatchResponse = {
+  ...SAMPLE_MATCH_RESPONSE,
+  segments: SAMPLE_MATCH_RESPONSE.segments.map((segment, i) => (i === 1 ? { ...segment, kind: "edit" } : segment)),
+  route_sig: "ZWRpdGVk",
+};
+
+/** 測試用的 /edit 請求：整條 SAMPLE_MATCH_RESPONSE 原封不動帶回，剪掉第 0 段 120.5 m 處。 */
+export const SAMPLE_EDIT_REQUEST: EditRequest = {
+  segments: SAMPLE_MATCH_RESPONSE.segments,
+  data_version: SAMPLE_MATCH_RESPONSE.data_version,
+  route_sig: SAMPLE_MATCH_RESPONSE.route_sig,
+  strokes: [{ points: [[121.5, 25.03], [121.51, 25.03]], closed: false }],
+  op: { type: "cut", at: { segment: 0, offset_m: 120.5 } },
+};
+
+/** 測試用的 /verify 請求：同一份路線與簽章，沒有操作。 */
+export const SAMPLE_VERIFY_REQUEST: VerifyRequest = without(SAMPLE_EDIT_REQUEST, "op");
+
+/** 拿掉一個欄位的拷貝（測「缺欄位」）。 */
+export function without<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  const copy = { ...value };
+  delete copy[key];
+  return copy;
+}
 
 /** 測試用的搜尋候選：擺放在台北 101 附近，吸附結果沿用 SAMPLE_MATCH_RESPONSE。 */
 export function sampleCandidate(overrides: Partial<SearchCandidate> = {}): SearchCandidate {

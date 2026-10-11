@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { matchRequestSchema, searchRequestSchema } from "@/lib/engine/contract";
+import { editRequestSchema, matchRequestSchema, searchRequestSchema, verifyRequestSchema } from "@/lib/engine/contract";
 
 /** Route Handler 的外部依賴；測試時換成假的。 */
 export type ProxyDeps = {
@@ -11,6 +11,9 @@ export type ProxyDeps = {
 /** 引擎自己有 5 秒的吸附上限（spec §5）；這裡多留餘裕，只防引擎完全卡住。 */
 export const MATCH_TIMEOUT_MS = 10_000;
 export const STATUS_TIMEOUT_MS = 3_000;
+/** /edit 與 /match 同；/verify 要對每段做 trace_attributes，引擎的上限是 15 秒（微調 spec §3.5），這裡多留 1 秒。 */
+export const EDIT_TIMEOUT_MS = MATCH_TIMEOUT_MS;
+export const VERIFY_TIMEOUT_MS = 16_000;
 /**
  * 自動搜尋：引擎排隊最多 120 秒、搜尋本身 60 秒硬上限（spec §5），再多留餘裕。
  * 收到標頭前逾時回 504；串流中途逾時就結束串流（前端把沒有結果事件的串流當成中斷）。
@@ -208,6 +211,23 @@ export async function proxyMatch(request: Request, deps: ProxyDeps): Promise<Res
   const read = await readRequest(request, matchRequestSchema);
   if ("response" in read) return read.response;
   return forwardToEngine("/match", jsonPost(read.data, request.signal), deps);
+}
+
+/**
+ * POST /api/edit：驗證方式同 /api/match。引擎的 409（stale_data）、422（invalid_route、not_on_route、nothing_to_cut、
+ * turn_not_rideable、no_road…）、503、504 狀態碼與 body 原樣轉回，網站靠 detail.code 分辨。
+ */
+export async function proxyEdit(request: Request, deps: ProxyDeps): Promise<Response> {
+  const read = await readRequest(request, editRequestSchema);
+  if ("response" in read) return read.response;
+  return forwardToEngine("/edit", jsonPost(read.data, request.signal), deps);
+}
+
+/** POST /api/verify：同 /api/edit；verify_failed 的 422 帶有問題的段落序號（detail.segments），原樣轉回。 */
+export async function proxyVerify(request: Request, deps: ProxyDeps): Promise<Response> {
+  const read = await readRequest(request, verifyRequestSchema);
+  if ("response" in read) return read.response;
+  return forwardToEngine("/verify", jsonPost(read.data, request.signal), deps);
 }
 
 /**
