@@ -67,7 +67,8 @@ class FineStage:
         self.on_best = on_best
         self.clock = clock
         self.started = clock()
-        self.lock = threading.Lock()
+        self.lock = threading.Condition()  # 共用狀態的鎖；佇列空了但還有在跑的吸附時，在這裡等它回來
+        self.in_flight = 0
         self.queue: deque[_Job] = deque()
         self.by_origin: dict[int, Candidate] = {}  # 每個粗篩候選只留最好的一個結果
         self.evaluations: list[Evaluation] = []
@@ -116,43 +117,72 @@ class FineStage:
 
     def _record(self, job: _Job, result: MatchResult | None) -> None:
         with self.lock:
-            self.done += 1
-            candidate = None
-            if result is not None:
-                candidate = self._candidate(job.placement, result)
-            self.evaluations.append(
-                Evaluation(
-                    job.origin, job.rescaled, None if result is None else result.score.overall,
-                    candidate is not None, bool(candidate and candidate.length_ok),
+            try:
+                self.done += 1
+                candidate = None
+                if result is not None:
+                    candidate = self._candidate(job.placement, result)
+                self.evaluations.append(
+                    Evaluation(
+                        job.origin, job.rescaled, None if result is None else result.score.overall,
+                        candidate is not None, bool(candidate and candidate.length_ok),
+                    )
                 )
-            )
-            if result is not None:
-                if candidate is not None:
-                    previous = self.by_origin.get(job.origin)
-                    if previous is None or rank_key(candidate, self.params) < rank_key(previous, self.params):
-                        self.by_origin[job.origin] = candidate
-                        if self.best is None or rank_key(candidate, self.params) < rank_key(self.best, self.params):
-                            self.best = candidate
-                            self.on_best(candidate)
-                if not (candidate and candidate.length_ok) and (follow := self._rescaled(job, result)):
-                    self.queue.appendleft(follow)  # 起點在圈外的也修正一次：大小變了，起點可能跟著進圈
-            self.on_progress(self.done, self.done + len(self.queue))
+                if result is not None:
+                    if candidate is not None:
+                        previous = self.by_origin.get(job.origin)
+                        if previous is None or rank_key(candidate, self.params) < rank_key(previous, self.params):
+                            self.by_origin[job.origin] = candidate
+                            if self.best is None or rank_key(candidate, self.params) < rank_key(self.best, self.params):
+                                self.best = candidate
+                                self.on_best(candidate)
+                    if not (candidate and candidate.length_ok) and (follow := self._rescaled(job, result)):
+                        self.queue.appendleft(follow)  # 起點在圈外的也修正一次：大小變了，起點可能跟著進圈
+            finally:
+                self.in_flight -= 1  # 例外也要減：不然其他 thread 會一直等它回來
+                self.on_progress(self.done, self.done + len(self.queue))
+                self.lock.notify_all()
 
     def _next(self) -> _Job | None:
+        """下一個要跑的候選；該停了回傳 None。佇列空了但別的 thread 還在吸附時要等：
+        它回來可能排進修正大小的重算（審查：直接停掉的話，最後幾個候選的公里數修正會被丟掉）。"""
         with self.lock:
-            if self.stop or not self.queue or self._enough():
-                self.stop = True
-                return None
-            return self.queue.popleft()
+            while True:
+                if self.stop or self._enough():
+                    self.stop = True
+                    self.lock.notify_all()
+                    return None
+                if self.queue:
+                    self.in_flight += 1
+                    return self.queue.popleft()
+                if self.in_flight == 0:
+                    self.stop = True
+                    self.lock.notify_all()
+                    return None
+                self.lock.wait()
 
     def _worker(self, router: MatchRouter) -> None:
-        try:
-            while (job := self._next()) is not None:
-                self._record(job, self._match(router, job.placement))
-        except BaseException as error:  # MatchCancelled／整個搜尋 MatchTimeout：其他 thread 也停
-            with self.lock:
-                self.stop = True
-                self.failure = self.failure or error
+        while True:
+            job = self._next()
+            if job is None:
+                return
+            try:
+                result = self._match(router, job.placement)
+            except BaseException as error:  # MatchCancelled／整個搜尋 MatchTimeout：其他 thread 也停
+                with self.lock:
+                    self.in_flight -= 1
+                    self.stop = True
+                    self.failure = self.failure or error
+                    self.lock.notify_all()
+                return
+            try:
+                self._record(job, result)
+            except BaseException as error:
+                with self.lock:
+                    self.stop = True
+                    self.failure = self.failure or error
+                    self.lock.notify_all()
+                return
 
     def run(self, placements: list[Placement]) -> list[Candidate]:
         self.queue.extend(_Job(p, False, k) for k, p in enumerate(placements))

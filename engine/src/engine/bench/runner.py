@@ -192,8 +192,8 @@ def run_cases(
 
 
 def is_legacy(entry: object) -> bool:
-    """baseline 條目是不是 v1 評分（沒有 score_version，或版本不是現在的 SCORE_VERSION）。"""
-    return not (isinstance(entry, dict) and entry.get("score_version") == SCORE_VERSION)
+    """baseline 條目是不是 v1 評分：沒有 score_version（v1 時代寫的）或明寫 1。其他版本不是 legacy（見 _regression）。"""
+    return isinstance(entry, dict) and entry.get("score_version", 1) == 1
 
 
 def _regression(r: CaseResult, base: object, tolerance: int) -> str | None:
@@ -204,6 +204,9 @@ def _regression(r: CaseResult, base: object, tolerance: int) -> str | None:
     # v1 baseline 比本次路線的 v1 分數：評分改版不會被當成退步，路線本身的退步也不會被新評分蓋掉
     if is_legacy(base):
         overall, coverage, label = r.legacy_overall, r.legacy_coverage, "（v1 評分）"
+    elif base.get("score_version") != SCORE_VERSION:
+        # 不認得的版本（例如以後的 v3 baseline 拿舊程式跑）：不能拿別的尺比，明確失敗
+        return f"{r.name}：baseline 的 score_version {base.get('score_version')!r} 不是 1 或 {SCORE_VERSION}，無法比較"
     else:
         overall, coverage, label = r.overall, r.coverage, " "
     if overall < base["overall"] - tolerance:

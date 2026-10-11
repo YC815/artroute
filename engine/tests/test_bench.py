@@ -763,3 +763,15 @@ def test_cli_says_when_it_compares_against_a_legacy_baseline(fake_run: FakeRun, 
     fake_run.baseline.write_text(json.dumps({"a": {"overall": 50, "coverage": 50, "error": None, **V2}}))
     fake_run([scored("a", 90, 90, 90, legacy=Score(50, 50, 50))])
     assert "提示：baseline" not in capsys.readouterr().out
+
+
+def test_unknown_score_version_is_not_compared_with_another_scale() -> None:
+    # 審查：以前任何不是目前版本的條目都被當成 v1；未來的 v3 條目會被拿 v1 分數比
+    from engine.bench.runner import _regression
+
+    r = CaseResult(
+        "c", 80, 80, 80, 1000.0, 900.0, 1, None,
+        legacy_coverage=80, legacy_cleanliness=80, legacy_overall=80,
+    )
+    assert "score_version" in (_regression(r, {"overall": 70, "coverage": 70, "score_version": 3}, 3) or "")
+    assert _regression(r, {"overall": 70, "coverage": 70, "score_version": 1}, 3) is None

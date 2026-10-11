@@ -244,3 +244,42 @@ def test_disconnect_cancels_running_search_and_frees_the_slot(tmp_path: Path) ->
         stream(port, after)  # 名額已經釋放：下一個搜尋直接跑完
     assert any(line.startswith("event: result") for line in after)
     assert not fake.overlap
+
+
+def test_tiny_negative_rotation_does_not_break_the_stream(tmp_path: Path) -> None:
+    # 審查：-1.4e-14 % 360 == 360.0，PlacementOut（< 360）驗證失敗，串流沒有最後一個事件
+    tiny = Candidate(Placement((121.5, 25.05), 1200.0, -1.42e-14), RESULT, 12.5, True)
+
+    def search(params, routers, roads, deadline, emit):
+        emit(Best(tiny))
+        return SearchOutcome([tiny], 1, 1, None)
+
+    with TestClient(make_app(tmp_path, search)) as client:
+        got = events(client.post("/search", json=REQUEST).text)
+    assert [name for name, _ in got] == ["best", "result"]
+    assert got[1][1]["candidates"][0]["placement"]["rotation_deg"] == 0.0
+
+
+def test_strokes_of_repeated_points_are_too_small(tmp_path: Path) -> None:
+    # 審查：每筆都是重複的同一點、但筆與筆分開：外框不小，總長卻是 0，原本變成 internal
+    def never(*args):
+        raise AssertionError("不該開始搜尋")
+
+    body = {**REQUEST, "strokes": [{"points": [[0, 0], [0, 0]]}, {"points": [[0.5, 0.5], [0.5, 0.5]]}]}
+    with TestClient(make_app(tmp_path, never)) as client:
+        response = client.post("/search", json=body)
+    assert response.status_code == 422 and response.json()["detail"]["code"] == "too_small"
+
+
+def test_gate_failure_ends_with_an_error_event(tmp_path: Path) -> None:
+    class Broken(SearchGate):
+        async def acquire(self, *args):
+            raise OSError("lock file")
+
+    app = create_app(
+        activated(tmp_path), router_factory=lambda b: object(), road_loader=lambda b: "roads", search=ok_search,
+        search_gate=Broken(tmp_path / "x"),
+    )
+    with TestClient(app) as client:
+        got = events(client.post("/search", json=REQUEST).text)
+    assert [(name, data["code"]) for name, data in got] == [("error", "internal")]

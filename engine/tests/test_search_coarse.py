@@ -146,3 +146,25 @@ def test_deadline_is_checked() -> None:
     shape = shape_model(p.strokes)
     with pytest.raises(MatchCancelled):
         coarse_search(p, shape, build_field(ring(0, 0, 1000), field_half_extent(p, shape)), deadline)
+
+
+def test_start_points_are_capped() -> None:
+    # 審查：40 筆 × 2000 點的封閉筆畫讓 start_ok 的 (位置 × 起點) 陣列爆量；起點候選要有上限
+    from engine.search.coarse import MAX_START_POINTS
+
+    circle = [(0.5 * math.cos(t), 0.5 * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 2000, endpoint=False)]
+    strokes = [NormStroke([(x * 0.1 + 0.02 * k, y * 0.1) for x, y in circle], True) for k in range(40)]
+    assert len(shape_model(strokes).start_points) <= MAX_START_POINTS
+    small = shape_model([NormStroke(circle[::100], True)])  # 20 點的封閉筆畫
+    assert len(small.start_points) <= 16
+
+
+def test_large_shape_coarse_stays_fast() -> None:
+    import time
+
+    circle = [(0.5 * math.cos(t), 0.5 * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 400, endpoint=False)]
+    strokes = [NormStroke([(x * 0.2 + 0.05 * (k % 5) - 0.1, y * 0.2 + 0.05 * (k // 5) - 0.1) for x, y in circle], True) for k in range(10)]
+    p = params(strokes=strokes, radius_m=10_000.0, min_km=1, max_km=300, rotation_min_deg=-180, rotation_max_deg=180)
+    started = time.perf_counter()
+    search(p, clutter(np.random.default_rng(1), 2000, 20_000))
+    assert time.perf_counter() - started < 15  # 審查量到 26 s（start_ok 佔 93%）

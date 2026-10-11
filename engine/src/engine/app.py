@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -256,11 +257,17 @@ def _search_params(payload: SearchRequest) -> SearchParams:
     )
 
 
+def _rotation_out(deg: float) -> float:
+    """[0, 360)。極小的負角度（例如 -1.4e-14）% 360 會得到 360.0，超出契約（審查），歸成 0。"""
+    out = deg % 360.0
+    return 0.0 if out >= 360.0 else out
+
+
 def _candidate_out(candidate: Candidate, version: str) -> SearchCandidate:
     placement = candidate.placement
     return SearchCandidate(
         placement=PlacementOut(
-            center=placement.center, size_m=placement.size_m, rotation_deg=placement.rotation_deg % 360.0
+            center=placement.center, size_m=placement.size_m, rotation_deg=_rotation_out(placement.rotation_deg)
         ),
         match=_response(candidate.result, version),
         start_distance_m=candidate.start_distance_m,
@@ -365,7 +372,11 @@ def create_app(
             raise _error(400, "outside_taiwan", "圓心不在台灣範圍內")
         xs = [x for s in payload.strokes for x, _ in s.points]
         ys = [y for s in payload.strokes for _, y in s.points]
-        if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_SHAPE_EXTENT:
+        # 每一筆都是同一點重複、但筆與筆分開時外框不小，總長卻是 0（審查）：兩個都要擋
+        length = sum(
+            math.dist(a, b) for s in payload.strokes for a, b in zip(s.points, [*s.points[1:], *s.points[:1] * s.closed])
+        )
+        if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_SHAPE_EXTENT or length < MIN_SHAPE_EXTENT:
             raise _error(422, "too_small", "圖形的所有點幾乎重合，量不出大小")
         build = layout.current()
         if build is None or not build.is_dir():
@@ -401,6 +412,10 @@ def create_app(
                 acquiring.result()
             except SearchBusy as error:
                 yield _sse(SearchFailed(code="busy", message=str(error)))
+                return
+            except Exception:  # 例如鎖檔開不了：串流仍要以失敗事件結束
+                logger.exception("搜尋拿名額失敗")
+                yield _sse(SearchFailed(code="internal", message=SEARCH_INTERNAL_MESSAGE))
                 return
             handed_over = True
         finally:
@@ -442,14 +457,16 @@ def create_app(
         task = asyncio.create_task(work())
         # 名額在搜尋的 thread 真的結束後才釋放（呼叫端先離開也一樣），下一個搜尋不會和它重疊
         task.add_done_callback(lambda _: gate.release())
+        finished = False
         try:
             while (event := await events.get()) is not done:
                 yield _sse(event if isinstance(event, SearchResult | SearchFailed) else _event_out(event, version))
+            finished = True
         finally:
             deadline.cancel()  # 呼叫端離開（產生器被取消）時讓搜尋在下一次檢查停下；正常結束時沒有作用
             logger.info(
                 "search center=%s radius_m=%.0f elapsed_ms=%.0f cancelled=%s",
-                prepared.params.center, prepared.params.radius_m, (time.monotonic() - started) * 1000, not task.done(),
+                prepared.params.center, prepared.params.radius_m, (time.monotonic() - started) * 1000, not finished,
             )
 
     return app

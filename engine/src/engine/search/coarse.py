@@ -35,6 +35,9 @@ DIRECTION_WEIGHT = 0.5
 NMS_KEEP = 30  # spec §4.6：NMS 留 30 個
 FINE_KEEP = 16  # 微調後交給精算的上限（精算至少跑 K=10 個，見 fine.py）
 CLOSED_START_POINTS = 16  # 封閉筆畫取幾個點當「可以當起點」的位置
+# 整個圖形最多幾個起點候選：起點條件的計算是（位置數 × 起點數），沒有上限時 40 筆 × 2000 點的圖形粗篩要 70 秒（審查）。
+# 超過時平均抽樣；少掉的起點只會讓起點條件變嚴（少數擺放被誤刪），不會放進起點在圈外的擺放（精算還會再檢查）
+MAX_START_POINTS = 48
 # 兩個擺放算「差不多」的門檻（NMS）：大小差不到 15%、角度差不到 15°、中心距離不到大小的 25%
 SIMILAR_SIZE_RATIO = 1.15
 SIMILAR_ANGLE_DEG = 15.0
@@ -80,10 +83,14 @@ def shape_model(strokes: list[NormStroke]) -> ShapeModel:
     start_points = []
     for stroke, line in zip(strokes, lines):
         if stroke.closed:
-            step = max(1, len(line) // CLOSED_START_POINTS)
-            start_points.append(line[::step])
+            ring = line[:-1]  # 不含收尾重複的起點
+            count = min(len(ring), CLOSED_START_POINTS)
+            start_points.append(ring[np.linspace(0, len(ring) - 1, count).round().astype(int)])
         else:
             start_points.append(line[[0, -1]])
+    candidates = np.vstack(start_points)
+    if len(candidates) > MAX_START_POINTS:
+        candidates = candidates[np.linspace(0, len(candidates) - 1, MAX_START_POINTS).round().astype(int)]
     span = points.max(axis=0) - points.min(axis=0)
     return ShapeModel(
         starts=starts,
@@ -93,7 +100,7 @@ def shape_model(strokes: list[NormStroke]) -> ShapeModel:
         gap_unit=_gap_estimate(strokes, lines),
         radius=float(np.hypot(*points.T).max()),
         diagonal=float(np.hypot(*span)),
-        start_points=np.vstack(start_points),
+        start_points=candidates,
     )
 
 
@@ -291,25 +298,22 @@ def coarse_search(
     sizes = size_levels(low, high)
     angles = angle_levels(params.rotation_min_deg, params.rotation_max_deg)
     full_turn = params.rotation_max_deg - params.rotation_min_deg >= 360 - 1e-9
-    dcost_cache: dict[float, np.ndarray] = {}
     pass_a: list[tuple[np.ndarray, int, int, np.ndarray, np.ndarray]] = []
     evaluated = 0
+    distance = field.distance.ravel()
     for i, size in enumerate(sizes):
-        deadline.check()
         progress("coarse", i, len(sizes))
         tolerance = snap_tolerance_m(shape, size)
-        dcost = dcost_cache.setdefault(
-            size, (np.minimum(field.distance, tolerance) / tolerance).astype(np.float32).ravel()
-        )
         lattice_e, lattice_n = _lattice(params.radius_m + size * float(np.hypot(*shape.start_points.T).max()))
         for j, rotation in enumerate(angles):
+            deadline.check()  # 每個角度一次：呼叫端離開後不必等整個大小跑完
             ok = scorer.start_ok(lattice_e, lattice_n, size, rotation)
             east, north = lattice_e[ok], lattice_n[ok]
             if not len(east):
                 continue
             offsets = rotate_scale(scorer.points_a, size, rotation)
             flat = field.flat_index(east[:, None] + offsets[None, :, 0], north[:, None] + offsets[None, :, 1])
-            pass_a.append((dcost[flat].mean(axis=1), i, j, east, north))
+            pass_a.append(((np.minimum(distance[flat], tolerance) / tolerance).mean(axis=1), i, j, east, north))
             evaluated += len(east)
     progress("coarse", len(sizes), len(sizes))
     if not pass_a:

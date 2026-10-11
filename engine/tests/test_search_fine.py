@@ -186,3 +186,11 @@ def test_rank_prefers_length_ok_then_score_then_start() -> None:
     off_near, off_far = variant(False, 90, 0, length=5800), variant(False, 95, 0, length=9000)
     ranked = sorted([off_far, good, off_near, better, closer], key=lambda c: rank_key(c, p))
     assert ranked == [closer, better, good, off_near, off_far]
+
+
+def test_rescale_is_not_lost_when_another_router_drains_the_queue() -> None:
+    # 審查：2 個 router、1 個候選；另一個 thread 看到空佇列就宣告停止，修正大小的重算被丟掉
+    s = stage(params(min_km=10, max_km=20), routers=[EchoRouter(delay_s=0.01), EchoRouter(delay_s=0.01)])
+    result = s.run([placement(size=1000)])  # 4 km：不合格，要依比例重算
+    assert s.done == 2
+    assert result[0].length_ok
