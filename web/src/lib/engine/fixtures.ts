@@ -16,7 +16,7 @@ export const SAMPLE_MATCH_RESPONSE: MatchResponse = {
     { kind: "connector", stroke_index: null, points: [[121.501, 25.03], [121.502, 25.031]], length_m: 400.5 },
     { kind: "detour", stroke_index: 1, points: [[121.502, 25.031], [121.503, 25.031]], length_m: 1000 },
   ],
-  score: { coverage: 82, cleanliness: 74, overall: 78 },
+  score: { coverage: 82, cleanliness: 74, direction: 66, overall: 78 },
   target_length_m: 2100.2,
   warnings: [{ stroke_index: 2, code: "no_route", message: "這一筆附近 150 m 內沒有可騎的道路" }],
   data_version: "20261010T145928Z",

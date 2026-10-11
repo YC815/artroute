@@ -282,6 +282,12 @@
             "title": "Coverage",
             "type": "integer"
           },
+          "direction": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Direction",
+            "type": "integer"
+          },
           "overall": {
             "maximum": 100.0,
             "minimum": 0.0,
@@ -292,6 +298,7 @@
         "required": [
           "coverage",
           "cleanliness",
+          "direction",
           "overall"
         ],
         "title": "ScoreOut",

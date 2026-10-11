@@ -72,7 +72,12 @@ export const matchResponseSchema = z.object({
       length_m: z.number(),
     }),
   ),
-  score: z.object({ coverage: percentSchema, cleanliness: percentSchema, overall: percentSchema }),
+  score: z.object({
+    coverage: percentSchema,
+    cleanliness: percentSchema,
+    direction: percentSchema,
+    overall: percentSchema,
+  }),
   target_length_m: z.number(),
   warnings: z.array(matchWarningSchema),
   data_version: z.string(),

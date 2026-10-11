@@ -193,6 +193,8 @@ export interface components {
             cleanliness: number;
             /** Coverage */
             coverage: number;
+            /** Direction */
+            direction: number;
             /** Overall */
             overall: number;
         };

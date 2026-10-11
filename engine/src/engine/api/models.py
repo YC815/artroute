@@ -54,6 +54,8 @@ class SegmentOut(BaseModel):
 class ScoreOut(BaseModel):
     coverage: int = Field(ge=0, le=100)
     cleanliness: int = Field(ge=0, le=100)
+    # P2.5（評分 v3）：路線方向與原圖方向的吻合度，量鋸齒與轉角
+    direction: int = Field(ge=0, le=100)
     overall: int = Field(ge=0, le=100)
 
 

@@ -87,7 +87,7 @@ def test_stream_has_progress_best_and_result(tmp_path: Path) -> None:
     assert got[0][1] == {"type": "progress", "stage": "coarse", "done": 0, "total": 6}
     candidate = got[2][1]["candidates"][0]
     assert candidate["placement"] == {"center": [121.5, 25.05], "size_m": 1200.0, "rotation_deg": 350.0}
-    assert candidate["match"]["score"] == {"coverage": 80, "cleanliness": 70, "overall": 75}
+    assert candidate["match"]["score"] == {"coverage": 80, "cleanliness": 70, "direction": 0, "overall": 75}
     assert candidate["match"]["data_version"] == "20261010T000000Z"
     assert got[2][1]["coarse_candidates"] == 1234 and got[2][1]["evaluated"] == 10
 

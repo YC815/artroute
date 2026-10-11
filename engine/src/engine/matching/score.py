@@ -1,6 +1,6 @@
 """貼合度評分（spec §4.5）：在以目標中心為原點的局部平面（公尺）上量距離。
 
-score() 是 v2（/match 回傳、自動搜尋的目標函數）；score_v1() 保留原本的算法，bench 拿它和 v1 baseline 做同一把尺的比較。
+score() 是 /match 回傳、自動搜尋的目標函數；score_v2()、score_v1() 保留舊的算法，bench 拿它們和舊 baseline 做同一把尺的比較。
 """
 
 import math
@@ -21,9 +21,17 @@ _BUDGET = 2_000_000  # 每批 (取樣點數 × 線段數) 的上限；暫存陣�
 
 @dataclass(frozen=True)
 class Score:
+    """各版評分共用。direction 只有 v3 有（v1、v2 為 0）；exact 是沒取整數的 overall（排名、校正用），沒給就等於 overall。"""
+
     coverage: int
     cleanliness: int
     overall: int
+    direction: int = 0
+    exact: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.exact is None:
+            object.__setattr__(self, "exact", float(self.overall))
 
 
 def _projector(targets: list[list[LonLat]]):
@@ -122,7 +130,12 @@ def _coverage_distances(p: _Prepared) -> np.ndarray:
 
 
 def score(targets: list[list[LonLat]], route: list[LonLat]) -> Score:
-    """v2：乾淨度只看地圖上看得到的線（_visible），0 分距離 = max(對角線 × ZERO_SCORE_RATIO, ZERO_SCORE_MIN_M)。"""
+    """目前的評分（/match 回傳）。"""
+    return score_v2(targets, route)
+
+
+def score_v2(targets: list[list[LonLat]], route: list[LonLat]) -> Score:
+    """v2（數字不可改）：乾淨度只看地圖上看得到的線（_visible），0 分距離 = max(對角線 × ZERO_SCORE_RATIO, ZERO_SCORE_MIN_M)。"""
     p = _prepare(targets, route)
     if p is None:
         return Score(0, 0, 0)

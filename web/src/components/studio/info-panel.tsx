@@ -84,6 +84,7 @@ export function InfoPanel(props: Props) {
         <Row label="路線長度" value={response ? formatDistance(response.route.length_m) : "—"} />
         <Row label="覆蓋" value={score ? `${score.coverage}%` : "—"} />
         <Row label="乾淨" value={score ? `${score.cleanliness}%` : "—"} />
+        <Row label="方向" value={score ? `${score.direction}%` : "—"} />
         <Row label="整體貼合度" value={score ? `${score.overall}%` : "—"} />
         {startDistance && (
           <Row

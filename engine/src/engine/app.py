@@ -100,7 +100,13 @@ def _response(result: MatchResult, version: str) -> MatchResponse:
         {
             "route": {"points": result.route_points, "length_m": result.route_length_m},
             "segments": [asdict(s) for s in result.segments],
-            "score": asdict(result.score),
+            # 只送契約欄位：Score.exact（沒取整數的 overall）是引擎內部排名用的
+            "score": {
+                "coverage": result.score.coverage,
+                "cleanliness": result.score.cleanliness,
+                "direction": result.score.direction,
+                "overall": result.score.overall,
+            },
             "target_length_m": result.target_length_m,
             "warnings": [asdict(w) for w in result.warnings],
             "data_version": version,
