@@ -202,6 +202,8 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 #### P2.5 新增
 
 - `POST /match` 回應的 `score` 改成 v3（§4.5），多一個 `"direction": 0-100`（`coverage`、`cleanliness`、`overall` 保留）。請求不變時，路線本身也因 fast 的預設 `turn_penalty_factor` 500（§8 第 41 列）與剪小刺與小圈（§8 第 43 列）而不同。
+- `POST /match` 請求可以多帶 `"quality": "fast" | "fine"`（省略或 null = fast，行為與不帶完全相同）。`fine`：描形規劃器規劃路徑、Valhalla 照著走，失敗的範圍退回 fast（`2026-10-11-p2-5-likeness-design.md` §6、§8 第 46–51 列）；目前的 build 沒有路網圖時等於 fast。
+- `GET /status` 多 `"planner_ready": bool`：目前的 build 有沒有路網圖。網站在 `planner_ready` 時，放開、鍵盤微調、套用候選之後先送 fast、回來後再送 fine（§8 第 52 列）。
 
 `POST /search`（由 web 的 `/api/search` 轉發，回應是 SSE）：
 
@@ -284,6 +286,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
    - **樓梯**（使用者決定「禁走樓梯」）：所有 `highway=steps` 一律加上 `bicycle=no`，沒有例外（有牽引道的樓梯、`allow` 清單也不例外）。移除會重新放行的 tag，做法同快速道路（`bicycle:*`、`cycleway*`、`oneway:bicycle`、`vehicle:forward／backward`，另加實測會蓋過 `bicycle=no` 的 `service=driveway`）。
    - **人行道**（使用者決定「盡量避免」）：Valhalla 3.9.1 對沒有自行車 tag 的 `footway`／`pedestrian`（含 `footway=sidewalk`）本來就禁止自行車，不處理；已經放行的（`bicycle=yes`／`designated` 等，或 `cycleway` 放行）標成 `bicycle=dismount`，仍可通行，但預設成本以牽車速度計價。`dismount` 只影響預設成本的 `route`；shortest 與 `trace`（map_snap）都不看，所以吸附實際上避不開人行道，政策見 §8 第 19 列。
 3. 在 `/data/builds/<日期>/` 建出 Valhalla tiles 和可騎道路索引。建圖在子程序中以低優先權執行，同一時間只允許一個建圖。
+   - **可騎路網圖**（P2.5，`engine/src/engine/data/ridegraph.py`，讀取端 `planner/graph.py`）：同一份修補後的 pbf、同樣的 `is_rideable` 篩選，產生有拓樸、有方向的圖（`graph_*.npy`＋`graph.json`），描形規劃器用；格式與方向規則見 §8 第 46 列。`validate_build` 檢查存在、筆數 > 0、索引一致。
    - **可騎道路索引**（P2，`engine/src/engine/data/rideable.py`）：從同一份修補過的 pbf（快速道路、樓梯已是 `bicycle=no`）萃取自行車可騎的路段（`is_rideable` 近似 Valhalla 3.9.1 的通行規則：一般道路、自行車道、`path`／`track`、放行自行車的人行道；排除 motorway、樓梯、`bicycle` 不放行或 `access`／`vehicle` 為 no／private 的路）。路段切到 ≤ 200 m，依中點落在 0.01° 的格子排序，寫成 `rideable_segments.npy`（float32 (N, 4)）、`rideable_offsets.npy`（每格的起點）、`rideable.json`（格網參數，最後寫）。查詢以 mmap 讀，各 worker 共用記憶體分頁。只用於粗篩的排名；路線一律來自 Valhalla。
 4. 執行固定的驗證查詢：
    - 洲美街單行段不可逆向（P0 已有）；
@@ -431,3 +434,18 @@ m1、同一份 pbf（build `20261010T183449Z`）上建 scratch build（不啟用
 | 43 | 剪小刺與小圈的細節（`matching/prune.py`）：候選是路線上相距 ≤ 1 m 的兩點（KD-tree 在局部平面找、haversine 確認），中間那段 16 m（2 × 探針長）到外框長邊 15%；由短到長、每剪一次重找、同一個圈只試一次；新接點用嚴格的轉彎檢查（`turns.rideable_strict`：原地迴轉、一側不到 1 m、探針折回、原路折回——沿一側走 2 m 的點落在另一側折線 1 m 內——都不放行），離新接點不到 8 m 的既有接點用原本的規則重量（剪出來的新接點一律用嚴格版）；切剩不到 2 個不同點的片段丟掉後重量新邊界 ≤ 1 m；剪完任何原本畫了的筆畫（stroke 或 detour 段）消失就不剪（否則沒有 `no_route` 警告）；嘗試次數只算通過不需要 Valhalla 的判斷的候選（上限 40）；剪圈用子期限 `min(剩餘 − 0.3 s, 1 s)`，子期限到期就回傳目前結果（取消與外層到期照樣丟出）；比較的是 `exact`（比 overall 嚴） | 短於 16 m 的圈在 300 px 縮圖上不到 1 px，剪了沒有差別，卻多一個接點與一次 route。`rideable` 在死巷剩不到 8 m 時，兩個探針會繞過尖端、落在不同處，以為是約 143° 的轉彎而放行，剪出「6 m 小刺加原地迴轉」：所以嚴格版另外判斷原路折回；只比頂點會漏掉只有一側有頂點（段落邊界、端點內插點）的折回（獨立審查找到，會剪出路中間的原地迴轉），所以改成點到折線的距離（`rideable` 本身不改，既有接點的規則不變；一般轉彎要超過約 150° 才會被當成折回，那種地方不剪，保守）。剪圈只是修飾：拖曳中每次都會跑，子期限 1 s 寧可少剪也不吃掉 `/match` 的 5 秒（合成的 50 根死巷、6050 點約 0.9 s）。丟掉零長度片段後兩側換成更外面的段，可能各差 1 m、合起來 2 m，所以一定要重量。一條長的來回死巷裡每一對來回點都是候選，全部算進次數的話死巷本身那一刀可能輪不到；便宜的淘汰只花微秒，時間由期限保留量限制 | 只剪同一個 Valhalla 結果內的 A→B→A：抓不到跨段的小圈（第 37 列）。剪圈的新接點沿用 `rideable`：原地迴轉會被放行。route 比沿原路線短很多就不放行：改變「> 30° 與 `rideable` 相同」的語意 |
 | 44 | bench 依 baseline 條目的 `score_version` 選尺（1 → v1、2 → v2、3 → v3，其他明確失敗），表格同時列 v3、v2、v1 與方向；`--svg-dir` 為每個案例（搜尋 bench 為前 5 名）輸出疊圖＋縮圖的 SVG（手寫 SVG，不加 matplotlib）；`--turn-penalty-factor`、`--sigma-z` 給本機比對 A 參數 | 現有 baseline 是 v2：路線退步與評分改版要分得開（同 v1 → v2 的做法）。SVG 給本機挑改前／改後縮圖給使用者看（P2.5 spec §8 的驗收）。旗標讓本機確認 V2（gps_accuracy＋500）是否等於只設 500，不必改程式 | 直接把 baseline 換成 v3：看不出路線本身有沒有退步。matplotlib：多一個大依賴，arm64 映像變大 |
 | 45 | 下一輪標註樣本（`python -m engine.bench.likeness_samples`）：每個搜尋 bench 案例取前 3 名擺放，變體 Q2（現行預設）、P2（改前：不帶轉彎懲罰、不剪）、PR B 起加 F（`quality: "fine"`）；只留 v3 rank 差距 ≥ 3 的配對（Q2 vs P2 同擺放、Q2 第 1 名 vs 第 3 名），「現行 vs 規劃器」一律保留；各案例輪流挑、最多 60 組；安全斷言沒過的路線不進配對；標註頁是通用樣板（`bench/label.tmpl.html`，Artifact 的 `db` capability），`labels` 子命令把讀回的 votes 轉成 labels.json 並檢查每一組對得上 | 使用者決定只標差異明顯的配對（第一輪現行 vs V2 的文字配對幾乎一樣，接近擲銅板）。60 組裡約一半到三分之二會有表態，達到至少 40 組有表態的目標。規劃器是 Q3 的主角，使用者對它的看法不論 v3 差距都要。安全沒過的路線不會成為產品的輸出，標了也沒意義 | 隨機抽配對：大多數差距小、浪費使用者的時間。只標規劃器：沒有 Q2 vs P2 的資料，校正不到剪小刺的效果 |
+
+### P2.5 實作（2026-10-11，雲端 PR B：Q3 描形規劃器）
+
+雲端依最佳實踐的決定（都可以被推翻）；數字來自合成地圖，真實路網的驗證在 PR B 說明的本機待辦。
+
+| # | 修訂 | 理由 | 被否決的替代方案 |
+|---|---|---|---|
+| 46 | 可騎路網圖：節點是 way 端點與共用節點，長於 200 m 的邊在中間切開；邊依中點落在 0.01° 格子排序，`region()` 只讀範圍（往外擴半個最長邊）內的邊，建區域的有方向 CSR（平行邊留最短、自環不進 CSR）；方向 = Valhalla 3.9.1 lua 的規則 ∩ tag 字面意思（拿不準的取保守：roundabout＋`oneway=no` 只順向、`oneway=true／1`＋`oneway:bicycle=no` 只順向、`cycleway:both=opposite` 不放行逆向、`oneway=reverse` 只逆向，兩個方向都不行的不進圖） | 不切長邊的話，幾公里沒有岔路的河濱自行車道穿過查詢範圍會被漏掉（邊歸在中點的格子）。方向只影響規劃品質，合法性由 Valhalla 照著走把關（第 47 列），所以拿不準時寧可少一個方向。全台推估額外記憶體 0.3–0.5 GB、檔案約 250 MB（未量；本機重建時量）；合成 16 萬節點建圖 1.3 s、5 km 範圍的 region 18 ms | 整張圖一份全域 CSR：每次都要讀全台。不切長邊、每次擴幾公里：區域變大好幾倍 |
+| 47 | 規劃的路徑只用 Valhalla `map_snap` 照著走（加密 ≤ 15 m、搜尋半徑 10 m，照舊經過長度比例與端點檢查），結果與規劃的雙向 Hausdorff ≤ 10 m 才收；**不用 `edge_walk`** | 實測 Valhalla 3.9.1 的 `edge_walk` 只對頭尾兩條邊做通行過濾，中間沿 `oneway=yes`／`-1` 逆向的形狀照樣成功（`route_matcher.cc` 中間的邊沒有 `Allowed`、也沒有轉向限制檢查；`test_edge_walk_does_not_check_one_ways…` 釘住，升級後變紅就重新評估）；它還要求輸入點與 Valhalla 的形狀點逐一相同，路網圖切長邊插入的點就會失敗。map_snap 與 fast 是同一條合法路徑 | 照 P2.5 spec 先試 edge_walk：等於拿我們自己的圖當唯一的合法依據。edge_walk 再加 `trace_attributes` 檢查通行：仍不含轉向限制，多一次呼叫 |
+| 48 | 規劃器的成本權重（以取樣間距 Δ 為單位）：平移 4、方向 1／m、轉彎 1Δ、迴轉（> 150°）40Δ、轉角 2Δ／rad、繞遠 2／m、候選方向 0.5；方向成本用邊長 Dijkstra 精確算（∫(1 − cos θ) = 路徑長 − 位移·切線）；轉角成本是每個 > 30° 的路線轉彎和 max(0.05 L, 2Δ) 內最像的目標轉角比角度；輸入折線 > 30° 的頂點一定取樣；候選有方向（雙向的邊兩個候選） | 權重先用量級估算、再在合成場景確認（平行路、轉角、斜路、單行道、小刺各一個；拿掉方向、轉彎、迴轉、轉角成本各有測試紅）。以 Δ 為單位讓圖形放大縮小時行為一致。兩個候選固定時最短路徑就是方向成本最小的路徑，所以不必每段轉移重新加權 CSR。合成棋盤（2 萬節點）上 2 km 預設文字規劃 0.25 s。繞遠成本目前沒有測試會紅（方向成本已懲罰多出的路程），是保險；之後用 v3 調權重 | 每段轉移依切線重新加權 CSR：結果相同、每段要重建。轉角用 ±2Δ 窗內的總方向變化：一階動態規劃拆不開 |
+| 49 | 封閉筆畫：規劃從最尖的轉角開始、起點的 3 個候選同步跑；照著走時若整圈是一段，從最長那段的中點開始；開放筆畫的反向用規劃器的 backward（串接器選了反向時才照著走），失敗的範圍用 `trace_whole`，任何一段失敗就照畫的方向走 | map_snap 在轉角會吸到不同的路（轉彎懲罰），從轉角開始的圈頭尾差 10 m、接不回來。反向退回用 `trace_whole` 維持 §4.4「反向不補繞路」 | 接受圈變成開放部件；反向退回用 `match_stroke`：可能用繞路換掉乾淨的正向 |
+| 50 | fine 的預算：region、規劃、照著走共用 `min(2.5 s, 期限剩餘 − 2.5 s)`，之後的範圍交給 fast；退回 fast 的點列頭尾換成相鄰照著走片段的實際端點；片段之間一律 `join.connect`，fast 段內的 chain 不重接、有警告的 fast 段兩側不接（延續「不補同一個缺口」）；之後串接、剪小刺、評分照舊 | 留至少 2.5 s 給退回 fast、串接、剪小刺與評分，整個 `/match` 仍是 5 秒。用原始範圍會倒回交界那段，多出小刺和接點。合成：2 km 預設文字 fast 0.25 s、fine 約 0.5 s；`graph.region` 與網路建構不受期限中斷，大圖形要本機量 | 規劃與照著走各給固定預算：難以兩邊都夠 |
+| 51 | 引擎每個 worker 快取 current build 的路網圖（每個 build 只試載入一次，沒有就記住 None），圖所屬的 build 和 Router 的版本相同才用；`/search` 仍用 fast（Q4 才改） | 沒有圖的舊 build 照常服務（fine 等於 fast）。版本對不上時用 fast，不會拿新圖配舊 tiles | 沒有圖就回錯：舊 build 時網站會一直看到錯誤 |
+| 52 | 網站：`planner_ready` 時，放開、鍵盤微調、套用候選、改文字之後，fast 成功回來（擺放沒變）就送 `quality: "fine"`；fine 不佔拖曳中「最多一筆在途」的名額與節流，擺放一改變就取消；fine 失敗保留 fast、提示一行、不自動重送、不觸發離線橫幅；同一個擺放只送一次 fine；網站代理原本會丟掉 schema 沒有的 `quality`，已補上 | fine 只對靜止的擺放有意義，不能拖慢拖曳中的 fast。只看擺放、不看動作：重新 render、按下沒移動不白打引擎 | 放開直接送 fine、不送 fast：fine 慢 2 倍，放開後要等更久才看到結果 |
+| 53 | 標註樣本工具加 F 變體（`quality: "fine"`，current build 沒有路網圖就直接結束，不悄悄退回 fast）；吸附 bench 加 `--quality fine` | 本機在真實路網上比較 fast 與 fine、讓使用者標「現行 vs 規劃器」 | — |
