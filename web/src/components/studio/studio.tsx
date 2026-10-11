@@ -54,6 +54,7 @@ import {
   editSupersededBy,
   editUnavailableNote,
   liveMatchEnabled,
+  openDraftAction,
   resolveDisplayedRoute,
   type VerifiedBuild,
 } from "@/lib/studio/edit-view";
@@ -267,6 +268,10 @@ export function Studio() {
   // 打開草稿：還原來源、擺放與路線，進入微調。先 begin 再 enter：基準要是草稿的圖形與擺放，
   // 否則「圖形被移動」的判斷會拿舊的基準、馬上把微調結束。
   const openDraft = (draft: Draft) => {
+    if (openDraftAction(edit.state, draft.id) === "resume") {
+      resumeEdit();
+      return;
+    }
     const session = sessionFromDraft(draft);
     if (!session) return;
     reverify.cancel();

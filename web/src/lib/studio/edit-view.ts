@@ -89,3 +89,12 @@ export const NO_SIGNATURE_NOTE = "這份吸附結果沒有簽章（引擎版本�
 export function editUnavailableNote(response: MatchResponse | null, downloadable: boolean): string | null {
   return response !== null && downloadable && signedOf(response) === null ? NO_SIGNATURE_NOTE : null;
 }
+
+/**
+ * 在「我的路線」按「打開」：這份草稿就是目前按了「完成」的那份（路線、復原紀錄都還在記憶體裡）就接著微調（resume），
+ * 否則從列表的內容重新打開。重新打開會用列表的快照取代畫面上的路線、歷史重來：
+ * 最後一次存檔還沒寫完（或失敗）時畫面會退回舊路線，排隊中的舊存檔之後又把較新的路線寫進去，畫面與草稿就不一致。
+ */
+export function openDraftAction(edit: EditState | null, draftId: string): "resume" | "open" {
+  return edit !== null && !edit.active && edit.draftId === draftId ? "resume" : "open";
+}

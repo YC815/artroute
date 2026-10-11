@@ -4,7 +4,7 @@ import { editReducer, startEdit, type EditedRoute } from "@/lib/edit/edit-state"
 import { buildGpx } from "@/lib/export/gpx";
 import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE, without } from "@/lib/engine/fixtures";
 import type { Transform } from "@/lib/shape/transform";
-import { canEnterEdit, currentBuildVersion, editChrome, editUnavailableNote, NO_SIGNATURE_NOTE, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
+import { canEnterEdit, currentBuildVersion, editChrome, editUnavailableNote, NO_SIGNATURE_NOTE, editSupersededBy, liveMatchEnabled, openDraftAction, resolveDisplayedRoute } from "@/lib/studio/edit-view";
 
 const LIVE = { response: SAMPLE_MATCH_RESPONSE, downloadable: true };
 const T: Transform = { center: [121.5, 25.03], sizeM: 2000, rotationDeg: 0 };
@@ -135,5 +135,21 @@ describe("editChrome", () => {
 
   it("沒有微調：什麼都不顯示", () => {
     expect(editChrome({ edited: false, active: false, outdated: false })).toEqual({ toolbar: false, notice: false, resume: false });
+  });
+});
+
+describe("openDraftAction", () => {
+  const finished = editReducer(startEdit(routeFromResponse(SAMPLE_MATCH_RESPONSE), "d1"), { type: "finish" });
+
+  it("按了「完成」之後再打開同一份：接著微調（路線與復原紀錄都在記憶體裡，不用列表的快照重來）", () => {
+    expect(openDraftAction(finished, "d1")).toBe("resume");
+  });
+
+  it("別份、沒有微調、微調中（按鈕本來就停用）：重新打開", () => {
+    expect(openDraftAction(finished, "d2")).toBe("open");
+    expect(openDraftAction(null, "d1")).toBe("open");
+    expect(openDraftAction(startEdit(routeFromResponse(SAMPLE_MATCH_RESPONSE), "d1"), "d1")).toBe("open");
+    // 還沒有草稿 id（第一次編輯的存檔還沒回來）：不是同一份
+    expect(openDraftAction(editReducer(startEdit(routeFromResponse(SAMPLE_MATCH_RESPONSE), null), { type: "finish" }), "d1")).toBe("open");
   });
 });

@@ -363,6 +363,26 @@ describe("createRouteEditController", () => {
     expect(t.edits[1].signal.aborted).toBe(false);
   });
 
+  it("完成之後 resume：路線與復原紀錄都在、不重建草稿、不多存", async () => {
+    const t = setup();
+    t.controller.enter(R0, null, PLACEMENT_A);
+    cutOnce(t);
+    t.edits[0].reply.resolve({ ok: true, route: R1 });
+    await flush();
+    t.saves[0].reply.resolve("d1");
+    await flush();
+    t.controller.finish();
+    t.controller.resume();
+    await flush();
+    expect(t.state().history).toMatchObject({ present: R1, past: [R0] });
+    expect(t.state().draftId).toBe("d1");
+    expect(t.saves).toHaveLength(1);
+    // 還能復原到編輯前，並且更新同一份草稿
+    t.controller.undo();
+    await flush();
+    expect(t.saves.map((s) => [s.route, s.draftId])).toEqual([[R1, null], [R0, "d1"]]);
+  });
+
   it("等待中按 Esc：abort 請求，晚到的結果不套用", async () => {
     const t = setup();
     t.controller.enter(R0, null, PLACEMENT_A);
