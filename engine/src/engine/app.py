@@ -414,25 +414,30 @@ def create_app(
         started = time.monotonic()
         done = object()
 
-        def emit(event: SearchEventOut) -> None:
-            loop.call_soon_threadsafe(events.put_nowait, event)
+        def send(item: Any) -> None:
+            loop.call_soon_threadsafe(events.put_nowait, item)
 
-        async def work() -> None:
+        def job() -> None:
+            """在 thread 裡跑：進度、結果、錯誤與結束記號全都走 send（同一個 thread 依序 call_soon_threadsafe），
+            順序一定和產生的順序相同。結果若改由 to_thread 回傳，可能比還在路上的進度事件早到（測試實際遇過）。"""
             try:
-                outcome = await asyncio.to_thread(_run, prepared, deadline, emit)
-                events.put_nowait(_result_out(outcome, version, time.monotonic() - started))
+                outcome = _run(prepared, deadline, send)
+                send(_result_out(outcome, version, time.monotonic() - started))
             except MatchTimeout:
-                events.put_nowait(SearchFailed(code="timeout", message=SEARCH_TIMEOUT_MESSAGE))
+                send(SearchFailed(code="timeout", message=SEARCH_TIMEOUT_MESSAGE))
             except MatchCancelled:
                 pass
             except RoutingError as error:
                 logger.error("搜尋載入路網失敗：%s", error)
-                events.put_nowait(SearchFailed(code="no_data", message=NO_DATA_MESSAGE))
+                send(SearchFailed(code="no_data", message=NO_DATA_MESSAGE))
             except Exception:
                 logger.exception("搜尋失敗")
-                events.put_nowait(SearchFailed(code="internal", message=SEARCH_INTERNAL_MESSAGE))
+                send(SearchFailed(code="internal", message=SEARCH_INTERNAL_MESSAGE))
             finally:
-                events.put_nowait(done)
+                send(done)
+
+        async def work() -> None:
+            await asyncio.to_thread(job)
 
         task = asyncio.create_task(work())
         # 名額在搜尋的 thread 真的結束後才釋放（呼叫端先離開也一樣），下一個搜尋不會和它重疊

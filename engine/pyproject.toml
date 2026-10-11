@@ -14,6 +14,7 @@ dependencies = [
     # 釘版：bike_patch 剝除哪些 tag 是對照 3.9.1 內嵌的 graph lua 決定的。升級前必須重跑
     # tests/test_bike_patch.py::test_other_bicycle_tags_cannot_reopen_expressway，並重新核對新版 lua 讀哪些自行車 tag
     "pyvalhalla==3.9.1",
+    "scipy>=1.16",
     "uvicorn[standard]>=0.54.0",
 ]
 
