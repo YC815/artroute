@@ -1,8 +1,5 @@
 """拼接與安全檢查（route editing spec §3.2）：新換上的部分只來自 Valhalla，新接點 ≤ 1 m、用嚴格版轉彎檢查，
-離新接點不到 8 m 的既有接點重量，最後整條路線連續；任何一項沒過都回錯，不回半成品。
-
-假 router 比照 tests/turn_router.py：route 直接走直線；blocked 列出的 (起點, 終點) 要往北繞一大圈（不能直接騎的轉彎）；
-snap 決定 route 的端點被吸到哪（模擬 Valhalla 把起訖點吸到別的 edge 上）。
+離新接點不到 8 m 的既有接點重量，最後整條路線連續；任何一項沒過都回錯，不回半成品。假 router 見 tests/edit_router.py。
 """
 
 import pytest
@@ -21,43 +18,16 @@ from engine.matching.join import junction_ok
 from engine.matching.service import DiscontinuousRoute
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
-from engine.routing.router import RouteResult, RoutingError
+from engine.routing.router import RouteResult
+from edit_router import FakeRouter
 from turn_router import east, north
 
 LAT = 25.05
 J = (121.505, LAT)
-BLOCK_RADIUS_M = 0.5
 
 
 def seg(points, kind="stroke", stroke_index: int | None = 0) -> Segment:
     return Segment(kind, stroke_index, points, polyline_length_m(points))
-
-
-class FakeRouter:
-    def __init__(self, *, blocked=(), snap=lambda p: p, fail: bool = False) -> None:
-        self.blocked, self.snap, self.fail = list(blocked), snap, fail
-        self.calls: list[tuple] = []
-
-    def trace(self, points, *, search_radius_m):
-        raise AssertionError("splice 不呼叫 trace")
-
-    def route(self, start, end, *, shortest=False):
-        self.calls.append(("route", start, end, shortest))
-        return self._result([start, end])
-
-    def route_through(self, start, via, end, *, shortest=False):
-        self.calls.append(("route_through", start, via, end, shortest))
-        return self._result([start, via, end])
-
-    def _result(self, points):
-        if self.fail:
-            raise RoutingError("no path")
-        a, b = self.snap(points[0]), self.snap(points[-1])
-        blocked = any(
-            haversine_m(a, f) <= BLOCK_RADIUS_M and haversine_m(b, t) <= BLOCK_RADIUS_M for f, t in self.blocked
-        )
-        out = [a, north(a, 440), north(b, 440), b] if blocked else [a, *points[1:-1], b]
-        return RouteResult(points=out, length_km=polyline_length_m(out) / 1000)
 
 
 def deadline() -> Deadline:
@@ -106,6 +76,22 @@ def test_new_junction_uses_strict_turn_check(before, middle, after, junction) ->
     assert junction_ok(router, deadline(), segments, junction, strict=False)  # 前提：非嚴格版會放行
     assert rejected_code(router, before, middle, after) == "turn_not_rideable"
     assert splice(FakeRouter(), deadline(), before, middle, after) == segments  # 對照：J 騎得過去就收
+
+
+def test_junctions_given_as_strict_are_checked_like_new_ones() -> None:
+    """呼叫端自己接好的整條路線（before、after 都是空的）：strict 列出的接點也用嚴格版。
+    拿掉 splice 把 strict 併進新接點的那一行會紅。"""
+    whole = [WEST_TO_J, J_TO_K, K_ONWARD]
+    router = FakeRouter(blocked=[STRAIGHT_THROUGH_J])
+    assert splice(router, deadline(), [], whole, []) == whole  # 對照：不說就只是保留的接點
+    with pytest.raises(EditRejected) as info:
+        splice(router, deadline(), [], whole, [], strict=[0])
+    assert info.value.code == "turn_not_rideable"
+
+
+def test_strict_junctions_must_be_inside_the_route() -> None:
+    with pytest.raises(ValueError):
+        splice(FakeRouter(), deadline(), [], [WEST_TO_J, J_TO_K], [], strict=[1])
 
 
 # ---- splice：鄰近既有接點重量 ----

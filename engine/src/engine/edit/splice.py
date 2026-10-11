@@ -64,12 +64,22 @@ def _new_junctions(before: list[Segment], middle: list[Segment], after: list[Seg
 
 
 def splice(
-    router: MatchRouter, deadline: Deadline, before: list[Segment], middle: list[Segment], after: list[Segment]
+    router: MatchRouter,
+    deadline: Deadline,
+    before: list[Segment],
+    middle: list[Segment],
+    after: list[Segment],
+    *,
+    strict: Sequence[int] = (),
 ) -> list[Segment]:
     """[*before, *middle, *after]，通過 §3.2 的檢查才回傳；接不回原路線丟 no_route、接點騎不過去丟 turn_not_rideable。
+    strict：另外也算新接點的接點（拼好的整條路線上 segments[i] 與 [i + 1] 之間的 i）：呼叫端自己接好的部分
+    （貼圖形用 join.connect 接回原路線，connect 只用原本的規則量）。
     DiscontinuousRoute（保留的部分自己有缺口）是程式錯誤，照樣往外丟。"""
     segments = [*before, *middle, *after]
-    new = _new_junctions(before, middle, after)
+    if not all(0 <= i < len(segments) - 1 for i in strict):
+        raise ValueError(f"接點索引超出範圍：{list(strict)}（共 {len(segments)} 段）")
+    new = sorted({*_new_junctions(before, middle, after), *strict})
     if any(haversine_m(segments[i].points[-1], segments[i + 1].points[0]) > JOIN_TOLERANCE_M for i in new):
         raise EditRejected("no_route")
     check_continuous(segments)

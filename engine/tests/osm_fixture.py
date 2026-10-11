@@ -461,3 +461,61 @@ PRUNE_MAP: list[GridWay] = [
     # 禁行的快速道路（bench 安全斷言用），離所有場景都遠
     GridWay(PRUNE_MOTORWAY_WAY_ID, [(X5 + c, -3) for c in range(7)], {"highway": "motorway"}),
 ]
+
+
+# ---- 手動微調（route editing C4）：公尺座標，各場景相距 10 km，自己一個 pbf（tests/conftest.py 的 edit_config）----
+
+# 巢狀的圈：主街 (0, 0)–(500, 0) 經過 X = (200, 0)、Y = (300, 0)；X 往北繞一個街廓 X → N1 → M → N2 → Y，
+# 街廓北邊的中點 M = (250, 120) 往北一條 60 m 的死巷到 T。路線 A → N1 → T → N2 → Y → X → C 經過 M、X、Y 各兩次：
+# 死巷（M..M）是內圈，整個街廓（X..X）是外圈。
+EDIT_NEST_X = 0.0
+EDIT_NEST_MAP: list[MeterWay] = [
+    MeterWay(11001, _shift([(0.0, 0.0), (200.0, 0.0), (300.0, 0.0), (500.0, 0.0)], EDIT_NEST_X), RESIDENTIAL),
+    MeterWay(11002, _shift([(200.0, 0.0), (200.0, 120.0), (250.0, 120.0), (300.0, 120.0), (300.0, 0.0)], EDIT_NEST_X),
+             RESIDENTIAL),
+    MeterWay(11003, _shift([(250.0, 120.0), (250.0, 180.0)], EDIT_NEST_X), RESIDENTIAL),
+]
+
+
+def _one_way_block(x: float, first_id: int, one_way: list[tuple[float, float]], tags: dict[str, str]) -> list[MeterWay]:
+    """東西向的街 (0, 0)–(600, 0)，200–400 m 是只能往西的單行道（one_way 的節點順序＋tags）；40 m 南有雙向的平行路，
+    0、200、400、600 m 有連絡道；平行路再往南 80 m 有一條 200–400 m 的繞路。往東騎最近的是逆向走單行道，合法的是走平行路。"""
+    return [
+        MeterWay(first_id, _shift([(0.0, 0.0), (200.0, 0.0)], x), RESIDENTIAL),
+        MeterWay(first_id + 1, _shift(one_way, x), {**RESIDENTIAL, **tags}),
+        MeterWay(first_id + 2, _shift([(400.0, 0.0), (600.0, 0.0)], x), RESIDENTIAL),
+        MeterWay(first_id + 3, _shift([(0.0, -40.0), (200.0, -40.0), (400.0, -40.0), (600.0, -40.0)], x), RESIDENTIAL),
+        *[MeterWay(first_id + 4 + i, _shift([(c, 0.0), (c, -40.0)], x), RESIDENTIAL)
+          for i, c in enumerate((0.0, 200.0, 400.0, 600.0))],
+        MeterWay(first_id + 8, _shift([(200.0, -40.0), (200.0, -120.0), (400.0, -120.0), (400.0, -40.0)], x), RESIDENTIAL),
+    ]
+
+
+EDIT_ONEWAY_YES_X = 10_000.0
+EDIT_ONEWAY_YES_WAY_ID = 12001  # oneway=yes、畫成往西
+EDIT_ONEWAY_REVERSE_X = 11_000.0
+EDIT_ONEWAY_REVERSE_WAY_ID = 12101  # oneway=-1、畫成往東
+EDIT_ONEWAY_MAP: list[MeterWay] = [
+    *_one_way_block(EDIT_ONEWAY_YES_X, EDIT_ONEWAY_YES_WAY_ID - 1, [(400.0, 0.0), (200.0, 0.0)], {"oneway": "yes"}),
+    *_one_way_block(EDIT_ONEWAY_REVERSE_X, EDIT_ONEWAY_REVERSE_WAY_ID - 1, [(200.0, 0.0), (400.0, 0.0)], {"oneway": "-1"}),
+]
+
+# 貼圖形：目標往東 1000 m，中間 300–700 m 往北凸 100 m；路網是直路加上一條沿著凸起的路。最短路走直路。
+EDIT_SHAPE_X = 20_000.0
+EDIT_SHAPE_TARGET = _shift([(0.0, 0.0), (300.0, 0.0), (400.0, 100.0), (600.0, 100.0), (700.0, 0.0), (1000.0, 0.0)],
+                           EDIT_SHAPE_X)
+EDIT_SHAPE_MAP: list[MeterWay] = [
+    MeterWay(13001, _shift([(float(x), 0.0) for x in (0, 200, 300, 700, 800, 1000)], EDIT_SHAPE_X), RESIDENTIAL),
+    MeterWay(13002, _shift([(300.0, 0.0), (400.0, 100.0), (600.0, 100.0), (700.0, 0.0)], EDIT_SHAPE_X), RESIDENTIAL),
+]
+
+# 拖曳：東西向的直路 (0, 0)–(1200, 0)；北邊 60 m 有一條平行路，在 450、750 m 接回直路。
+EDIT_DRAG_X = 30_000.0
+EDIT_DRAG_MAP: list[MeterWay] = [
+    MeterWay(14001, _shift([(float(x), 0.0) for x in (0, 200, 400, 450, 600, 750, 800, 1000, 1200)], EDIT_DRAG_X),
+             RESIDENTIAL),
+    MeterWay(14002, _shift([(450.0, 0.0), (450.0, 60.0), (600.0, 60.0), (750.0, 60.0), (750.0, 0.0)], EDIT_DRAG_X),
+             RESIDENTIAL),
+]
+
+EDIT_MAPS: list[MeterWay] = [*EDIT_NEST_MAP, *EDIT_ONEWAY_MAP, *EDIT_SHAPE_MAP, *EDIT_DRAG_MAP]
