@@ -7,7 +7,9 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from engine.bench import runner
 from engine.bench.cases import CASES
+from engine.bench.options import add_router_options, describe_router_options, router_options
 from engine.bench.runner import (
     SAFETY_ERRORS,
     CaseResult,
@@ -15,8 +17,8 @@ from engine.bench.runner import (
     compare,
     format_header,
     format_row,
-    is_legacy,
     load_baseline,
+    older_entries,
     run_cases,
     summarize,
 )
@@ -35,6 +37,8 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--force", action="store_true", help="搭配 --update-baseline：有案例失敗時仍寫入（安全斷言沒過的案例除外）"
     )
+    parser.add_argument("--svg-dir", type=Path, help="每個案例寫一張 SVG（疊圖＋縮圖）到這個目錄，不存在就建立")
+    add_router_options(parser)
     args = parser.parse_args(argv)
     if args.force and not args.update_baseline:
         parser.error("--force 只能搭配 --update-baseline")
@@ -68,9 +72,11 @@ def _check_baseline(args: argparse.Namespace, results: list[CaseResult]) -> None
         sys.exit(str(error))
     for note in case_set_changes(results, baseline):
         print(f"提示：{note}")
-    legacy = sum(is_legacy(baseline[r.name]) for r in results if r.name in baseline)
-    if legacy:
-        print(f"提示：baseline 有 {legacy} 個案例是 v1 評分，這些案例以本次路線的 v1 分數（表格的 v1 欄）比較；確認分數沒有下降後用 --update-baseline 換成 v2")
+    for version, count in sorted(older_entries(results, baseline).items()):
+        print(
+            f"提示：baseline 有 {count} 個案例是 v{version} 評分，這些案例以本次路線的 v{version} 分數（表格的 v{version} 欄）比較；"
+            f"確認分數沒有下降後用 --update-baseline 換成 v{runner.SCORE_VERSION}"
+        )
     problems = compare(results, baseline)
     for p in problems:
         print(f"退步：{p}")
@@ -87,12 +93,18 @@ def main(argv: list[str] | None = None) -> None:
         denied_ids = frozenset(d.id for d in load_denied(build))
     except (OSError, ValueError, KeyError, TypeError) as error:  # 沒有禁行清單就無法檢查安全：不跑，不能空洞通過
         sys.exit(f"讀不到 {build / DENIED_FILE}，無法檢查路線是否經過禁行路段：{error}")
-    router = Router.from_build(build)
+    options = router_options(args)
+    # 同一個 Router 也做安全斷言：兩個參數只影響 trace 的 map_snap（吸附）；安全斷言用的 route 不經過 meili、
+    # edges 是 edge_walk（逐點對上路段形狀，不用 sigma_z），都不受影響
+    router = Router.from_build(build, **options)
 
+    print(describe_router_options(options), flush=True)
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)
     print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way、接點轉彎能直接騎；沒過的案例算失敗。", flush=True)
     print(format_header(), flush=True)
-    results = run_cases(router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True))
+    results = run_cases(
+        router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True), svg_dir=args.svg_dir
+    )
     print(summarize(results), flush=True)
 
     if args.update_baseline:
