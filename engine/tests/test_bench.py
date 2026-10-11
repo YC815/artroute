@@ -980,3 +980,29 @@ def test_cli_update_baseline_only_with_production_settings(fake_run: FakeRun, fl
         fake_run([result("a", 80)], "--update-baseline", *flags)
     assert refused.value.code == 2
     assert not fake_run.baseline.exists()
+
+
+# ---- --quality fine（PR B）：描形規劃器，需要 current build 的路網圖 ----
+
+
+def test_cli_quality_fine_loads_the_graph_and_passes_it(fake_run: FakeRun, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    graph = object()
+    monkeypatch.setattr(bench_cli, "RideGraph", SimpleNamespace(load=lambda build: graph))
+    fake_run.baseline.write_text("{}")
+    fake_run([], "--quality", "fine")
+    assert fake_run.match_options == [{"quality": "fine", "graph": graph}]
+    assert "quality fine" in capsys.readouterr().out
+
+
+def test_cli_quality_fine_without_a_graph_exits(fake_run: FakeRun) -> None:
+    fake_run.baseline.write_text("{}")
+    with pytest.raises(SystemExit) as stopped:
+        fake_run([], "--quality", "fine")  # 假的 build 沒有路網圖
+    assert "路網圖" in str(stopped.value.code)
+    assert fake_run.match_options == []
+
+
+def test_cli_update_baseline_refuses_quality_fine(fake_run: FakeRun) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80)], "--update-baseline", "--quality", "fine")
+    assert refused.value.code == 2

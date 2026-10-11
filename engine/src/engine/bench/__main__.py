@@ -31,6 +31,7 @@ from engine.bench.runner import (
 )
 from engine.data.build import DENIED_FILE, load_denied
 from engine.data.layout import DataLayout
+from engine.planner.graph import GraphDataMissing, RideGraph
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router
 
 DEFAULT_BASELINE = Path(__file__).with_name("baseline.json")
@@ -46,10 +47,10 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--svg-dir", type=Path, help="每個案例寫一張 SVG（疊圖＋縮圖）到這個目錄，不存在就建立")
     add_router_options(parser)
-    add_match_options(parser)
+    add_match_options(parser, quality=True)
     args = parser.parse_args(argv)
-    if args.update_baseline and (args.no_prune or args.turn_penalty_factor != FAST_TURN_PENALTY_FACTOR or args.sigma_z is not None):
-        parser.error("--update-baseline 只能用正式環境的吸附參數（不能搭配 --no-prune、--turn-penalty-factor、--sigma-z）")
+    if args.update_baseline and (args.no_prune or args.quality != "fast" or args.turn_penalty_factor != FAST_TURN_PENALTY_FACTOR or args.sigma_z is not None):
+        parser.error("--update-baseline 只能用正式環境的吸附參數（不能搭配 --no-prune、--quality fine、--turn-penalty-factor、--sigma-z）")
     if args.force and not args.update_baseline:
         parser.error("--force 只能搭配 --update-baseline")
     return args
@@ -109,6 +110,11 @@ def main(argv: list[str] | None = None) -> None:
     router = Router.from_build(build, **options)
 
     matching = match_options(args)
+    if matching.get("quality") == "fine":
+        try:
+            matching["graph"] = RideGraph.load(build)
+        except GraphDataMissing as error:
+            sys.exit(f"目前的 build 沒有路網圖（要重建路網），跑不了 --quality fine：{error}")
     print(describe_router_options(options), flush=True)
     print(describe_match_options(matching), flush=True)
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)

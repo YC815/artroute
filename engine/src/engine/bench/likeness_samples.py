@@ -36,6 +36,7 @@ from engine.matching.deadline import Deadline
 from engine.matching.score import rank, score_v2
 from engine.matching.service import MatchResult, match_shape
 from engine.matching.types import MatchRouter, StartHint
+from engine.planner.graph import GraphDataMissing, RideGraph
 from engine.routing.router import Router
 from engine.search.geometry import place
 from engine.search.roads import RoadDataMissing, RoadIndex
@@ -58,16 +59,17 @@ class Variant:
     router: dict[str, Any]
     match: dict[str, Any]
     description: str
+    needs_graph: bool = False  # match_shape 要帶 current build 的路網圖（quality="fine"）
 
 
-# PR B 加 "F": Variant({}, {"quality": "fine"}, "規劃器") 與 ALWAYS_PAIRS 的 ("F", "Q2")
 VARIANTS: dict[str, Variant] = {
     "Q2": Variant({}, {}, "現行預設（turn_penalty_factor 用 Router 預設、剪小刺）"),
     "P2": Variant({"turn_penalty_factor": None}, {"prune": False}, "改前（不帶 turn_penalty_factor、不剪小刺）"),
+    "F": Variant({}, {"quality": "fine"}, "描形規劃器（quality=fine）", needs_graph=True),
 }
-DEFAULT_VARIANTS = "Q2,P2"
+DEFAULT_VARIANTS = "Q2,P2,F"
 # 同一個擺放、兩個變體的配對（每個名次一組）：一律保留（不看差距），與只留差距 ≥ 門檻的
-ALWAYS_PAIRS: list[tuple[str, str]] = []
+ALWAYS_PAIRS: list[tuple[str, str]] = [("F", "Q2")]  # 現行 vs 規劃器：不論差距都要使用者的看法
 GAP_PAIRS: list[tuple[str, str]] = [("Q2", "P2")]
 # 不同擺放的配對：只留差距 ≥ 門檻的
 CROSS_PAIRS: list[tuple[RouteKey, RouteKey]] = [(("Q2", 0), ("Q2", 2))]
@@ -90,8 +92,16 @@ def variant_routers(build: Path, names: Sequence[str]) -> dict[str, Router]:
     return {name: Router.from_build(build, **VARIANTS[name].router) for name in names}
 
 
-def match_variant(router: MatchRouter, case: SearchCase, placement: Placement, name: str) -> MatchResult:
-    """同 bench/likeness 的做法：擺放 → place → match_shape，帶與搜尋相同的起點提示。"""
+def match_variant(
+    router: MatchRouter, case: SearchCase, placement: Placement, name: str, graph: RideGraph | None = None
+) -> MatchResult:
+    """同 bench/likeness 的做法：擺放 → place → match_shape，帶與搜尋相同的起點提示。
+    需要路網圖的變體（F）一定要給 graph：沒有圖時 match_shape 會悄悄退回 fast，標註就變成 fast 對 fast。"""
+    extra: dict[str, Any] = {}
+    if VARIANTS[name].needs_graph:
+        if graph is None:
+            raise ValueError(f"變體 {name} 需要路網圖")
+        extra["graph"] = graph
     return match_shape(
         router,
         place(case.strokes, placement),
@@ -99,6 +109,7 @@ def match_variant(router: MatchRouter, case: SearchCase, placement: Placement, n
         deadline=Deadline(MATCH_TIMEOUT_S),
         start=StartHint(case.center, case.radius_m),
         **VARIANTS[name].match,
+        **extra,
     )
 
 
@@ -162,6 +173,7 @@ def sample_case(
     routers: dict[str, MatchRouter],
     checker: MatchRouter,
     denied_ids: frozenset[int],
+    graph: RideGraph | None = None,
 ) -> dict:
     """一個案例：每個擺放（名次）× 每個變體吸附一次。吸附失敗記 {variant, rank, error}；安全斷言沒過的在 stderr 警告。"""
     entry: dict = {
@@ -176,7 +188,11 @@ def sample_case(
         for name, router in routers.items():
             started = time.monotonic()
             try:
-                result = match_variant(router, case, placement, name)
+                result = (
+                    match_variant(router, case, placement, name, graph)
+                    if VARIANTS[name].needs_graph
+                    else match_variant(router, case, placement, name)
+                )
             except Exception as error:  # noqa: BLE001  一條路線失敗不擋住其他路線
                 entry["routes"].append({"variant": name, "rank": rank_index, "error": type(error).__name__})
                 continue
@@ -487,6 +503,12 @@ def _samples(args: argparse.Namespace) -> None:
     except (OSError, ValueError, KeyError, TypeError) as error:
         sys.exit(f"讀不到 {build / DENIED_FILE}，無法檢查安全：{error}")
     cases = [c for c in SEARCH_CASES if not args.case or any(s in c.name for s in args.case)]
+    graph = None
+    if any(VARIANTS[name].needs_graph for name in args.variants):
+        try:
+            graph = RideGraph.load(build)
+        except GraphDataMissing as error:
+            sys.exit(f"目前的 build 沒有路網圖（要重建路網），跑不了 F：{error}")
     routers = variant_routers(build, args.variants)
     checker = Router.from_build(build)  # 安全斷言用的 route、edges 不受吸附參數影響
     search_routers = int(os.environ.get("SEARCH_ROUTERS", "2"))
@@ -504,7 +526,7 @@ def _samples(args: argparse.Namespace) -> None:
             error = None
         except Exception as e:  # noqa: BLE001  一個案例失敗不擋住其他案例
             placements, error = [], type(e).__name__
-        entry = sample_case(case, placements, routers, checker, denied_ids)
+        entry = sample_case(case, placements, routers, checker, denied_ids, graph)
         if error:
             entry["error"] = error
         entries.append(entry)
