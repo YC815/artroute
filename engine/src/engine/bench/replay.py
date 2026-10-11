@@ -16,6 +16,7 @@ from engine.routing.geo import EARTH_RADIUS_M, haversine_m, polyline_length_m
 from engine.routing.router import EdgeInfo, LonLat, RoutingError
 
 REPLAY_SAMPLE_M = 0.5  # 量距離時，折線上取樣點的最大間距：取樣比容許誤差（1 m）稀疏就會漏掉中間的偏離
+MAX_REPLAY_WIDEN = 3  # 重現不出來時，範圍前後各擴一個點再試的次數上限（每次多一次 route）
 
 
 class ReplayRouter(MatchRouter, Protocol):
@@ -89,13 +90,24 @@ def _replay_range(points: Sequence[LonLat], begin: object, end: object) -> tuple
 
 
 def _route_is_legal(router: ReplayRouter, route: Sequence[LonLat], denied_ids: frozenset[int]) -> bool:
-    """重現出來的路線自己也要通過檢查：不經過被禁行的 way、不逆向、方向判斷得出來。
-    未修補的路網（對照組）上 Valhalla 的 route 會沿被禁行的 way 走，只比對幾何會把真的違規放行。"""
+    """重現出來的路線不經過被禁行的 way：未修補的路網（對照組）上 Valhalla 的 route 會沿被禁行的 way 走，
+    只比對幾何會把真的違規放行。方向不查：route 本身遵守單行，對它的逆向判定只可能是 edge_walk 又配錯
+    （真實路網實測：與自行車道共用節點的單行道，重現路線一樣被判逆向，查方向會讓誤報永遠消不掉）。"""
     try:
         edges = router.edges(list(route))
     except RoutingError:
         return False
-    return bool(edges) and all(e.way_id not in denied_ids and e.wrong_way is False for e in edges)
+    return bool(edges) and all(e.way_id not in denied_ids for e in edges)
+
+
+def _reproduces(router: ReplayRouter, piece: list[LonLat], denied_ids: frozenset[int]) -> bool:
+    try:
+        route = router.route(piece[0], piece[-1]).points
+    except RoutingError:
+        return False
+    if len(set(route)) < 2 or not same_geometry(piece, route):
+        return False
+    return _route_is_legal(router, route, denied_ids)
 
 
 def legal_replay(
@@ -107,17 +119,20 @@ def legal_replay(
 ) -> bool:
     """points[begin..end]（被 edge_walk 判成禁行或逆向的那條 edge 的範圍）能不能被合法的路線重現。
 
-    用 router.route(起點, 終點)（bicycle，遵守單行與禁行）規劃一次；route 丟 RoutingError、少於 2 個不同的點、
-    路線自己不合法（_route_is_legal），或與該段折線不是同一個幾何（same_geometry：雙向 ≤ 1 m、長度差 ≤ 1 m），
-    都回傳 False。範圍缺漏、越界、太短也是 False：重現不了就算不安全。"""
+    用 router.route(起點, 終點)（bicycle，遵守單行與禁行）規劃；route 丟 RoutingError、少於 2 個不同的點、
+    路線經過被禁行的 way（_route_is_legal），或與該段折線不是同一個幾何（same_geometry：雙向 ≤ 1 m、長度差 ≤ 1 m），
+    就把範圍前後各擴一個點再試，最多 MAX_REPLAY_WIDEN 次：從兩條 way 共用的節點出發時 Valhalla 可能選錯起始的 edge
+    而繞一大圈（真實路網實測），擴大後就重合。擴大是安全的：整段都被合法路線重合，其中被判違規的那一小段也在合法的幾何上。
+    範圍缺漏、越界、太短，或擴到上限仍重現不了，都回傳 False：重現不了就算不安全。"""
     span = _replay_range(points, begin, end)
     if span is None:
         return False
-    piece = list(points[span[0] : span[1] + 1])
-    try:
-        route = router.route(piece[0], piece[-1]).points
-    except RoutingError:
-        return False
-    if len(set(route)) < 2 or not same_geometry(piece, route):
-        return False
-    return _route_is_legal(router, route, denied_ids)
+    tried: set[tuple[int, int]] = set()
+    for widen in range(MAX_REPLAY_WIDEN + 1):
+        first, last = max(0, span[0] - widen), min(len(points) - 1, span[1] + widen)
+        if (first, last) in tried:
+            break
+        tried.add((first, last))
+        if _reproduces(router, list(points[first : last + 1]), denied_ids):
+            return True
+    return False

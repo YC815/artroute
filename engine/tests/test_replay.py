@@ -126,16 +126,46 @@ def test_a_failed_route_leaves_it_unsafe(kind: str) -> None:
 
 @KINDS
 @pytest.mark.parametrize("route_edges", [
-    [EdgeInfo(5, 0.0, wrong_way=True)],   # 重現出來的路線自己逆向（例如沒修補的路網沿被禁行的 way 走）
-    [EdgeInfo(9, 0.0)],                   # 經過被禁行的 way
-    [EdgeInfo(77, 0.0, wrong_way=None)],  # 方向判斷不了
+    [EdgeInfo(9, 0.0)],                   # 經過被禁行的 way（例如沒修補的路網沿快速道路走）
     [],                                   # 配不到任何路段
     RoutingError("edge_walk 配不上"),
-], ids=["wrong-way", "denied", "unknown", "empty", "error"])
+], ids=["denied", "empty", "error"])
 def test_a_route_that_is_itself_not_provably_legal_leaves_it_unsafe(kind: str, route_edges) -> None:
     router = ReplayRouter([flagged(kind)], fixed(straight(40.0, 60.0, 10.0)), route_edges)
     problem = run(router)
     assert problem is not None and problem[0] == UNSAFE
+
+
+@KINDS
+@pytest.mark.parametrize("route_edges", [
+    [EdgeInfo(5, 0.0, wrong_way=True)],
+    [EdgeInfo(77, 0.0, wrong_way=None)],
+], ids=["wrong-way", "unknown"])
+def test_the_direction_edge_walk_reports_for_the_legal_route_itself_is_ignored(kind: str, route_edges) -> None:
+    """route 遵守單行：它被判逆向只可能是 edge_walk 又配錯（真實路網：與自行車道共用節點的單行道）。"""
+    router = ReplayRouter([flagged(kind)], fixed(straight(40.0, 60.0, 10.0)), route_edges)
+    assert run(router) is None
+
+
+@KINDS
+def test_a_range_the_route_cannot_reproduce_is_widened_until_it_does(kind: str) -> None:
+    """從共用節點出發時 route 可能繞一大圈；前後各擴一個點後重合，就豁免。"""
+    detour = line((40.0, 0.0), (40.0, 30.0), (60.0, 30.0), (60.0, 0.0))
+    router = ReplayRouter([flagged(kind)], lambda a, b: detour if a == POINTS[2] else [a, b])
+    assert run(router) is None
+    assert router.route_calls == [(POINTS[2], POINTS[3]), (POINTS[1], POINTS[4])]
+
+
+def test_widening_stops_after_the_limit_and_at_both_ends() -> None:
+    detour = line((0.0, 0.0), (0.0, 30.0), (100.0, 30.0), (100.0, 0.0))
+    router = ReplayRouter([flagged("wrong")], fixed(detour))
+    problem = run(router)
+    assert problem is not None and problem[0] == UNSAFE
+    assert router.route_calls == [(POINTS[2], POINTS[3]), (POINTS[1], POINTS[4]), (POINTS[0], POINTS[5])]
+    long_line = straight(0.0, 200.0, 20.0)  # 11 個點：擴 3 次還碰不到頭尾
+    router = ReplayRouter([flagged("wrong", 5, 6)], fixed(detour))
+    assert run(router, long_line) is not None
+    assert router.route_calls == [(long_line[5 - k], long_line[6 + k]) for k in range(4)]
 
 
 @KINDS
@@ -250,7 +280,13 @@ def test_align_shape_ignores_the_zero_length_trailing_edge_but_not_a_different_s
     assert _align_shape(shape, shape) == [0, 1, 2]
     assert _align_shape(shape + [shape[-1]], shape) == [0, 1, 2, 2]  # 終點是路口時回應尾端多一個重複的終點
     assert _align_shape(shape[:2], shape) is None
-    assert _align_shape([shape[0], line((10.0, 3.0))[0], shape[2]], shape) is None  # 少一個點、換一個點都不行
+    assert _align_shape([shape[0], line((10.0, 6.0))[0], shape[2]], shape) is None  # 少一個點、換一個點都不行
+
+
+def test_align_shape_accepts_a_point_pulled_onto_the_overlapping_way_next_to_it() -> None:
+    # 真實路網（hi@taipei_daan）：edge_walk 把一個點拉到旁邊重疊 footway 的節點上，差 1.9 m，點數不變
+    shape = straight(0.0, 20.0, 10.0)
+    assert _align_shape([shape[0], line((10.0, 1.9))[0], shape[2]], shape) == [0, 1, 2]
 
 
 def test_edge_span_maps_ranges_back_to_points_with_repeated_vertices() -> None:

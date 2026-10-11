@@ -22,7 +22,9 @@ MAX_SNAP_GAP_RADII = 2  # 吸附結果、route 端點離原始輸入點的上限
 # 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
 ROUTE_NODE_SNAP_TOLERANCE_M = 0
 CACHE_SIZE_BYTES = 256 * 1024 * 1024  # 每個 worker 各有一份 tile 快取（Valhalla 預設 1 GB）
-_SHAPE_ALIGN_M = 0.5  # edge_walk 回應的形狀與輸入逐點對得上的容許誤差（polyline6 編碼本身的誤差約 0.1 m）
+# edge_walk 回應的形狀與輸入逐點對應的容許距離。回應的點可能落在旁邊重疊 way 的節點上（真實路網實測 1.9 m），
+# 點數仍一一對應；合法重現量的是輸入折線本身，這裡只防止整個對錯位
+_SHAPE_ALIGN_M = 5.0
 # fast 吸附的轉彎懲罰（唯一定義處）。依據 P2.5 spec §5.1：使用者盲測 V2（加 500）對現行 2 勝 0 負 10 平，
 # 減少鑽進旁邊巷子又退出來的小刺。不帶時由 meili 設定決定（設定檔的 bicycle 模式是 140）
 FAST_TURN_PENALTY_FACTOR = 500.0
@@ -72,7 +74,7 @@ def _wrong_way(edge: dict) -> bool | None:
 def _align_shape(matched: list[LonLat], shape: list[LonLat]) -> list[int] | None:
     """回應形狀（matched）的每個點對到輸入形狀（shape，已去重）的第幾個點；對不上回傳 None。
     實測：edge_walk 的形狀就是輸入的形狀，但路徑終點是路口時，回應尾端會多一條長度 0 的 edge，形狀多一個重複的終點，
-    所以先去掉 matched 的連續重複點再逐點比對（容許 _SHAPE_ALIGN_M 的編碼誤差）。"""
+    所以先去掉 matched 的連續重複點再逐點比對（容許 _SHAPE_ALIGN_M）。"""
     index: list[int] = []
     deduped: list[LonLat] = []
     for point in matched:
