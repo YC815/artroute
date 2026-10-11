@@ -2,7 +2,7 @@
 
 順序與封閉圈的進出點用直線距離估計（貪婪 + 2-opt），選定後只對實際用到的接點呼叫 route。
 排序是純 Python 的 CPU 計算：貪婪每接一個部件、2-opt 每一列各檢查一次期限與取消。
-組裝從 stroke 長度最長的部件開始往兩端接（見 compose）。
+組裝從 stroke 長度最長的部件開始往兩端接（見 compose）；接不上原定那一端的部件等其他部件接完再補（見 _assemble）。
 開放部件可以反向走（Part.reversible）：反向是以倒過來的輸入點重新吸附，不是把現成路線倒過來。
 """
 
@@ -197,18 +197,39 @@ def _attach(
     return connect(router, deadline, body, route, "connector", None)
 
 
+def _end(route: list[Segment], at_end: bool) -> LonLat:
+    return route[-1].points[-1] if at_end else route[0].points[0]
+
+
+def _retry(
+    router: MatchRouter, deadline: Deadline, route: list[Segment], body: list[Segment], at_end: bool, tried: LonLat
+) -> list[Segment] | None:
+    """擱著的部件：原定那一端後來接了別的部件（端點換了）才再試一次，端點沒換就是同一個接點、結果一樣；再試另一端。"""
+    if _end(route, at_end) != tried:
+        joined = _attach(router, deadline, route, body, at_end)
+        if joined is not None:
+            return joined
+    return _attach(router, deadline, route, body, not at_end)
+
+
 def _assemble(
     router: MatchRouter, deadline: Deadline, bodies: dict[int, list[Segment]], order: list[int], anchor: int
 ) -> Composition:
     """從錨點開始組裝：order 裡排在錨點後面的依序接在尾端，排在前面的由近到遠接在開頭。
-    原定那一端接不上就試另一端，兩端都接不上才丟：一個出不去的端點只擋住接在它後面的那一次。"""
+    原定那一端接不上的部件先擱著，其他部件照規劃接完之後再補（_retry），兩端都接不上才丟：
+    一個出不去的端點只擋住接在它後面的那一次。不能立刻改接另一端：那會佔掉規劃中接在那一端的部件的位置
+    （網站預設文字：只出得去、進不來的 106 m 部件被搬到開頭，排第一的「I」只好橫越整張圖接到尾巴）。"""
     k = order.index(anchor)
-    route, dropped = list(bodies[anchor]), []  # 沒有其他部件可接時也回新的 list，不與輸入共用
+    route, deferred, dropped = list(bodies[anchor]), [], []  # 沒有其他部件可接時也回新的 list，不與輸入共用
     sides = [(i, True) for i in order[k + 1 :]] + [(i, False) for i in reversed(order[:k])]
     for i, at_end in sides:
         joined = _attach(router, deadline, route, bodies[i], at_end)
         if joined is None:
-            joined = _attach(router, deadline, route, bodies[i], not at_end)
+            deferred.append((i, at_end, _end(route, at_end)))
+        else:
+            route = joined
+    for i, at_end, tried in deferred:
+        joined = _retry(router, deadline, route, bodies[i], at_end, tried)
         if joined is None:
             dropped.append(i)
         else:
@@ -230,7 +251,7 @@ def _body(part: Part, option: _Option, rematch: Rematch, index: int) -> list[Seg
 def compose(router: MatchRouter, parts: list[Part], deadline: Deadline, rematch: Rematch = _no_rematch) -> Composition:
     """依規劃的順序串起各部件；順序與封閉圈進出點的規劃不變。
 
-    組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），接不上的部件丟棄。
+    組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），兩端都接不上的部件丟棄。
     舊版固定從第 0 個部件往後接：它的尾巴 route 不出去時，其餘部件全部被丟掉（ledger L64）。
     沒有部件被丟掉時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同。
     開放部件可能反向走（見 Part.reversible）：規劃的進出點本來就從各部件的選項挑最近的，反向選項自動被考慮。

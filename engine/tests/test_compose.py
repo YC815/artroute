@@ -482,6 +482,56 @@ def test_anchor_counts_matched_stroke_length_not_detour_length() -> None:
     assert result.segments == [clean]
 
 
+# ---- P1.5 Task 13（決策 A7）：接不上原定那一端的部件先擱著，其他部件照規劃接完再補 ----
+
+
+class NoEntryRouter(StraightRouter):
+    """終點在 no_entry 的 route 都停在 7 m 外的平行道路上（像網站預設文字筆畫 12 的 ramp：出得去、進不來）；其餘走直線。"""
+
+    def __init__(self, no_entry) -> None:
+        super().__init__()
+        self.no_entry = no_entry
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if end in self.no_entry:
+            beside = (end[0], end[1] + 7 / 110_574)
+            return RouteResult(points=[start, beside], length_km=haversine_m(start, beside) / 1000)
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_part_that_cannot_be_entered_does_not_take_the_place_of_the_planned_head() -> None:
+    # 規劃 0 → 1 → 2 → 3，錨點 1。3 進不去：舊版立刻把 3 接到開頭，0 接開頭也得進 3，
+    # 只好橫越整張圖接到尾巴（strokes 3, 1, 2, 0）。改成 3 先擱著：0 照規劃接在 1 前面，3 最後接在 0 前面。
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    middle = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    ramp = seg([(121.550 + 0.001 * k, LAT) for k in range(6)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([middle], False), Part([ramp], False)]
+    result = compose(NoEntryRouter(no_entry=frozenset(ramp.points)), parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [3, 0, 1, 2]
+    assert_continuous(result.segments)
+    links = [(s.points[0], s.points[-1]) for s in result.segments if s.kind == "connector"]
+    assert links == [  # 0 → 1 → 2 的接點與規劃相同；多出來的只有 3 出發的那一條
+        (ramp.points[-1], head.points[0]),
+        (head.points[-1], anchor.points[0]),
+        (anchor.points[-1], middle.points[0]),
+    ]
+
+
+def test_part_that_still_cannot_be_attached_after_the_others_is_dropped() -> None:
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    island = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    tail = seg([(121.55, LAT), (121.555, LAT)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([island], False), Part([tail], False)]
+    result = compose(IslandStraightRouter(island=frozenset(island.points)), parts, Deadline(10))
+    assert result.dropped == [2]
+    assert strokes_in(result) == [0, 1, 3]
+    assert_continuous(result.segments)
+
+
 # ---- P1.5 Task 9：開放筆畫可以反向走（以反向的點重新吸附，不是把路線倒過來） ----
 
 
