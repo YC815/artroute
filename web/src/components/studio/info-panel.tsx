@@ -26,7 +26,13 @@ type Props = {
   routeVariant: RouteVariant;
   onRouteVariantChange: (variant: RouteVariant) => void;
   refineStatus: RefineStatus;
-  /** 路線是目前這個擺放的、可以下載 GPX（見 canDownloadGpx）。 */
+  /** pending 時 badge 的文字：吸附中、微調中。 */
+  pendingLabel: string;
+  /** 畫面上是微調後的路線（微調中，或按了「完成」之後還留著）：response 就是微調後的。 */
+  edited: boolean;
+  /** 進入微調（或回到微調）的按鈕；微調中（工具列在地圖上）不需要時是 null。 */
+  editAction: { label: string; disabled: boolean; onClick: () => void; /** 停用的原因（沒有簽章等）。 */ note?: string } | null;
+  /** 路線是畫面上這一條、可以下載 GPX（即時吸附的要屬於目前擺放，見 canDownloadGpx；微調後的路線永遠是）。 */
   downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
   warnings: readonly MatchWarning[];
@@ -76,11 +82,13 @@ const LEGEND = [
   { label: "路線", className: "border-t-4 border-blue-600" },
   { label: "繞路（禁行或單行道）", className: "border-t-[6px] border-orange-500" },
   { label: "連接線", className: "border-t-[3px] border-dotted border-slate-400" },
+  { label: "微調換上的段", className: "border-t-[5px] border-dashed border-slate-800" },
   { label: "吸附失敗的筆畫", className: "border-t-[3px] border-dashed border-red-600" },
 ];
 
 export function InfoPanel(props: Props) {
   const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion } = props;
+  const { pendingLabel, edited, editAction } = props;
   const {
     workName,
     startDistance,
@@ -108,7 +116,7 @@ export function InfoPanel(props: Props) {
         {/* 「吸附中…」優先：fast 在途時描形版一定已被取消或還沒送 */}
         <div role="status">
           {pending ? (
-            <Badge variant="secondary">吸附中…</Badge>
+            <Badge variant="secondary">{pendingLabel}</Badge>
           ) : (
             refineStatus === "refining" && <Badge variant="secondary">描形版計算中…</Badge>
           )}
@@ -136,7 +144,16 @@ export function InfoPanel(props: Props) {
           </Button>
         </div>
       )}
+      {editAction && (
+        <div className="flex flex-col gap-1">
+          <Button type="button" variant="outline" disabled={editAction.disabled} onClick={editAction.onClick}>
+            {editAction.label}
+          </Button>
+          {editAction.note && <p className="text-xs text-muted-foreground">{editAction.note}</p>}
+        </div>
+      )}
       <div className="flex flex-col gap-1">
+        {edited && <Row label="路線" value="已微調" />}
         <Row label="目標長度" value={targetLengthM === null ? "—" : formatDistance(targetLengthM)} />
         <Row label="路線長度" value={response ? formatDistance(response.route.length_m) : "—"} />
         <Row label="覆蓋" value={score ? `${score.coverage}%` : "—"} />

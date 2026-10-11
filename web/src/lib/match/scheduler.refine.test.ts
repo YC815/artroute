@@ -349,6 +349,28 @@ describe("放開後的描形版（fine）", () => {
     expect(calls[2].request).toEqual({ ...r, quality: "fine" });
   });
 
+  it("微調模式（studio 以 cancel 停掉吸附）：在途的 fast 晚到不套用", async () => {
+    const { scheduler, calls, onOutcome, onRefined, fineCalls } = setup();
+    scheduler.schedule(req(1), false);
+    scheduler.cancel();
+    calls[0].resolve(FAST);
+    await flush();
+    expect(onOutcome).not.toHaveBeenCalled();
+    expect(onRefined).not.toHaveBeenCalled();
+    expect(fineCalls()).toHaveLength(0);
+  });
+
+  it("微調模式：在途的 fine 晚到（send 不理會 abort）也不套用", async () => {
+    const { scheduler, calls, onRefined } = setup();
+    scheduler.schedule(req(1), false);
+    calls[0].resolve(FAST);
+    await flush();
+    scheduler.cancel();
+    calls[1].resolve(FINE);
+    await flush();
+    expect(onRefined).not.toHaveBeenCalled();
+  });
+
   it("cancel：fine 失敗的提示一併清掉", async () => {
     const { scheduler, calls, statuses } = setup();
     scheduler.schedule(req(1), false);

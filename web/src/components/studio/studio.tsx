@@ -3,19 +3,31 @@
 import { X } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useState } from "react";
+import { fitMapToRoute } from "@/components/map/fit-route";
 import { MapView } from "@/components/map/map-view";
+import { RouteEditLayer } from "@/components/map/route-edit-layer";
 import { ShapeOverlay } from "@/components/map/shape-overlay";
 import { ImageSource } from "@/components/source/image-source";
 import { TextSource } from "@/components/source/text-source";
+import { DraftsPanel } from "@/components/studio/drafts-panel";
+import { EditToolbar } from "@/components/studio/edit-toolbar";
 import { EngineBanner } from "@/components/studio/engine-banner";
 import { InfoPanel } from "@/components/studio/info-panel";
+import { ReverifyNotice } from "@/components/studio/reverify-notice";
 import { SearchPanel } from "@/components/studio/search-panel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useDrafts } from "@/hooks/use-drafts";
 import { useEngineStatus } from "@/hooks/use-engine-status";
 import { useLiveMatch } from "@/hooks/use-live-match";
+import { useReverify } from "@/hooks/use-reverify";
+import { useRouteEdit } from "@/hooks/use-route-edit";
 import { useSearch } from "@/hooks/use-search";
-import type { SearchCandidate } from "@/lib/engine/contract";
+import { isNewerBuild, isOutdatedRoute, newestBuild, outdatedLabel } from "@/lib/drafts/draft-info";
+import { routeFromResponse, signedOf } from "@/lib/edit/edit-bridge";
+import type { DraftNotice } from "@/lib/edit/edit-hint";
+import { createEditSession, placementOf, sessionFromDraft } from "@/lib/edit/edit-session";
+import type { MatchWarning, SearchCandidate } from "@/lib/engine/contract";
 import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
 import {
   buildSearchRequest,
@@ -33,13 +45,35 @@ import {
   saveRouteVariant,
   type RouteVariant,
 } from "@/lib/storage/route-variant";
+import { notifyDraftsChanged, openDraftDb, requestPersist, type Draft } from "@/lib/storage/drafts";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
-import { isToggleTargetKey } from "@/lib/studio/hotkeys";
-import { canDownloadGpx, gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
+import {
+  canEnterEdit,
+  currentBuildVersion,
+  editChrome,
+  editSupersededBy,
+  editUnavailableNote,
+  liveMatchEnabled,
+  openDraftAction,
+  resolveDisplayedRoute,
+  type VerifiedBuild,
+} from "@/lib/studio/edit-view";
+import { editHotkey, isToggleTargetKey } from "@/lib/studio/hotkeys";
+import {
+  canDownloadGpx,
+  gpxName,
+  isSavable,
+  outcomeWarnings,
+  shapeKey,
+  shapeOfSource,
+  visibleOutcome,
+} from "@/lib/studio/state";
 import type { HersheyFontId } from "@/lib/text/hershey";
-import { textShape, validateText } from "@/lib/text/layout";
 
 type Mode = "text" | "image";
+
+const NO_PICKS: readonly [number, number][] = [];
+const NO_WARNINGS: readonly MatchWarning[] = [];
 type TextInput = { text: string; font: HersheyFontId };
 
 /** 預設擺在台北 101 附近，長邊 2 km。 */
@@ -68,15 +102,34 @@ export function Studio() {
   const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
   const [map, setMap] = useState<MapLibreMap | null>(null);
   const engine = useEngineStatus();
+  // 微調：狀態、對引擎的請求、自動存的草稿。草稿存檔的結果（超過上限、存不了）要讓使用者看到
+  const [draftNotice, setDraftNotice] = useState<DraftNotice | null>(null);
+  const [editSession] = useState(() =>
+    createEditSession({
+      openDb: () => openDraftDb(),
+      requestPersist,
+      notifyChanged: notifyDraftsChanged,
+      onStatus: (status) => setDraftNotice(status === "saved" ? null : status),
+    }),
+  );
+  const edit = useRouteEdit({ postEdit: editSession.postEdit, saveDraft: editSession.saveDraft });
+  const drafts = useDrafts();
+  // 重新驗證通過的版本：/status 是開頁時讀的，引擎重建路網之後它就過時了（見 currentBuildVersion）
+  const [verifiedBuild, setVerifiedBuild] = useState<VerifiedBuild | null>(null);
+  const buildVersion = currentBuildVersion(engine.dataVersion, verifiedBuild);
+  const { replaceRoute } = edit;
+  const { refresh: refreshEngineStatus } = engine;
+  const reverify = useReverify(edit.state?.history.present.routeSig ?? null, (route, from) => {
+    setVerifiedBuild({ seenEngineVersion: engine.dataVersion, version: route.dataVersion });
+    replaceRoute(route, from);
+    refreshEngineStatus();
+  });
 
   const source = useMemo<SavedSource>(
     () => (mode === "text" ? { kind: "text", ...textInput } : { kind: "image", strokes: imageStrokes }),
     [mode, textInput, imageStrokes],
   );
-  const shape = useMemo<Shape | null>(() => {
-    if (source.kind === "image") return source.strokes.length > 0 ? { kind: "image", strokes: source.strokes } : null;
-    return validateText(source.text) === null ? textShape(source.text, source.font) : null;
-  }, [source]);
+  const shape = useMemo<Shape | null>(() => shapeOfSource(source), [source]);
   const currentShapeKey = useMemo(() => shapeKey(shape), [shape]);
   // 長邊 1 m 時的目標長度：大圖片有上萬點，拖曳中每次 pointermove 重算太浪費
   const unitLengthM = useMemo(() => (shape ? shapeLengthM(shape.strokes, 1) : null), [shape]);
@@ -91,7 +144,8 @@ export function Studio() {
   const { response, fineResponse, error, pending, appliedTag, appliedKey, currentKey, retry, refine } = useLiveMatch(
     request,
     dragging,
-    engine.status === "ok",
+    // 微調（含按了「完成」之後還留著的微調路線）：吸附一律停掉，進行中的請求取消、遲到的結果丟掉
+    liveMatchEnabled(engine.status === "ok", edit.state),
     engine.markDown,
     currentShapeKey,
     engine.plannerReady,
@@ -118,9 +172,34 @@ export function Studio() {
   );
   // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key。
   // 描形版與 fast 共用同一個 key；response 則是目前實際顯示的版本。
-  const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
-  const warnings = outcomeWarnings(visible);
+  const liveDownloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
+  // 畫面、資訊面板與 GPX 的路線：有微調（含按了「完成」之後）就是微調後的，否則是即時吸附的
+  const editedRoute = edit.state?.history.present ?? null;
+  // 草稿是在舊路網上微調的（或引擎在微調中回 409「路網已更新」）：照常顯示、可以下載 GPX，要編輯先重新驗證
+  const routeStale = edit.state?.errorCode === "stale_data";
+  const outdated = editedRoute !== null && (routeStale || isOutdatedRoute(editedRoute.dataVersion, buildVersion));
+  const display = useMemo(
+    () => resolveDisplayedRoute(editedRoute, { response: visible.response, downloadable: liveDownloadable }, targetLengthM),
+    [editedRoute, visible.response, liveDownloadable, targetLengthM],
+  );
+  const downloadable = display.downloadable;
+  // 微調過的路線沒有警告（引擎不回半成品）；即時吸附的警告屬於被取代的路線，不再標紅
+  const liveWarnings = outcomeWarnings(visible);
+  const warnings = display.edited ? NO_WARNINGS : liveWarnings;
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
+  const editing = edit.state?.active === true;
+  const chrome = editChrome({ edited: display.edited, active: editing, outdated });
+  const canOperate = chrome.toolbar;
+  const editPicks = useMemo(
+    () => (editing && edit.state ? edit.state.picks.map((p) => p.point) : NO_PICKS),
+    [editing, edit.state],
+  );
+  // 引擎回應（吸附、微調、打開的草稿）的路網比 /status 已知的新：引擎在頁面開著時重建了，重新讀 /status。
+  // 版本沒變就不會再觸發（依賴的是版本字串）；不讀的話，新路網的路線會被當成舊路網要求多餘的重新驗證。
+  const seenBuild = newestBuild([response?.data_version, fineResponse?.data_version, editedRoute?.dataVersion]);
+  useEffect(() => {
+    if (engine.status === "ok" && isNewerBuild(seenBuild, engine.dataVersion)) refreshEngineStatus();
+  }, [seenBuild, engine.status, engine.dataVersion, refreshEngineStatus]);
   // 搜尋結果屬於搜尋當時的圖形（候選的擺放只對它有意義）：圖形換了就不顯示、進行中的取消
   const search = useSearch(currentShapeKey, engine.markDown);
   const blocker = searchBlocker({
@@ -129,7 +208,7 @@ export function Studio() {
     engineStatus: engine.status,
     searchReady: engine.searchReady,
   });
-  const routeStart = visible.response?.route.points[0];
+  const routeStart = display.response?.route.points[0];
   const startFromCenter = searchArea && routeStart ? startDistance(searchArea, routeStart) : null;
 
   // 拖曳中圖形變成 null 時編輯器會卸載、收不到放開事件：在這裡結束拖曳，否則自動存檔會一直停著
@@ -140,6 +219,91 @@ export function Studio() {
     if (dragging || !isSavable(source)) return;
     saveWork(browserStore, { source, transform });
   }, [source, transform, dragging]);
+
+  // 使用者移動了圖形（拖曳、鍵盤、套用搜尋候選、改文字、換圖片）：離開微調、回到即時吸附。
+  // 微調的路線已經在草稿裡（每次編輯都存），不會消失。
+  const { reset: resetEdit } = edit;
+  const { cancel: cancelReverify } = reverify;
+  const hasEdit = edit.state !== null;
+  useEffect(() => {
+    if (hasEdit && editSupersededBy(editSession.base(), { shapeKey: currentShapeKey, transform })) {
+      // 在途的 /verify 也要取消：它會佔住引擎名額到 15 秒，結果也已經沒人要
+      cancelReverify();
+      resetEdit();
+    }
+  }, [hasEdit, currentShapeKey, transform, resetEdit, cancelReverify, editSession]);
+
+  const canEnter = canEnterEdit({
+    response: display.response,
+    downloadable: display.downloadable,
+    pending,
+    edit: edit.state,
+  });
+  const enterEdit = () => {
+    const signed = display.response ? signedOf(display.response) : null;
+    if (!canEnter || !request || !signed) return;
+    const session = { source, transform, strokes: request.strokes, base: { shapeKey: currentShapeKey, transform } };
+    editSession.begin(session);
+    setDraftNotice(null);
+    edit.enter(routeFromResponse(signed), null, placementOf(session));
+  };
+
+  const resumeEdit = () => {
+    edit.resume();
+    // 完成之後地圖可能被移到別處
+    if (map && editedRoute) fitMapToRoute(map, editedRoute.segments);
+  };
+
+  const startReverify = () => {
+    const strokes = editSession.strokes();
+    if (editedRoute && strokes) reverify.run(editedRoute, strokes);
+  };
+
+  // 回到自動吸附：擺放不變、重新吸附；微調的路線在草稿裡，舊草稿保留
+  const backToAuto = () => {
+    reverify.cancel();
+    resetEdit();
+  };
+
+  // 打開草稿：還原來源、擺放與路線，進入微調。先 begin 再 enter：基準要是草稿的圖形與擺放，
+  // 否則「圖形被移動」的判斷會拿舊的基準、馬上把微調結束。
+  const openDraft = (draft: Draft) => {
+    if (openDraftAction(edit.state, draft.id) === "resume") {
+      resumeEdit();
+      return;
+    }
+    const session = sessionFromDraft(draft);
+    if (!session) return;
+    reverify.cancel();
+    if (draft.source.kind === "text") {
+      setMode("text");
+      setTextInput({ text: draft.source.text, font: draft.source.font });
+    } else {
+      setMode("image");
+      setImageStrokes(draft.source.strokes);
+    }
+    setTransform(draft.transform);
+    setDragging(false);
+    editSession.begin(session);
+    // 這份草稿之前刪除失敗過：它還在，之後的編輯要存
+    editSession.restoreDraft(draft.id);
+    setDraftNotice(null);
+    edit.enter(draft.route, draft.id, placementOf(session));
+    // 草稿可能在別的地方：看不到路線就把地圖移過去（圖形鎖住，沒有「移到畫面中央」可用）
+    if (map) fitMapToRoute(map, draft.route.segments);
+    void drafts.markOpened(draft.id);
+  };
+
+  // 刪掉正在編輯的那一份：結束微調，否則下一次存檔會把它重新建立回來
+  const removeDraft = (draft: Draft) => {
+    // 先讓排隊中的存檔失效，再刪：否則它們會發現草稿不在了而重新建立
+    editSession.discardDraft(draft.id);
+    if (edit.state?.draftId === draft.id) backToAuto();
+    // 刪除失敗：草稿還在，撤銷 discard（否則之後打開它的編輯不會存）
+    void drafts.remove(draft.id).then((deleted) => {
+      if (!deleted) editSession.restoreDraft(draft.id);
+    });
+  };
 
   const chooseRouteVariant = (variant: RouteVariant) => {
     setRouteVariant(variant);
@@ -156,6 +320,21 @@ export function Studio() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // 微調中的快捷鍵：⌘／Ctrl＋Z 復原、Shift＋⌘／Ctrl＋Z 重做、Esc 取消正在選的操作（打字的地方除外，見 editHotkey）
+  const { undo, redo, cancel } = edit;
+  useEffect(() => {
+    if (!canOperate) return;
+    const actions = { undo, redo, cancel };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const key = editHotkey(e);
+      if (!key) return;
+      e.preventDefault();
+      actions[key]();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canOperate, undo, redo, cancel]);
 
   const onTransform = (next: Transform, isDragging: boolean) => {
     setTransform(next);
@@ -216,15 +395,29 @@ export function Studio() {
         />
         <InfoPanel
           targetLengthM={targetLengthM}
-          response={visible.response}
+          response={display.response}
           fastResponse={visibleFast.response}
           fineResponse={currentFine}
-          error={visible.error}
-          pending={pending}
-          plannerReady={engine.plannerReady}
+          error={display.edited ? null : visible.error}
+          pending={display.edited ? (edit.state?.pending ?? false) : pending}
+          pendingLabel={display.edited ? "微調中…" : "吸附中…"}
+          edited={display.edited}
+          editAction={
+            display.edited
+              ? chrome.resume
+                ? { label: "繼續微調", disabled: false, onClick: resumeEdit }
+                : null
+              : {
+                  label: "微調路線",
+                  disabled: !canEnter,
+                  onClick: enterEdit,
+                  note: editUnavailableNote(display.response, display.downloadable) ?? undefined,
+                }
+          }
+          plannerReady={engine.plannerReady && !display.edited}
           routeVariant={routeVariant}
           onRouteVariantChange={chooseRouteVariant}
-          refineStatus={refine}
+          refineStatus={display.edited ? "idle" : refine}
           downloadable={downloadable}
           onRetry={retry}
           warnings={warnings}
@@ -233,30 +426,76 @@ export function Studio() {
           workName={gpxName(source)}
           startDistance={startFromCenter}
         />
+        <DraftsPanel
+          view={drafts.view}
+          // 按了「完成」之後這份草稿又可以「打開」：地圖可能已經被移到別處，打開會把鏡頭帶回來
+          openId={editing ? (edit.state?.draftId ?? null) : null}
+          engineVersion={buildVersion}
+          onOpen={openDraft}
+          onRemove={removeDraft}
+        />
       </aside>
       <main className="relative order-1 min-h-0 flex-1 md:order-2">
         <MapView
           initialCenter={transform.center}
-          response={visible.response}
+          response={display.response}
+          editPicks={editPicks}
+          badSegments={reverify.state.bad}
           searchArea={searchArea}
           preview={search.active ? (search.best?.match ?? null) : null}
           onMapChange={setMap}
           onError={() => setMapNotice(true)}
         >
-          {(map) =>
-            shape && (
-              <ShapeOverlay
+          {(map) => (
+            <>
+              {shape && (
+                <ShapeOverlay
+                  map={map}
+                  shape={shape}
+                  transform={transform}
+                  warned={warned}
+                  targetHidden={targetHidden}
+                  onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
+                  locked={editing}
+                  onChange={onTransform}
+                />
+              )}
+              <RouteEditLayer
                 map={map}
-                shape={shape}
-                transform={transform}
-                warned={warned}
-                targetHidden={targetHidden}
-                onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
-                onChange={onTransform}
+                route={display.edited ? display.response : null}
+                tool={edit.state?.tool ?? null}
+                enabled={canOperate && edit.state?.pending === false}
+                onPick={edit.pick}
+                onDrag={edit.drag}
               />
-            )
-          }
+            </>
+          )}
         </MapView>
+        {chrome.notice && editedRoute && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-14 z-10 flex justify-center">
+            <ReverifyNotice
+              label={routeStale ? `路網已更新。${outdatedLabel(editedRoute.dataVersion)}` : outdatedLabel(editedRoute.dataVersion)}
+              state={reverify.state}
+              onReverify={startReverify}
+              onBackToAuto={backToAuto}
+            />
+          </div>
+        )}
+        {canOperate && edit.state && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-14 z-10 flex justify-center">
+            <EditToolbar
+              state={edit.state}
+              canUndo={edit.canUndo}
+              canRedo={edit.canRedo}
+              draftNotice={draftNotice}
+              onTool={edit.selectTool}
+              onMode={edit.chooseMode}
+              onUndo={edit.undo}
+              onRedo={edit.redo}
+              onFinish={edit.finish}
+            />
+          </div>
+        )}
         {/* 不擋操作：只有關閉按鈕接收指標事件，圖形照樣可以拖曳、吸附。live region 一直存在，提示出現時才念得出來 */}
         <div role="status" className="pointer-events-none absolute inset-x-3 bottom-10 z-10 flex justify-center">
           {mapNotice && (

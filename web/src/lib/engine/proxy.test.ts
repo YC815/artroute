@@ -1,6 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult, toSse } from "@/lib/engine/fixtures";
-import { MATCH_TIMEOUT_MS, SEARCH_TIMEOUT_MS, proxyMatch, proxySearch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
+import {
+  SAMPLE_EDIT_REQUEST,
+  SAMPLE_EDIT_RESPONSE,
+  SAMPLE_MATCH_RESPONSE,
+  SAMPLE_VERIFY_REQUEST,
+  sampleCandidate,
+  sampleResult,
+  toSse,
+  without,
+} from "@/lib/engine/fixtures";
+import {
+  EDIT_TIMEOUT_MS,
+  MATCH_TIMEOUT_MS,
+  SEARCH_TIMEOUT_MS,
+  VERIFY_TIMEOUT_MS,
+  proxyEdit,
+  proxyMatch,
+  proxySearch,
+  proxyStatus,
+  proxyVerify,
+  type ProxyDeps,
+} from "@/lib/engine/proxy";
 
 const VALID = { strokes: [{ points: [[121.5, 25.03], [121.51, 25.03]], closed: false }] };
 
@@ -330,6 +350,99 @@ describe("proxyStatus", () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("http://engine:8080/status");
     expect(init.method).toBe("GET");
+  });
+});
+
+describe.each([
+  ["proxyEdit", proxyEdit, "/edit", SAMPLE_EDIT_REQUEST],
+  ["proxyVerify", proxyVerify, "/verify", SAMPLE_VERIFY_REQUEST],
+] as const)("%s", (_name, proxy, enginePath, valid) => {
+  const request = (body: string) => new Request(`http://web/api${enginePath}`, { method: "POST", body });
+
+  it(`合法請求轉發到 ENGINE_URL${enginePath}，只送 schema 內的欄位，200 原樣轉回`, async () => {
+    const fetchImpl = vi.fn(async () => Response.json(SAMPLE_EDIT_RESPONSE));
+    const res = await proxy(request(JSON.stringify({ ...valid, extra: 1 })), deps(fetchImpl));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(SAMPLE_EDIT_RESPONSE);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`http://engine:8080${enginePath}`);
+    expect(JSON.parse(init.body as string)).toEqual(valid);
+  });
+
+  it("不合法的請求（缺 route_sig）回 422 validation，不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const res = await proxy(request(JSON.stringify(without(valid, "route_sig"))), deps(fetchImpl));
+    expect(res.status).toBe(422);
+    const { detail } = await res.json();
+    expect(detail.code).toBe("validation");
+    expect(detail.message).toContain("route_sig");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("引擎 409 stale_data 的狀態碼與 body 原樣轉回", async () => {
+    const body = { detail: { code: "stale_data", message: "路網已更新，請先重新驗證", segments: null, warnings: null } };
+    const res = await proxy(request(JSON.stringify(valid)), deps(vi.fn(async () => Response.json(body, { status: 409 }))));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(body);
+  });
+
+  it("引擎 422 的 body（含 verify_failed 的 segments）原樣轉回", async () => {
+    for (const detail of [
+      { code: "invalid_route", message: "路線簽章不對" },
+      { code: "verify_failed", message: "有 2 段不能騎了", segments: [3, 7] },
+    ]) {
+      const res = await proxy(
+        request(JSON.stringify(valid)),
+        deps(vi.fn(async () => Response.json({ detail }, { status: 422 }))),
+      );
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({ detail });
+    }
+  });
+
+  it("引擎 504 timeout 原樣轉回；逾時沒回應則回代理的 504", async () => {
+    const body = { detail: { code: "timeout", message: "微調超過時間上限" } };
+    const upstream = await proxy(request(JSON.stringify(valid)), deps(vi.fn(async () => Response.json(body, { status: 504 }))));
+    expect(upstream.status).toBe(504);
+    expect(await upstream.json()).toEqual(body);
+
+    const hang = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    const res = await proxy(request(JSON.stringify(valid)), deps(hang, { timeoutMs: 20 }));
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({ detail: { code: "timeout", message: "引擎回應逾時" } });
+  });
+
+  it("連不上引擎回 503", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const res = await proxy(request(JSON.stringify(valid)), deps(fetchImpl));
+    expect(res.status).toBe(503);
+    expect((await res.json()).detail.code).toBe("engine_unreachable");
+  });
+
+  it("超過 8 MB 的請求回 413，不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const big = new Request(`http://web/api${enginePath}`, {
+      method: "POST",
+      body: "x",
+      headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+    });
+    const res = await proxy(big, deps(fetchImpl));
+    expect(res.status).toBe(413);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("逾時常數", () => {
+  it("/edit 與 /match 同，/verify 16 秒（引擎 15 秒的上限再多 1 秒）", () => {
+    expect(EDIT_TIMEOUT_MS).toBe(MATCH_TIMEOUT_MS);
+    expect(VERIFY_TIMEOUT_MS).toBe(16_000);
   });
 });
 

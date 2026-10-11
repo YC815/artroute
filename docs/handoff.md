@@ -7,19 +7,26 @@
 - **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`。**本機已驗證並部署**（2026-10-11，findings §4）：
   - fine 沒有全面贏過 fast（v3 好 3、差 19；盲測有表態 8 組只有 3 組選 fine）。但使用者看圖認為有的案例 fine 好很多，所以網站兩版都算、可切換，預設快速版（主 spec §8 第 60 列）。
   - bench 的逆向誤報已修（合法重現，§8 第 61 列）；fast／fine／搜尋 bench 全部安全。
-- 部署中（m1），程式都是 `d7f6283`：
+- 部署中（m1）：引擎與網站都是 `dcaaaf0`（PR C、D，2026-10-11；其餘功能同 `d7f6283`）：
   - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。
   - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。`/status` 的 `search_ready`、`planner_ready` 都是 true。
   - 路網 build `20261011T095232Z`（有可騎路網圖），回滾用 `20261011T040535Z`。
-- **PR C**（分支 `claude/route-editing-engine`）：手動微調引擎。`POST /edit`（剪掉、重畫、拖曳）、`POST /verify`（舊路網草稿重新檢查）、`route_sig`（整條路線一個 HMAC 簽章，金鑰 `/data/edit-key`）、`matching/safety.py` 與 `matching/replay.py`（bench 與 `/verify` 共用）。**尚未部署、未在真實路網上驗證**（雲端連不到 m1）；決定見主 spec §8 第 62 列。PR D（網站）要先 merge 此分支才能做 D3 以後。
+- **PR C**（分支 `claude/route-editing-engine`）：手動微調引擎。`POST /edit`（剪掉、重畫、拖曳）、`POST /verify`（舊路網草稿重新檢查）、`route_sig`（整條路線一個 HMAC 簽章，金鑰 `/data/edit-key`）、`matching/safety.py` 與 `matching/replay.py`（bench 與 `/verify` 共用）。**已部署並在真實路網上量測**（2026-10-11，`docs/route-editing-findings.md`）；決定見主 spec §8 第 62 列。PR D（網站）要先 merge 此分支才能做 D3 以後。
+  - 本機待辦（2026-10-11 完成，數字見 `docs/route-editing-findings.md`，commit `dcaaaf0`）：
+    1. [x] 部署：引擎先、網站後，都已部署；金鑰 32 bytes／600，2 個 worker 共用、重啟不變、舊簽章仍有效。
+    2. [x] `heart@taipei_daan` 剪右側繞路：3 個點擊位置都成功，各 12 ms，剪掉 287–440 m，overall 68 → 67–68，安全斷言過。
+    3. [x] 每個 bench 案例拖曳一次：到平行路 24 次成功 10（`turn_not_rideable` 12、`no_road` 2 = 8%）、耗時中位數 11.5 ms／最慢 175 ms；62 個成功的 `/edit` 輸出安全斷言全過。200 m 範圍的取捨與錯誤說明待使用者決定（findings §3.2、§6）。
+    4. [x] `/verify`：舊 build 的 30 條路線（含 47–88 km）全部通過、0 誤報、最慢 141 ms；對照組（直線、缺口）正確 422。**未驗**：兩個 build 同一份 OSM，沒有真實差異可標；`same_geometry` 沒被觸發（單獨量 5 km 1.3 s、10 km 5.3 s、20 km 21 s）。
+    5. [x] `/match` 排隊：`/verify` 只有 ~145 ms，`/match` 最慢 164 ms、無 504；15 秒的 `/verify` 排隊沒量到。
+- **PR D**（分支 `claude/route-editing-web`，疊在 PR C 上）：手動微調網站。IndexedDB 草稿與「我的路線」、微調模式（剪掉、重畫、拖曳、復原／重做、完成）、`/api/edit`、`/api/verify`、舊路網的草稿與「重新驗證」。**e2e 已在 Chromium 實際跑過**（`web/e2e/edit.spec.ts`，假引擎；含拖曳時 dragPan 被擋、圖形鎖住、Esc、⌘/Ctrl+Z、390×844 版面、舊路網、刪除要確認、觸控拖曳、草稿存不了）；沒有挖出需要修的 bug。**已部署（2026-10-11，`dcaaaf0`），經網站代理連真引擎的 `/api/match`、`/api/edit` 通；沒有在瀏覽器連過真引擎**。決定見主 spec §8 第 63 列。
   - 本機待辦：
-    1. 部署：引擎先、網站後（新欄位與新端點都是只增加）。
-    2. `heart@taipei_daan` 剪右側繞路要多久（剪掉不套用圈長上限、不限次數，只受 5 秒期限）。
-    3. 每個 bench 案例都拖曳一次，量時間，並確認 200 m 的拖曳範圍合不合適（spec §3.3）。
-    4. 用 m1 的兩個 build 驗 `/verify`：舊 build 的路線在新 build 上的誤報率與耗時。`same_geometry` 是 O(n·m) 的純 Python，長 edge 可能超過 15 秒而回 504（`docs/backlog.md`）。
-    5. `/verify` 與 `/match`（與 `/edit`）共用 `Semaphore(1)`：`/verify` 進行期間（最長 15 秒）`/match` 會排隊，要實測影響。
+    1. [x] 部署順序：先引擎、後網站，已照做。
+    2. [ ] 使用者在真實路網上實際操作一次：剪掉、重畫（最短、貼圖形）、拖曳，再決定要不要調拖曳範圍 200 m 與錯誤說明文字（`turn_not_rideable` 的說明對拖曳不適用，見 findings §3.2）。
+    3. [ ] 兩個分頁同時編輯同一份草稿（`docs/backlog.md`）。
+    4. [x] 真實舊路網的 `/verify`：0 誤報、最慢 141 ms（findings §4；限制是兩個 build 資料相同）。
+    5. [ ] 瀏覽器冒煙沒做：私人網站的 Cloudflare Access 登入停在 Google 同意畫面，沒有替使用者授權；iOS Safari 實機、小螢幕（375×667）工具列遮擋也沒試（`docs/backlog.md`）。
 - 下一步：
-  1. 手動微調 PR D（網站）；PR C 的本機待辦見上。spec：`docs/superpowers/specs/2026-10-11-route-editing-design.md`（主 spec §8 第 56–58、62 列）；計畫：`docs/superpowers/plans/2026-10-11-route-editing.md`。
+  1. 手動微調：PR C、D 的本機待辦見上，部署與使用者操作之後再決定要不要調整。spec：`docs/superpowers/specs/2026-10-11-route-editing-design.md`（主 spec §8 第 56–58、62 列）；計畫：`docs/superpowers/plans/2026-10-11-route-editing.md`。
   2. Q4（P2.5 spec §7）：含嘗試性的「長直線優先」（§7.4，要盲測驗收）。規劃器的問題（折回的 detour、細碎階梯、河濱變長、退回 fast 的比例沒量）先查，見 `docs/backlog.md`。
 - P3（每週重建、rate limiting、公開）排在 P2.5 之後。
 

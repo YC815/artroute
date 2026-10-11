@@ -30,20 +30,26 @@ const strokeSchema = z.object({
 // 文字的內容限制與編輯時相同（validateText），否則超長文字會排出上萬筆畫。
 const textSchema = z.string().refine((text) => validateText(text) === null);
 
+/** 存檔裡的圖形來源；草稿（drafts.ts）共用同一套驗證。 */
+export const savedSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text"), text: textSchema, font: z.enum(FONT_IDS) }),
+  z.object({
+    kind: z.literal("image"),
+    strokes: z.array(strokeSchema).min(1).max(MAX_STROKES),
+  }),
+]);
+
+/** 存檔裡的擺放；草稿（drafts.ts）共用同一套驗證。 */
+export const savedTransformSchema = z.object({
+  center: lonLatSchema,
+  sizeM: z.number().min(MIN_SIZE_M).max(MAX_SIZE_M),
+  rotationDeg: z.number(),
+});
+
 const savedWorkSchema = z.object({
   v: z.literal(1),
-  source: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("text"), text: textSchema, font: z.enum(FONT_IDS) }),
-    z.object({
-      kind: z.literal("image"),
-      strokes: z.array(strokeSchema).min(1).max(MAX_STROKES),
-    }),
-  ]),
-  transform: z.object({
-    center: lonLatSchema,
-    sizeM: z.number().min(MIN_SIZE_M).max(MAX_SIZE_M),
-    rotationDeg: z.number(),
-  }),
+  source: savedSourceSchema,
+  transform: savedTransformSchema,
 });
 
 type KeyValueStore = Pick<Storage, "getItem" | "setItem">;

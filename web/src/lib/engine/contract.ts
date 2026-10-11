@@ -1,4 +1,4 @@
-// 引擎 /match、/search、/status 的契約（spec §4.6、§4.7）。
+// 引擎 /match、/edit、/verify、/search、/status 的契約（spec §4.6、§4.7）。
 //
 // 型別的唯一來源是 engine/openapi.json：`pnpm gen:engine-types` 產生 openapi.d.ts，這裡只取用。
 // zod schema 負責執行期驗證；請求、回應與 /search 的每一種 SSE 事件
@@ -9,7 +9,11 @@
 import { z } from "zod";
 import type { components } from "@/lib/engine/openapi";
 import {
+  MAX_DATA_VERSION_CHARS,
   MAX_NORM_COORD,
+  MAX_ROUTE_SEGMENTS,
+  MAX_ROUTE_SIG_CHARS,
+  MAX_SEGMENT_POINTS,
   MAX_SEARCH_AREA_RADIUS_M,
   MAX_SEARCH_CANDIDATES,
   MAX_SEARCH_KM,
@@ -25,6 +29,9 @@ import {
 
 type Schemas = components["schemas"];
 
+/** 把 route_sig 改成可省略（見 matchResponseSchema）。 */
+type WithOptionalSig<T> = Omit<T, "route_sig"> & { route_sig?: string };
+
 // zod 的錯誤訊息用繁體中文（會顯示給使用者）
 z.config(z.locales.zhTW());
 
@@ -37,16 +44,18 @@ export const startCircleSchema = z.object({
   radius_m: z.number().min(MIN_SEARCH_AREA_RADIUS_M).max(MAX_SEARCH_AREA_RADIUS_M),
 }) satisfies z.ZodType<Schemas["StartCircle"]>;
 
+const strokesSchema = z
+  .array(
+    z.object({
+      points: z.array(lonLatSchema).min(MIN_STROKE_POINTS).max(MAX_STROKE_POINTS),
+      closed: z.boolean(),
+    }),
+  )
+  .min(1)
+  .max(MAX_STROKES);
+
 export const matchRequestSchema = z.object({
-  strokes: z
-    .array(
-      z.object({
-        points: z.array(lonLatSchema).min(MIN_STROKE_POINTS).max(MAX_STROKE_POINTS),
-        closed: z.boolean(),
-      }),
-    )
-    .min(1)
-    .max(MAX_STROKES),
+  strokes: strokesSchema,
   search_radius_m: z.number().min(MIN_SEARCH_RADIUS_M).max(MAX_SEARCH_RADIUS_M).optional(),
   // 可省略：省略時與沒有自動搜尋時的行為完全相同
   start_circle: startCircleSchema.nullish(),
@@ -55,7 +64,8 @@ export const matchRequestSchema = z.object({
   quality: z.enum(["fast", "fine"]).nullish(),
 }) satisfies z.ZodType<Schemas["MatchRequest"]>;
 
-export const segmentKindSchema = z.enum(["stroke", "detour", "connector"]);
+/** "edit" 是微調（/edit、/verify）換上的段落；/match 不會回。 */
+export const segmentKindSchema = z.enum(["stroke", "detour", "connector", "edit"]);
 
 export const matchWarningSchema = z.object({
   stroke_index: z.number().int(),
@@ -65,37 +75,109 @@ export const matchWarningSchema = z.object({
 
 const percentSchema = z.number().min(0).max(100);
 
+export const segmentSchema = z.object({
+  kind: segmentKindSchema,
+  stroke_index: z.number().int().nullable(),
+  points: z.array(lonLatSchema),
+  length_m: z.number(),
+}) satisfies z.ZodType<Schemas["SegmentOut"]>;
+
+export const scoreSchema = z.object({
+  coverage: percentSchema,
+  cleanliness: percentSchema,
+  direction: percentSchema,
+  overall: percentSchema,
+}) satisfies z.ZodType<Schemas["ScoreOut"]>;
+
+/**
+ * /match 的 200 回應（/edit、/verify 的見 signedMatchResponseSchema）。route_sig 是整條路線的簽章，下一次 /edit、
+ * /verify 原樣帶回；這裡讀成可省略：引擎回滾到沒有簽章的版本、或網站先於引擎部署時，吸附與 GPX 照常，
+ * 只是沒有簽章就不能微調（見 canEnterEdit）。契約（openapi）仍然是必填，只增加的方向不變。
+ */
 export const matchResponseSchema = z.object({
   route: z.object({ points: z.array(lonLatSchema), length_m: z.number() }),
-  segments: z.array(
-    z.object({
-      kind: segmentKindSchema,
-      stroke_index: z.number().int().nullable(),
-      points: z.array(lonLatSchema),
-      length_m: z.number(),
-    }),
-  ),
-  score: z.object({
-    coverage: percentSchema,
-    cleanliness: percentSchema,
-    direction: percentSchema,
-    overall: percentSchema,
-  }),
+  segments: z.array(segmentSchema),
+  score: scoreSchema,
   target_length_m: z.number(),
   warnings: z.array(matchWarningSchema),
   data_version: z.string(),
+  route_sig: z.string().optional(),
+}) satisfies z.ZodType<WithOptionalSig<Schemas["MatchResponse"]>>;
+
+/** /edit、/verify 的 200 回應：沒有簽章的回應沒有用（下一次操作沒有東西可以帶回），當成格式不符。 */
+export const signedMatchResponseSchema = matchResponseSchema.extend({
+  route_sig: z.string(),
 }) satisfies z.ZodType<Schemas["MatchResponse"]>;
 
+// ---- POST /edit、POST /verify（微調 spec §3.1、§3.6） ----
+
+/** 路線上的位置：第幾段、從該段起點沿折線量的公尺數（不用經緯度：來回騎的路會選錯是哪一趟）。 */
+export const routePosSchema = z.object({
+  segment: z.number().int().min(0),
+  offset_m: z.number().min(0),
+}) satisfies z.ZodType<Schemas["RoutePosIn"]>;
+
+export const cutOpSchema = z.object({
+  type: z.literal("cut"),
+  at: routePosSchema,
+}) satisfies z.ZodType<Schemas["CutOp"]>;
+
+export const rerouteOpSchema = z.object({
+  type: z.literal("reroute"),
+  from: routePosSchema,
+  to: routePosSchema,
+  mode: z.enum(["shortest", "shape"]),
+}) satisfies z.ZodType<Schemas["RerouteOp"]>;
+
+export const dragOpSchema = z.object({
+  type: z.literal("drag"),
+  grab: routePosSchema,
+  to: lonLatSchema,
+}) satisfies z.ZodType<Schemas["DragOp"]>;
+
+export const editOpSchema = z.discriminatedUnion("type", [cutOpSchema, rerouteOpSchema, dragOpSchema]);
+
+/** 上一次回應的 segments 原封不動（簽章會驗），所以點數的上限是引擎的 SegmentIn。 */
+const routeSegmentsSchema = z
+  .array(
+    z.object({
+      kind: segmentKindSchema,
+      stroke_index: z.number().int().min(0).nullable(),
+      points: z.array(lonLatSchema).min(2).max(MAX_SEGMENT_POINTS),
+      length_m: z.number().min(0),
+    }),
+  )
+  .min(1)
+  .max(MAX_ROUTE_SEGMENTS);
+
+const signedRouteFields = {
+  segments: routeSegmentsSchema,
+  data_version: z.string().max(MAX_DATA_VERSION_CHARS),
+  route_sig: z.string().max(MAX_ROUTE_SIG_CHARS),
+  // 使用者放的原圖：算分數、「貼圖形」模式用
+  strokes: strokesSchema,
+};
+
+export const editRequestSchema = z.object({
+  ...signedRouteFields,
+  op: editOpSchema,
+}) satisfies z.ZodType<Schemas["EditRequest"]>;
+
+export const verifyRequestSchema = z.object(signedRouteFields) satisfies z.ZodType<Schemas["VerifyRequest"]>;
+
 /**
- * 引擎的領域錯誤（outside_taiwan／too_small／no_route／no_data／timeout）與代理自己的錯誤
- * （too_large／validation／engine_unreachable／timeout）共用的 detail 形狀。
- * 「所有部件都吸附失敗」的 no_route 另附 warnings。
+ * 引擎的領域錯誤（`EngineErrorCode`：outside_taiwan／too_small／no_route／no_data／timeout，
+ * 以及微調的 stale_data／invalid_route／not_on_route／nothing_to_cut／turn_not_rideable／no_road／verify_failed）
+ * 與代理自己的錯誤（too_large／validation／engine_unreachable／timeout）共用的 detail 形狀。
+ * 「所有部件都吸附失敗」的 no_route 另附 warnings；/verify 的 verify_failed 另附有問題的段落序號 segments。
  */
 export const errorDetailSchema = z.object({
   code: z.string(),
   message: z.string(),
   // 引擎的 OpenAPI 宣告 array | null：只有 no_route 會帶陣列，其餘可能是 null。讀的人一律 `?? []`。
   warnings: z.array(matchWarningSchema).nullish(),
+  // 同樣 array | null：只有 verify_failed 會帶，其餘可能是 null。讀的人一律 `?? []`。
+  segments: z.array(z.number().int().min(0)).nullish(),
 });
 
 /**
@@ -159,12 +241,14 @@ export const placementSchema = z.object({
 
 const countSchema = z.number().int().min(0);
 
+type LooseSearchCandidate = Omit<Schemas["SearchCandidate"], "match"> & { match: WithOptionalSig<Schemas["MatchResponse"]> };
+
 export const searchCandidateSchema = z.object({
   placement: placementSchema,
   match: matchResponseSchema,
   start_distance_m: z.number().min(0),
   length_ok: z.boolean(),
-}) satisfies z.ZodType<Schemas["SearchCandidate"]>;
+}) satisfies z.ZodType<LooseSearchCandidate>;
 
 export const searchQueuedEventSchema = z.object({
   type: z.literal("queued"),
@@ -181,7 +265,7 @@ export const searchProgressEventSchema = z.object({
 export const searchBestEventSchema = z.object({
   type: z.literal("best"),
   candidate: searchCandidateSchema,
-}) satisfies z.ZodType<Schemas["SearchBest"]>;
+}) satisfies z.ZodType<Omit<Schemas["SearchBest"], "candidate"> & { candidate: LooseSearchCandidate }>;
 
 export const searchResultEventSchema = z.object({
   type: z.literal("result"),
@@ -190,7 +274,7 @@ export const searchResultEventSchema = z.object({
   evaluated: countSchema,
   elapsed_ms: countSchema,
   notice: z.string().nullish(),
-}) satisfies z.ZodType<Schemas["SearchResult"]>;
+}) satisfies z.ZodType<Omit<Schemas["SearchResult"], "candidates"> & { candidates: LooseSearchCandidate[] }>;
 
 export const searchFailedEventSchema = z.object({
   type: z.literal("error"),
@@ -208,20 +292,29 @@ export const searchEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type MatchRequest = Schemas["MatchRequest"];
-export type MatchResponse = Schemas["MatchResponse"];
+export type MatchResponse = WithOptionalSig<Schemas["MatchResponse"]>;
+/** /edit、/verify 的回應：一定有簽章。 */
+export type SignedMatchResponse = Schemas["MatchResponse"];
 export type MatchSegment = Schemas["SegmentOut"];
+export type Segment = Schemas["SegmentOut"];
+export type Score = Schemas["ScoreOut"];
+export type EditRequest = Schemas["EditRequest"];
+export type VerifyRequest = Schemas["VerifyRequest"];
+export type EditOp = Schemas["CutOp"] | Schemas["RerouteOp"] | Schemas["DragOp"];
+export type RoutePos = Schemas["RoutePosIn"];
+export type EngineErrorCode = Schemas["ErrorDetail"]["code"];
 export type MatchWarning = Schemas["WarningOut"];
 export type SegmentKind = Schemas["SegmentOut"]["kind"];
 export type StatusResponse = Schemas["StatusResponse"];
 export type StartCircle = Schemas["StartCircle"];
 export type SearchRequest = Schemas["SearchRequest"];
 export type Placement = Schemas["PlacementOut"];
-export type SearchCandidate = Schemas["SearchCandidate"];
+export type SearchCandidate = LooseSearchCandidate;
 export type SearchQueued = Schemas["SearchQueued"];
 export type SearchProgress = Schemas["SearchProgress"];
 export type SearchStage = Schemas["SearchProgress"]["stage"];
-export type SearchBest = Schemas["SearchBest"];
-export type SearchResult = Schemas["SearchResult"];
+export type SearchBest = Omit<Schemas["SearchBest"], "candidate"> & { candidate: SearchCandidate };
+export type SearchResult = Omit<Schemas["SearchResult"], "candidates"> & { candidates: SearchCandidate[] };
 export type SearchFailed = Schemas["SearchFailed"];
 export type SearchEvent = SearchQueued | SearchProgress | SearchBest | SearchResult | SearchFailed;
 export type SearchEventType = SearchEvent["type"];

@@ -1,7 +1,8 @@
 import type { FeatureCollection, LineString, Point } from "geojson";
-import type { MatchResponse, SegmentKind } from "@/lib/engine/contract";
+import type { LonLat } from "@/lib/shape/types";
+import type { Segment } from "@/lib/engine/contract";
 
-export type SegmentProperties = { kind: SegmentKind };
+export type SegmentProperties = { kind: Segment["kind"] };
 export type EndpointProperties = { role: "start" | "end" };
 
 export type RouteGeoJson = {
@@ -9,11 +10,18 @@ export type RouteGeoJson = {
   endpoints: FeatureCollection<Point, EndpointProperties>;
 };
 
-/** /match 回應 → 地圖圖層資料。沒有回應時回傳空的 FeatureCollection（清掉地圖上的路線）。 */
-export function routeGeoJson(response: MatchResponse | null): RouteGeoJson {
-  const segments = response?.segments ?? [];
-  const points = response?.route.points ?? [];
-  const ends: [EndpointProperties["role"], number][] = points.length > 0 ? [["start", 0], ["end", points.length - 1]] : [];
+/** /match 回應或微調後的路線都有的部分。 */
+export type RouteSegments = { segments: readonly { kind: Segment["kind"]; points: LonLat[] }[] };
+
+/**
+ * 路線 → 地圖圖層資料。沒有路線時回傳空的 FeatureCollection（清掉地圖上的路線）。
+ * 起終點取第一段的頭與最後一段的尾：引擎的 route.points 就是相接的 segments 攤平，微調後的路線只存 segments。
+ */
+export function routeGeoJson(route: RouteSegments | null): RouteGeoJson {
+  const segments = route?.segments ?? [];
+  const first = segments[0]?.points[0];
+  const last = segments.at(-1)?.points.at(-1);
+  const ends: [EndpointProperties["role"], LonLat][] = first && last ? [["start", first], ["end", last]] : [];
   return {
     segments: {
       type: "FeatureCollection",
@@ -25,10 +33,10 @@ export function routeGeoJson(response: MatchResponse | null): RouteGeoJson {
     },
     endpoints: {
       type: "FeatureCollection",
-      features: ends.map(([role, i]) => ({
+      features: ends.map(([role, point]) => ({
         type: "Feature",
         properties: { role },
-        geometry: { type: "Point", coordinates: points[i] },
+        geometry: { type: "Point", coordinates: point },
       })),
     },
   };
