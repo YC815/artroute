@@ -15,6 +15,7 @@ from engine.bench.runner import (
     compare,
     format_header,
     format_row,
+    is_legacy,
     load_baseline,
     run_cases,
     summarize,
@@ -67,6 +68,9 @@ def _check_baseline(args: argparse.Namespace, results: list[CaseResult]) -> None
         sys.exit(str(error))
     for note in case_set_changes(results, baseline):
         print(f"提示：{note}")
+    legacy = sum(is_legacy(baseline[r.name]) for r in results if r.name in baseline)
+    if legacy:
+        print(f"提示：baseline 有 {legacy} 個案例是 v1 評分，這些案例以本次路線的 v1 分數（表格的 v1 欄）比較；確認分數沒有下降後用 --update-baseline 換成 v2")
     problems = compare(results, baseline)
     for p in problems:
         print(f"退步：{p}")

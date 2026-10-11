@@ -30,7 +30,7 @@ from engine.bench.runner import (
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.data.layout import DataLayout
 from engine.matching.deadline import MatchTimeout
-from engine.matching.score import Score
+from engine.matching.score import SCORE_VERSION, Score, score, score_v1
 from engine.matching.deadline import Deadline
 from engine.matching.service import AllStrokesFailed, MatchResult, StrokeInput, match_shape
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
@@ -95,8 +95,17 @@ def test_cases_are_every_shape_at_every_location_plus_rotated_variants_at_daan()
     assert all(c.center == LOCATIONS["taipei_daan"] and c.rotation_deg == 30 for c in rotated)
 
 
+def scored(name: str, coverage: int, cleanliness: int, overall: int, *, legacy: Score | None = None, error: str | None = None) -> CaseResult:
+    """v2 分數＋v1（legacy）分數；沒給 legacy 就和 v2 相同。"""
+    legacy = legacy or Score(coverage, cleanliness, overall)
+    return CaseResult(
+        name, coverage, cleanliness, overall, 1000.0, 1000.0, 10, error,
+        legacy_coverage=legacy.coverage, legacy_cleanliness=legacy.cleanliness, legacy_overall=legacy.overall,
+    )
+
+
 def result(name: str, overall: int, error: str | None = None) -> CaseResult:
-    return CaseResult(name, overall, overall, overall, 1000.0, 1000.0, 10, error)
+    return scored(name, overall, overall, overall, error=error)
 
 
 def test_compare_flags_regression_and_new_failure_only() -> None:
@@ -200,6 +209,7 @@ def test_failed_case_keeps_the_real_target_length(monkeypatch: pytest.MonkeyPatc
     (res,) = run_cases(EdgesRouter(), [case], denied_ids=frozenset())  # 預熱階段的失敗也不能讓整個跑分中斷
     assert res.error == type(error).__name__
     assert (res.coverage, res.cleanliness, res.overall, res.length_m) == (0, 0, 0, 0.0)
+    assert (res.legacy_coverage, res.legacy_cleanliness, res.legacy_overall) == (0, 0, 0)
     assert res.target_length_m == pytest.approx(4000, rel=0.01)  # 封閉方框：四邊都算
 
 
@@ -299,7 +309,7 @@ def test_cli_prints_regressions_and_case_set_notes(fake_run: FakeRun, capsys: py
         fake_run([result("a", 80), result("fresh", 50)])
     assert regressed.value.code == 1
     out = capsys.readouterr().out
-    assert "退步：a：overall 90 → 80" in out
+    assert "退步：a：overall（v1 評分）90 → 80" in out  # 沒有 score_version 的 baseline 是 v1：比本次的 v1 分數
     assert "gone" in out and "fresh" in out
 
 
@@ -470,11 +480,12 @@ def test_stroke_along_a_marked_expressway_becomes_a_legal_detour(tmp_path: Path)
     assert problem is not None and problem[0] == UNSAFE and str(EXPRESSWAY_WAY_ID) in problem[1]
 
 
-def test_compare_flags_coverage_drop_even_when_overall_holds() -> None:
+@pytest.mark.parametrize(("version", "label"), [({}, "（v1 評分）"), ({"score_version": SCORE_VERSION}, " ")])
+def test_compare_flags_coverage_drop_even_when_overall_holds(version: dict, label: str) -> None:
     # ledger L120：overall 可能因 cleanliness 上升而持平，覆蓋率卻掉到 0（例如部件被整段丟掉）
-    base = {"a": {"overall": 50, "coverage": 66, "error": None}, "old": {"overall": 50, "error": None}}
-    results = [CaseResult("a", 0, 100, 50, 1.0, 1.0, 1, None), CaseResult("old", 0, 100, 50, 1.0, 1.0, 1, None)]
-    assert compare(results, base) == ["a：coverage 66 → 0"]  # 沒有 coverage 的舊條目只比 overall
+    base = {"a": {"overall": 50, "coverage": 66, "error": None, **version}, "old": {"overall": 50, "error": None, **version}}
+    results = [scored("a", 0, 100, 50), scored("old", 0, 100, 50)]
+    assert compare(results, base) == [f"a：coverage{label}66 → 0"]  # 沒有 coverage 的舊條目只比 overall
 
 
 class UturnRouter:
@@ -581,8 +592,8 @@ def test_case_result_row_and_summary_carry_use_meters(monkeypatch: pytest.Monkey
     (res,) = run_cases(UseRouter(), [case], denied_ids=frozenset(), warm_up=False)
     assert res.error is None
     assert res.use_m == {"footway": 12.0, "steps": 4.0, "parking_aisle": 0.0}
-    assert format_header().split()[7:10] == ["foot_m", "steps_m", "park_m"]
-    assert format_row(res).split()[7:10] == ["12", "4", "0"]
+    assert format_header().split()[8:11] == ["foot_m", "steps_m", "park_m"]
+    assert format_row(res).split()[8:11] == ["12", "4", "0"]
     assert "footway／steps／parking_aisle 合計 12／4／0 m" in summarize([res])
 
 
@@ -597,7 +608,7 @@ def test_summarize_use_totals_exclude_failed_and_unsafe_cases() -> None:
 def test_failed_case_has_no_use_meters_and_still_formats() -> None:
     failed = result("x", 0, error="AllStrokesFailed")
     assert failed.use_m == {}
-    assert format_row(failed).split()[7:10] == ["0", "0", "0"]
+    assert format_row(failed).split()[8:11] == ["0", "0", "0"]
 
 
 @pytest.mark.valhalla
@@ -661,3 +672,94 @@ def test_bad_turns_on_real_tiles(crossing_config: Path) -> None:
     assert bad_turns(router, [bridge, under]) == 1
     node = grid_point(X3, 1)
     assert bad_turns(router, [seg([grid_point(X3, 0), node]), seg([node, cross])]) == 0
+
+
+# ---- 評分 v2：CaseResult 同時記 v1（legacy）分數；v1 baseline 用 v1 分數比，v2 baseline 用 v2 分數比 ----
+
+V2 = {"score_version": SCORE_VERSION}
+
+
+def test_score_version_is_two() -> None:
+    assert SCORE_VERSION == 2
+    assert result("a", 1).score_version == SCORE_VERSION
+
+
+def test_compare_with_a_legacy_baseline_uses_the_legacy_fields() -> None:
+    baseline = {name: {"overall": 80, "coverage": 80, "error": None} for name in ("routing", "metric", "cov")}
+    results = [
+        scored("routing", 95, 95, 95, legacy=Score(70, 70, 70)),  # 路線退步：v2 變高也要抓到
+        scored("metric", 50, 50, 50, legacy=Score(80, 80, 80)),  # 只有評分換了，路線沒變：不算退步
+        scored("cov", 90, 90, 90, legacy=Score(60, 100, 80)),
+    ]
+    assert compare(results, baseline) == ["routing：overall（v1 評分）80 → 70", "cov：coverage（v1 評分）80 → 60"]
+
+
+def test_compare_with_a_v2_baseline_uses_the_v2_fields() -> None:
+    baseline = {name: {"overall": 80, "coverage": 80, "error": None, **V2} for name in ("v2drop", "legacydrop")}
+    results = [
+        scored("v2drop", 70, 70, 70, legacy=Score(80, 80, 80)),
+        scored("legacydrop", 80, 80, 80, legacy=Score(10, 10, 10)),
+    ]
+    assert compare(results, baseline) == ["v2drop：overall 80 → 70"]
+
+
+def test_compare_still_flags_safety_failures_against_a_legacy_baseline() -> None:
+    unsafe_case = replace(scored("a", 99, 99, 99), error=UNSAFE, safety="缺口")
+    assert compare([unsafe_case], {"a": {"overall": 0, "coverage": 0, "error": UNSAFE}}) == ["a：安全斷言沒過（UnsafeRoute：缺口）"]
+
+
+def test_run_cases_records_the_v1_score_of_the_same_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 600.0, 0.0)  # 對角線 849 m：v1 的 0 分距離 42 m，v2 是 60 m，兩版分數不同
+    (stroke,) = place(case.shape, case.center, case.size_m, case.rotation_deg)
+    closed = stroke.points + [stroke.points[0]]  # 封閉筆畫的目標含收尾那一段（與 matching.service 相同）
+    route = [(lon + 0.0002, lat + 0.0001) for lon, lat in closed]  # 偏 20 m 左右：分數在中間值
+    expected = score_v1([closed], route)
+    assert 0 < expected.coverage < 100 and expected not in (Score(80, 70, 75), score([closed], route))
+    fake = replace(fake_match_result([seg(route)]), route_points=route)  # match_shape 回傳的 v2 分數是 Score(80, 70, 75)
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake)
+    (res,) = run_cases(EdgesRouter(), [case], denied_ids=frozenset(), warm_up=False)
+    assert (res.coverage, res.cleanliness, res.overall) == (80, 70, 75)
+    assert (res.legacy_coverage, res.legacy_cleanliness, res.legacy_overall) == (
+        expected.coverage, expected.cleanliness, expected.overall,
+    )
+    assert res.score_version == SCORE_VERSION
+
+
+def test_closed_target_includes_the_closing_edge_for_the_v1_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 路線完全照封閉目標騎一圈：v1 也該是滿分；漏了收尾那段，路線的收尾邊就會被當成多出來的線
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 1000.0, 0.0)
+    (stroke,) = place(case.shape, case.center, case.size_m, case.rotation_deg)
+    route = stroke.points + [stroke.points[0]]
+    fake = replace(fake_match_result([seg(route)]), route_points=route)
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake)
+    (res,) = run_cases(EdgesRouter(), [case], denied_ids=frozenset(), warm_up=False)
+    assert (res.legacy_coverage, res.legacy_cleanliness, res.legacy_overall) == (100, 100, 100)
+
+
+def test_row_and_summary_show_the_v1_overall_next_to_v2() -> None:
+    a = scored("a", 80, 80, 80, legacy=Score(60, 60, 61))
+    b = scored("b", 60, 60, 60, legacy=Score(40, 40, 41))
+    assert format_header().split()[:5] == ["name", "overall", "v1", "cov", "clean"]
+    assert format_row(a).split()[:5] == ["a", "80", "61", "80", "80"]
+    failed = scored("c", 0, 0, 0, legacy=Score(0, 0, 0), error="AllStrokesFailed")
+    assert "平均 overall 70.0（v1 評分 51.0）" in summarize([a, b, failed])
+    assert "平均 overall -（v1 評分 -）" in summarize([failed])
+
+
+def test_cli_update_baseline_writes_v2_and_legacy_fields(fake_run: FakeRun) -> None:
+    fake_run([scored("a", 80, 70, 75, legacy=Score(60, 50, 55))], "--update-baseline")
+    saved = json.loads(fake_run.baseline.read_text())["a"]
+    assert (saved["coverage"], saved["cleanliness"], saved["overall"]) == (80, 70, 75)
+    assert (saved["legacy_coverage"], saved["legacy_cleanliness"], saved["legacy_overall"]) == (60, 50, 55)
+    assert saved["score_version"] == SCORE_VERSION
+    # 剛寫的 baseline 是 v2：下一次比 v2 分數，v1 分數掉了不算退步
+    fake_run([scored("a", 80, 70, 75, legacy=Score(0, 0, 0))])
+
+
+def test_cli_says_when_it_compares_against_a_legacy_baseline(fake_run: FakeRun, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_run.baseline.write_text(json.dumps({"a": {"overall": 50, "coverage": 50, "error": None}}))
+    fake_run([scored("a", 90, 90, 90, legacy=Score(50, 50, 50))])  # v1 分數沒退步：exit 0
+    assert "提示：baseline 有 1 個案例是 v1 評分" in capsys.readouterr().out
+    fake_run.baseline.write_text(json.dumps({"a": {"overall": 50, "coverage": 50, "error": None, **V2}}))
+    fake_run([scored("a", 90, 90, 90, legacy=Score(50, 50, 50))])
+    assert "提示：baseline" not in capsys.readouterr().out
