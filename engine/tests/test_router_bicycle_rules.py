@@ -1,5 +1,6 @@
 """P0 核心：bicycle 必須遵守單行道、允許 oneway:bicycle=no 的逆向、避開快速道路。"""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -91,7 +92,10 @@ def test_edges_report_way_ids_and_heading(router: Router) -> None:
 def test_edges_tolerate_repeated_vertex(router: Router) -> None:
     # edge_walk 逐點比對路段形狀：重複一個點（route 端點落在路口時會出現）就整條配不上
     along = router.route(grid_point(0, 1), grid_point(6, 1)).points
-    assert router.edges([along[0], *along]) == router.edges(along)
+    repeated, plain = router.edges([along[0], *along]), router.edges(along)
+    assert [replace(e, begin_shape_index=None, end_shape_index=None) for e in repeated] == [
+        replace(e, begin_shape_index=None, end_shape_index=None) for e in plain]  # 範圍的編號會因重複的點而不同
+    assert [e.begin_shape_index for e in repeated][0] == 0 and repeated[-1].end_shape_index == len(along)
 
 
 def test_edges_of_zero_length_route_is_empty(router: Router) -> None:

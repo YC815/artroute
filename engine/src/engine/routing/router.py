@@ -22,6 +22,7 @@ MAX_SNAP_GAP_RADII = 2  # 吸附結果、route 端點離原始輸入點的上限
 # 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
 ROUTE_NODE_SNAP_TOLERANCE_M = 0
 CACHE_SIZE_BYTES = 256 * 1024 * 1024  # 每個 worker 各有一份 tile 快取（Valhalla 預設 1 GB）
+_SHAPE_ALIGN_M = 0.5  # edge_walk 回應的形狀與輸入逐點對得上的容許誤差（polyline6 編碼本身的誤差約 0.1 m）
 # fast 吸附的轉彎懲罰（唯一定義處）。依據 P2.5 spec §5.1：使用者盲測 V2（加 500）對現行 2 勝 0 負 10 平，
 # 減少鑽進旁邊巷子又退出來的小刺。不帶時由 meili 設定決定（設定檔的 bicycle 模式是 140）
 FAST_TURN_PENALTY_FACTOR = 500.0
@@ -42,6 +43,11 @@ class EdgeInfo:
     # 這次經過的方向自行車不能騎（逆向，見 _wrong_way）；None = Valhalla 沒給方向資訊、判斷不了。
     # 預設 False 給測試的假 router 用；Router.edges 一律明確填
     wrong_way: bool | None = False
+    # 這條 edge 在 Router.edges 的 points 參數（折線）上的範圍：begin_shape_index..end_shape_index 是頂點編號（含兩端）。
+    # None = 不知道（Valhalla 沒給、值不合理，或 edge_walk 的形狀與輸入對不上）；缺漏時 bench 的合法重現（bench.replay）
+    # 重現不了，禁行與逆向的判定就不會被豁免
+    begin_shape_index: int | None = None
+    end_shape_index: int | None = None
 
 
 class RoutingError(Exception):
@@ -61,6 +67,36 @@ def _wrong_way(edge: dict) -> bool | None:
     if traversability not in ("forward", "backward") or not isinstance(forward, bool):
         return None
     return forward != (traversability == "forward")
+
+
+def _align_shape(matched: list[LonLat], shape: list[LonLat]) -> list[int] | None:
+    """回應形狀（matched）的每個點對到輸入形狀（shape，已去重）的第幾個點；對不上回傳 None。
+    實測：edge_walk 的形狀就是輸入的形狀，但路徑終點是路口時，回應尾端會多一條長度 0 的 edge，形狀多一個重複的終點，
+    所以先去掉 matched 的連續重複點再逐點比對（容許 _SHAPE_ALIGN_M 的編碼誤差）。"""
+    index: list[int] = []
+    deduped: list[LonLat] = []
+    for point in matched:
+        if not deduped or point != deduped[-1]:
+            deduped.append(point)
+        index.append(len(deduped) - 1)
+    if len(deduped) != len(shape) or any(haversine_m(m, p) > _SHAPE_ALIGN_M for m, p in zip(deduped, shape)):
+        return None
+    return index
+
+
+def _edge_span(edge: dict, aligned: list[int] | None, kept: list[int], n_points: int) -> dict[str, int | None]:
+    """trace_attributes 的 edge 範圍（回應形狀上的頂點編號）換算成輸入折線（含重複點）的編號。
+    aligned 是 _align_shape 的結果；kept[i] 是去重後第 i 個點在輸入折線的編號，n_points 是輸入折線的點數。
+    形狀對不上、缺欄位、不是整數、反向或越界都不給範圍（None）。"""
+    begin, end = edge.get("begin_shape_index"), edge.get("end_shape_index")
+    ok = all(isinstance(i, int) and not isinstance(i, bool) for i in (begin, end))
+    if aligned is None or not ok or not 0 <= begin <= end < len(aligned):
+        return {"begin_shape_index": None, "end_shape_index": None}
+    first, last = aligned[begin], aligned[end]
+    return {
+        "begin_shape_index": kept[first],
+        "end_shape_index": kept[last + 1] - 1 if last + 1 < len(kept) else n_points - 1,  # 終點連同後面重複的點
+    }
 
 
 def load_config(build_dir: Path, *, sigma_z: float | None = None) -> dict:
@@ -185,7 +221,8 @@ class Router:
         # edge_walk 把折線的點逐一對上路段形狀的點，多一個重複點整條就配不上。
         # route 在 node_snap_tolerance=0 時，端點剛好落在路口會重複路口那個點；兩端吸附到同一點時整條只剩一個點。
         # 重複點沒有任何幾何資訊，去掉不影響結果；只剩一個點代表沒有經過任何路段
-        shape = [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
+        kept = [i for i, p in enumerate(points) if i == 0 or p != points[i - 1]]  # 去重後的點在 points 的編號
+        shape = [points[i] for i in kept]
         if len(shape) < 2:
             return []
         response = self._call(
@@ -196,11 +233,18 @@ class Router:
                 "shape_match": "edge_walk",
                 "filters": {
                     "attributes": ["edge.way_id", "edge.begin_heading", "edge.use", "edge.length", "edge.traversability",
-                                   "edge.forward"],
+                                   "edge.forward", "edge.begin_shape_index", "edge.end_shape_index", "shape"],
                     "action": "include",
                 },
             },
         )
+        try:
+            matched = decode(response["shape"]) if "shape" in response else []
+        except (TypeError, ValueError, IndexError) as error:
+            raise RoutingError(f"Valhalla 回應格式不符：{error!r}") from error
+        # edge 的範圍是 Valhalla 回應的形狀上的頂點編號。只有回應的形狀與輸入逐點對得上時，編號才能換算成 points 的編號；
+        # 對不上就不給範圍，免得把別處的幾何當成這條 edge
+        aligned = _align_shape(matched, shape)
         try:
             return [
                 EdgeInfo(
@@ -209,6 +253,7 @@ class Router:
                     use=e.get("use", ""),  # 量測用的欄位：缺了用預設值，建圖驗證不能因此失敗
                     length_km=e.get("length", 0.0),
                     wrong_way=_wrong_way(e),
+                    **_edge_span(e, aligned, kept, len(points)),
                 )
                 for e in response["edges"]
             ]
