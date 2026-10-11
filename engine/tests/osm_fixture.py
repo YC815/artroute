@@ -361,10 +361,36 @@ SHORT_SPUR_MAP: list[MeterWay] = [
     MeterWay(9002, [(600.0 + SHORT_SPUR_X, 0.0), SHORT_SPUR_TIP], RESIDENTIAL),
 ]
 
+# 重疊的 footway 與 cycleway：兩條 way 共用同一組節點與形狀（第 0 排：兩條畫同方向；第 1 排：cycleway 畫反方向），
+# 兩端各接一條 residential。edge_walk 沿這個形狀走會一半配到 cycleway（6002／6022）、一半配到 footway（6001／6021，
+# traversability: none），bench 的安全斷言因此誤報逆向（真實路網 hi@taipei_daan 的 connector 就是這樣）；
+# 自行車的 route 只會走 cycleway。
+OVERLAP_X = 90_000.0
+OVERLAP_ROW_M = 100.0
+
+
+def overlap_shape(row: int, *, reverse: bool = False) -> list[tuple[float, float]]:
+    y = row * OVERLAP_ROW_M
+    shape = [(OVERLAP_X, y), (OVERLAP_X + 30.0, y + 4.0), (OVERLAP_X + 60.0, y)]
+    return shape[::-1] if reverse else shape
+
+
+OVERLAP_MAP: list[MeterWay] = [
+    way
+    for row, (footway_id, cycleway_id, cycleway_reversed) in enumerate([(6001, 6002, False), (6021, 6022, True)])
+    for way in (
+        MeterWay(footway_id, overlap_shape(row), {"highway": "footway"}),
+        MeterWay(cycleway_id, overlap_shape(row, reverse=cycleway_reversed), {"highway": "cycleway"}),
+        MeterWay(6100 + 2 * row, [(OVERLAP_X, row * OVERLAP_ROW_M), (OVERLAP_X - 50.0, row * OVERLAP_ROW_M)], RESIDENTIAL),
+        MeterWay(6101 + 2 * row, [(OVERLAP_X + 60.0, row * OVERLAP_ROW_M), (OVERLAP_X + 110.0, row * OVERLAP_ROW_M)],
+                 RESIDENTIAL),
+    )
+]
+
 # 所有規劃器場景放進同一個 pbf（各自相距 10 km，互不干擾）：tests/conftest.py 的 planner_build 用它建 tiles 與路網圖
 PLANNER_MAPS: list[MeterWay] = [
     *PARALLEL_MAP, *CORNER_MAP, *DIAGONAL_MAP, *ONEWAY_MAP, *SPIKE_MAP, *SQUARE_MAP, *GAP_MAP, *DETOUR_MAP,
-    *SHORT_SPUR_MAP,
+    *SHORT_SPUR_MAP, *OVERLAP_MAP,
 ]
 
 
