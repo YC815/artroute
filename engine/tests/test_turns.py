@@ -219,3 +219,21 @@ def test_strict_still_measures_sharp_turns_that_are_not_u_turns() -> None:
     assert not strict_needs_no_route_to_reject(INCOMING, sharp)
     assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), INCOMING, sharp)
     assert not rideable_strict(TurnBlockRouter(blocked=J), Deadline(10), INCOMING, sharp)
+
+
+def test_strict_catches_a_retrace_seen_only_from_the_incoming_side() -> None:
+    # 複審 nit 2：迴轉後只走 1.5 m 路線就結束（outgoing 不到 2 m，只能從 incoming 那側量）：
+    # incoming 往回 2 m 的點落在 outgoing 上，是原路折回；rideable 交給 route（直線 6.5 m）就放行了
+    incoming, outgoing = [east(J, -200), J], [J, east(J, -1.5)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+
+
+def test_strict_catches_a_retrace_offset_just_under_the_join_tolerance() -> None:
+    # 複審 nit 3：折回的路與來的路平行、相距 0.9 m（例如同一條路的對向車道畫成兩條線）：仍是原地迴轉
+    incoming = [east(J, -200), J]
+    outgoing = [J, north(J, 0.9), north(east(J, -100), 0.9)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)

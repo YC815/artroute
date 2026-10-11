@@ -120,11 +120,12 @@ def _junction_at(segments: list[Segment], k: int) -> _Junction:
 
 
 def _strokes(segments: list[Segment]) -> set[int]:
-    return {s.stroke_index for s in segments if s.kind == "stroke" and s.stroke_index is not None}
+    """路線上畫了哪些筆畫：stroke 與 detour 段都算（整段 trace 失敗時筆畫可能全是 detour，detour 不記警告）；connector 不屬於筆畫。"""
+    return {s.stroke_index for s in segments if s.kind != "connector" and s.stroke_index is not None}
 
 
 def _cheap_ok(pruned: _Pruned, strokes: set[int]) -> bool:
-    """不用 Valhalla 的判斷：strokes（剪之前路線上有 stroke 段的筆畫）都還在；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎。"""
+    """不用 Valhalla 的判斷：strokes（剪之前路線上畫了的筆畫，見 _strokes）都還在；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎。"""
     if not strokes <= _strokes(pruned.segments):
         return False
     return not _has_new_junction(pruned) or not strict_needs_no_route_to_reject(
@@ -173,6 +174,7 @@ def _prune(router: MatchRouter, state: _State, targets: list[list[LonLat]], dead
             state.attempts += 1
             if state.baseline is None:
                 state.baseline = score(targets, route_points(state.segments)).exact
+                deadline.check()  # 第一次嘗試要算兩次全路線評分：中間也看一次，大路線不會連算兩次才發現到期
             after = score(targets, route_points(pruned.segments)).exact
             deadline.check()  # 全路線評分可能就花掉不少時間：到期就不再呼叫 route
             if after < state.baseline or not _turns_ok(router, deadline, pruned, state.created):

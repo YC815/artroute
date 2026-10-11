@@ -266,6 +266,18 @@ def test_cut_that_removes_a_whole_stroke_is_not_made() -> None:
     assert any(s.stroke_index == 1 and s.kind == "stroke" for s in result)
 
 
+def test_cut_that_removes_a_stroke_drawn_only_by_a_detour_is_not_made() -> None:
+    # 複審 R1：整段 trace 失敗時筆畫可能全是 detour（例如短筆畫逆著單行道），detour 不記警告：剪掉一樣會悄悄消失
+    x = east(W, 500)
+    d = north(x, 40)
+    dot = [d, east(d, 4), east(north(d, 4), 4), north(d, 4), d]
+    segments = [seg([W, x]), seg([x, d], "connector", None), seg(dot, "detour", 1), seg([d, x], "connector", None), seg([x, C])]
+    targets = [[W, C], dot]
+    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
+    result = run(segments, targets=targets, extent_m=target_extent_m(targets))
+    assert any(s.stroke_index == 1 and s.kind == "detour" for s in result)
+
+
 def test_u_turn_hidden_by_a_vertex_on_only_one_side_is_not_cut() -> None:
     # 審查 B1：N 是 J 西邊 5 m 的路口、M 是 J 西邊 3 m 的段落邊界。剪掉 J 的圈會變成 W→N→J→M→N→北：
     # 在 N 東邊 5 m 的路中間迴轉。兩側的頂點不同（M 只在回程），探針繞過 J、route 量到 N 的合法轉彎
@@ -377,6 +389,14 @@ def test_the_budget_never_eats_into_the_reserve(monkeypatch: pytest.MonkeyPatch)
     now = [0.0]
     slow_scores(monkeypatch, now, 0.3)
     assert run(TWO_LOOPS, deadline=Deadline(0.8, clock=lambda: now[0])) == TWO_LOOPS
+
+
+def test_first_attempt_checks_the_budget_between_its_two_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 複審 nit 1：外層 0.45 s → 子期限 0.15 s。每次評分 0.25 s：剪前那次評分完子期限已經到了，
+    # 要在這裡就停（回傳輸入）；連算第二次會讓外層也到期（0.5 s），整個 /match 從有結果變成 504
+    now = [0.0]
+    slow_scores(monkeypatch, now, 0.25)
+    assert run(TWO_LOOPS, deadline=Deadline(0.45, clock=lambda: now[0])) == TWO_LOOPS
 
 
 def test_already_expired_deadline_skips_pruning_without_raising() -> None:
