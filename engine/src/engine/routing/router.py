@@ -48,7 +48,7 @@ class EdgeInfo:
     # 預設 False 給測試的假 router 用；Router.edges 一律明確填
     wrong_way: bool | None = False
     # 這條 edge 在 Router.edges 的 points 參數（折線）上的範圍：begin_shape_index..end_shape_index 是頂點編號（含兩端）。
-    # None = 不知道（Valhalla 沒給、值不合理，或 edge_walk 的形狀與輸入對不上）；缺漏時 bench 的合法重現（bench.replay）
+    # None = 不知道（Valhalla 沒給、值不合理，或 edge_walk 的形狀與輸入對不上）；缺漏時 合法重現（matching.replay）
     # 重現不了，禁行與逆向的判定就不會被豁免
     begin_shape_index: int | None = None
     end_shape_index: int | None = None

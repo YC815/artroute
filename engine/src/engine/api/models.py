@@ -129,6 +129,10 @@ class RouteRequest(BaseModel):
     strokes: list[StrokeIn] = Field(min_length=1, max_length=40)
 
 
+class VerifyRequest(RouteRequest):
+    """舊路網的草稿重新檢查：data_version 可以是舊的，簽章仍用同一把金鑰驗。"""
+
+
 class EditRequest(RouteRequest):
     op: EditOp
 

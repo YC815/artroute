@@ -3,19 +3,19 @@
 import json
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import KW_ONLY, dataclass, field, replace
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 from engine.bench.cases import Case, place
-from engine.bench.replay import legal_replay
 from engine.bench.svg import case_svg, safe_name
 from engine.matching.deadline import Deadline, MatchTimeout
+from engine.matching.safety import inspect_segments, matched_edges
 from engine.matching.score import SCORE_VERSION, score_v1, score_v2
 from engine.matching.service import AllStrokesFailed, StrokeInput, match_shape
 from engine.matching.turns import head_points, rideable, tail_points
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment
-from engine.routing.geo import haversine_m, polyline_length_m
+from engine.routing.geo import polyline_length_m
 from engine.routing.router import EdgeInfo, LonLat, RoutingError
 
 # 正式環境 /match 的時間上限（engine.app.create_app 的 match_timeout_s 預設 5.0 s；app 裡不是具名常數，改那邊時要同步）。
@@ -69,75 +69,32 @@ def _target_length_m(strokes: list[StrokeInput]) -> float:
     return sum(polyline_length_m(t) for t in stroke_targets(strokes))
 
 
-def _edges(router: BenchRouter, points: list[LonLat]) -> list[EdgeInfo]:
-    """折線經過的路段（edge）。edge_walk 整段配不上時（實測：吸附結果在死巷原地折返 A→B→A），從中間的點切成兩半各自配：
-    兩半共用切點，經過的路段一條都不會漏。切到只剩兩點還配不上，或配到的路段是空的，就丟 RoutingError。
-    edge 的範圍（begin／end_shape_index）一律是相對傳進來的 points：後半段的編號要加上切點的位移。"""
-    try:
-        edges = router.edges(points)
-    except RoutingError:
-        if len(points) <= 2:
-            raise
-        mid = len(points) // 2
-        return _edges(router, points[: mid + 1]) + [_shifted(e, mid) for e in _edges(router, points[mid:])]
-    if not edges and len(set(points)) >= 2:
-        raise RoutingError("沒有配到任何路段")
-    return edges
-
-
-def _shifted(edge: EdgeInfo, offset: int) -> EdgeInfo:
-    if edge.begin_shape_index is None or edge.end_shape_index is None:
-        return edge
-    return replace(edge, begin_shape_index=edge.begin_shape_index + offset, end_shape_index=edge.end_shape_index + offset)
-
-
 def safety_problem(
     router: BenchRouter, segments: list[Segment], denied_ids: frozenset[int]
 ) -> tuple[str, str] | None:
     """吸附結果的安全不變式；通過回傳 None，否則回傳 (UNSAFE 或 UNDETERMINED, 說明)。
 
+    檢查本身在 matching.safety.inspect_segments（/verify 共用），這裡只決定回報哪一項、怎麼寫說明：
     1. 相鄰路段的接點相距 ≤ JOIN_TOLERANCE_M：超過的話輸出會把缺口畫成一條地圖上不存在的直線。
-    2. 每一段經過的路段（edges）都不是被禁行的 way。逐段查：每段都是 Valhalla 自己的輸出；配不上就切開再配（_edges）。
+    2. 每一段經過的路段（edges）都不是被禁行的 way。
     3. 經過的路段沒有逆向騎（EdgeInfo.wrong_way，Valhalla 的 edge.traversability 與 edge.forward）；
        判斷不了方向（Valhalla 沒給欄位）算 UNDETERMINED。
-
-    2、3 的判定來自 edge_walk，它在兩條 way 共用同一段幾何時可能配錯 way（例如與 cycleway 重疊的 footway）。
-    所以被判禁行或逆向的 edge 還要「合法重現」（bench.replay.legal_replay）：用遵守單行與禁行的 router.route
-    重新規劃該 edge 的範圍，幾何完全重合才豁免；重現不了（含範圍欄位缺漏）一律照舊算不安全。
-    重現不用 map_snap（它遵守通行權，永遠判不出逆向）。
+    被判禁行或逆向的 edge 要先過「合法重現」（matching.replay.legal_replay）才算豁免，細節見 inspect_segments。
     """
-    for i, (a, b) in enumerate(zip(segments, segments[1:])):
-        gap_m = haversine_m(a.points[-1], b.points[0])
-        if gap_m > JOIN_TOLERANCE_M:
-            return UNSAFE, f"第 {i}、{i + 1} 段之間缺口 {gap_m:.1f} m"
-    used: set[int] = set()
-    wrong: set[int] = set()
-    unknown = False
-    checked = 0
-    for i, segment in enumerate(segments):
-        if len(set(segment.points)) < 2:
-            continue  # 封閉圈旋轉切出的零長度片段：沒有經過任何路段
-        try:
-            edges = _edges(router, segment.points)
-        except RoutingError as error:
-            return UNDETERMINED, f"第 {i} 段（{segment.kind}）配不出經過的路段：{error}"
-        for e in edges:
-            denied, backwards = e.way_id in denied_ids, bool(e.wrong_way)
-            if (denied or backwards) and not legal_replay(
-                router, segment.points, e.begin_shape_index, e.end_shape_index, denied_ids
-            ):
-                if denied:
-                    used.add(e.way_id)
-                if backwards:
-                    wrong.add(e.way_id)
-        unknown = unknown or any(e.wrong_way is None for e in edges)
-        checked += 1
-    if not checked:
+    report = inspect_segments(router, segments, denied_ids)
+    if report.gaps:
+        i, gap_m = report.gaps[0]
+        return UNSAFE, f"第 {i}、{i + 1} 段之間缺口 {gap_m:.1f} m"
+    if report.undetermined:
+        return UNDETERMINED, report.undetermined[min(report.undetermined)]
+    if not report.checked:
         return UNDETERMINED, "路線沒有任何可檢查的路段"
+    used = set().union(*report.used.values())
+    wrong = set().union(*report.wrong.values())
     if used or wrong:
         problems = [f"經過被禁行的 way {sorted(used)}"] * bool(used) + [f"逆向騎 way {sorted(wrong)}"] * bool(wrong)
         return UNSAFE, "；".join(problems)
-    if unknown:
+    if report.unknown:
         return UNDETERMINED, "有經過的路段 Valhalla 沒給通行方向，判斷不了是否逆向"
     return None
 
@@ -163,7 +120,7 @@ def _measurable_edges(router: BenchRouter, segment: Segment) -> list[EdgeInfo]:
     if len(set(segment.points)) < 2:
         return []  # 零長度片段沒有經過任何路段
     try:
-        return _edges(router, segment.points)
+        return matched_edges(router, segment.points)
     except RoutingError:
         return []  # 配不出路段的段落略過；safety_problem 已經把這種案例記成 UNDETERMINED
 

@@ -113,6 +113,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify
+         * @description 舊路網的草稿重新檢查（route editing spec §3.6）。與 /match 共用名額與斷線取消，期限是 verify_timeout_s。
+         */
+        post: operations["verify_verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -486,6 +506,20 @@ export interface components {
             /** Type */
             type: string;
         };
+        /**
+         * VerifyRequest
+         * @description 舊路網的草稿重新檢查：data_version 可以是舊的，簽章仍用同一把金鑰驗。
+         */
+        VerifyRequest: {
+            /** Data Version */
+            data_version: string;
+            /** Route Sig */
+            route_sig: string;
+            /** Segments */
+            segments: components["schemas"]["SegmentIn"][];
+            /** Strokes */
+            strokes: components["schemas"]["StrokeIn"][];
+        };
         /** WarningOut */
         WarningOut: {
             /**
@@ -738,6 +772,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusResponse"];
+                };
+            };
+        };
+    };
+    verify_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchResponse"];
+                };
+            };
+            /** @description 簽章不對（invalid_route）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 路網資料尚未就緒（no_data） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 重新檢查超過時間上限（timeout） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

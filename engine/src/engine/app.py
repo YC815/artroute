@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+import json
 import logging
 import math
 import os
@@ -42,7 +43,9 @@ from engine.api.models import (
     SearchResult,
     StatusResponse,
     ValidationErrorResponse,
+    VerifyRequest,
 )
+from engine.data.build import DENIED_FILE
 from engine.data.layout import DataLayout
 from engine.data.pipeline import read_meta
 from engine.edit.ops import cut_at, drag, reroute
@@ -50,6 +53,8 @@ from engine.edit.position import RoutePos
 from engine.edit.signature import load_or_create_key, sign_route, verify_route
 from engine.edit.splice import EditRejected
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
+from engine.matching.join import junction_ok
+from engine.matching.safety import unsafe_segments
 from engine.matching.service import (
     TAIWAN_BBOX,
     AllStrokesFailed,
@@ -76,6 +81,8 @@ TIMEOUT_MESSAGE = "吸附超過時間上限，請縮小圖形或減少部件"
 EDIT_TIMEOUT_MESSAGE = "微調超過時間上限，請把範圍選小一點再試"
 STALE_DATA_MESSAGE = "路網已經更新，這條路線要先重新檢查才能繼續微調"
 INVALID_ROUTE_MESSAGE = "路線的簽章不對：只能微調引擎輸出過、沒有修改的路線"
+VERIFY_TIMEOUT_MESSAGE = "重新檢查超過時間上限，請稍後再試"
+VERIFY_FAILED_MESSAGE = "這條路線在新的路網上有不能騎的地方（逆向、禁行或轉不過去），請重畫標出的段落"
 MAX_VALIDATION_ISSUES = 20
 DISCONNECT_POLL_S = 0.05  # 多久看一次呼叫端還在不在（也是等名額時重新檢查的間隔）
 CLIENT_CLOSED = 499  # nginx 的慣例：呼叫端已經離開，這個回應不會有人收到（uvicorn 也不會送出）
@@ -96,6 +103,16 @@ EDIT_ERRORS: dict[int | str, dict[str, Any]] = {
     422: {"model": ErrorResponse | ValidationErrorResponse, "description": "簽章不對、這個操作做不到，或請求格式錯誤"},
     503: {"model": ErrorResponse, "description": "路網資料尚未就緒（no_data）"},
     504: {"model": ErrorResponse, "description": "微調超過時間上限（timeout）"},
+}
+
+
+VERIFY_ERRORS: dict[int | str, dict[str, Any]] = {
+    422: {
+        "model": ErrorResponse | ValidationErrorResponse,
+        "description": "簽章不對（invalid_route）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤",
+    },
+    503: {"model": ErrorResponse, "description": "路網資料尚未就緒（no_data）"},
+    504: {"model": ErrorResponse, "description": "重新檢查超過時間上限（timeout）"},
 }
 
 
@@ -210,6 +227,70 @@ def _match(
     return _response(result, version, key.get())
 
 
+class _CurrentDenied:
+    """每個 worker 一份：目前 build 被禁行的 way id（bicycle_denied_ways.json），換版時重新讀。"""
+
+    def __init__(self, layout: DataLayout) -> None:
+        self._layout = layout
+        self._lock = threading.Lock()
+        self._version: str | None = None
+        self._ids: frozenset[int] = frozenset()
+
+    def get(self, version: str) -> frozenset[int]:
+        with self._lock:
+            if version != self._version:
+                raw = json.loads((self._layout.builds_dir / version / DENIED_FILE).read_text())
+                self._ids, self._version = frozenset(d["id"] for d in raw), version
+            return self._ids
+
+
+def _segments_in(payload: VerifyRequest) -> list[Segment]:
+    return [Segment(s.kind, s.stroke_index, list(s.points), s.length_m) for s in payload.segments]
+
+
+def _problem_segments(
+    router: Any, denied_ids: frozenset[int], segments: list[Segment], deadline: Deadline
+) -> list[int]:
+    """在 router 的路網上有問題的段落序號：缺口、禁行、逆向、判斷不了（matching.safety），
+    加上每個接點的轉彎（原本的規則，不是嚴格版）；接點有問題時兩側都列。"""
+    bad = set(unsafe_segments(router, segments, denied_ids, deadline) or [])
+    for i in range(len(segments) - 1):
+        if i in bad and i + 1 in bad:
+            continue
+        deadline.check()
+        if not junction_ok(router, deadline, segments, i):
+            bad |= {i, i + 1}
+    return sorted(bad)
+
+
+def _verify(
+    current: CurrentRouter, key: _EditKey, denied: _CurrentDenied, payload: VerifyRequest, deadline: Deadline
+) -> MatchResponse:
+    """舊路網的草稿重新檢查（route editing spec §3.6）。簽章用請求的版本驗：它只證明「這是引擎在那個版本輸出過的」。
+    版本與 current 相同就不必重查；不同就在 current 的路網上查，全部通過才以 current 的版本重新簽章。"""
+    router, version = _get_router(current)
+    segments = _segments_in(payload)
+    if not verify_route(key.get(), payload.data_version, segments, payload.route_sig):
+        raise _error(422, "invalid_route", INVALID_ROUTE_MESSAGE)
+    strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
+    try:
+        if payload.data_version != version:
+            try:
+                denied_ids = denied.get(version)
+            except (OSError, ValueError, KeyError, TypeError) as error:  # 沒有禁行清單：判斷不了，不放行
+                logger.error("讀不到 %s 的禁行 way 清單：%s", version, error)
+                raise _error(503, "no_data", NO_DATA_MESSAGE) from error
+            bad = _problem_segments(router, denied_ids, segments, deadline)
+            if bad:
+                raise _error(422, "verify_failed", VERIFY_FAILED_MESSAGE, segments=bad)
+        result = build_result(strokes, segments, [])
+    except TargetTooSmall as error:
+        raise _error(422, "too_small", str(error)) from error
+    except MatchTimeout as error:
+        raise _error(504, "timeout", VERIFY_TIMEOUT_MESSAGE) from error
+    return _response(result, version, key.get())
+
+
 def _pos(pos: RoutePosIn) -> RoutePos:
     return RoutePos(pos.segment, pos.offset_m)
 
@@ -232,7 +313,7 @@ def _edit(current: CurrentRouter, key: _EditKey, payload: EditRequest, deadline:
     router, version = _get_router(current)
     if payload.data_version != version:
         raise _error(409, "stale_data", STALE_DATA_MESSAGE)
-    segments = [Segment(s.kind, s.stroke_index, list(s.points), s.length_m) for s in payload.segments]
+    segments = _segments_in(payload)
     if not verify_route(key.get(), payload.data_version, segments, payload.route_sig):
         raise _error(422, "invalid_route", INVALID_ROUTE_MESSAGE)
     strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
@@ -552,6 +633,9 @@ def create_app(
         # 必須是 async：同步的依賴會自己先去排 threadpool 的隊，起算點就太晚了
         return Deadline(match_timeout_s)
 
+    async def start_verify_deadline() -> Deadline:
+        return Deadline(verify_timeout_s)  # 要對每段做 trace_attributes，比 /match 久
+
     # 以下兩個不碰 I/O，用 async 直接在事件迴圈上回應
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -586,6 +670,17 @@ def create_app(
         """手動微調：剪掉、重畫、拖曳（route editing spec §3）。與 /match 共用名額、期限與斷線取消。"""
         log = _RequestLog(f"edit op={payload.op.type}", "edit", len(payload.strokes))
         work = functools.partial(_edit, current, edit_key, payload, deadline)
+        return await _serve(request, admission, deadline, log, work)
+
+    denied_cache = _CurrentDenied(layout)
+
+    @app.post("/verify", response_model=MatchResponse, responses=VERIFY_ERRORS)
+    async def verify(
+        request: Request, payload: VerifyRequest, deadline: Annotated[Deadline, Depends(start_verify_deadline)]
+    ) -> Any:
+        """舊路網的草稿重新檢查（route editing spec §3.6）。與 /match 共用名額與斷線取消，期限是 verify_timeout_s。"""
+        log = _RequestLog("verify", "verify", len(payload.strokes))
+        work = functools.partial(_verify, current, edit_key, denied_cache, payload, deadline)
         return await _serve(request, admission, deadline, log, work)
 
     roads_cache = _CurrentRoads(road_loader)

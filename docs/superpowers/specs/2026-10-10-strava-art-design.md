@@ -239,6 +239,7 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 - `/match` 回應與 `/search` 每個候選的 `match` 多 `route_sig`：伺服器金鑰（`/data/edit-key`，32 bytes，啟動時建立）對「`data_version` ＋依序的每段（種類、筆畫序號、長度、點）」算的 HMAC-SHA256（hex）。`segments[].kind` 多 `"edit"`（只有微調的回應會有）。只增加欄位，舊網站不受影響。
 - `POST /edit`：請求 `{ segments, data_version, route_sig, strokes, op }`，`segments`、`data_version`、`route_sig` 是上一次回應原封不動帶回來，`strokes` 同 `/match`；`op` 是 `{type:"cut", at}`、`{type:"reroute", from, to, mode:"shortest"|"shape"}`、`{type:"drag", grab, to:[lon,lat]}`，位置 `{segment, offset_m}`（第幾段、從該段起點沿折線量的公尺數）。回應與 `/match` 200 同形（`warnings` 一律空、`route_sig` 是新路線的簽章）。
 - 錯誤（都只有 `detail`，不回半成品）：`409 stale_data`（`data_version` 不是目前的路網）、`422 invalid_route`（簽章不對）、`422` 操作做不到（`not_on_route`、`nothing_to_cut`、`no_route`、`turn_not_rideable`、`no_road`，附繁中說明）、`422 too_small`（`strokes` 太小量不出分數）、請求格式錯誤（陣列）、`503 no_data`、`504 timeout`（`match_timeout_s`，預設 5 秒，與 `/match` 共用名額與斷線取消）。順序固定：版本 → 簽章 → 操作。
+- `POST /verify`：請求 `{ segments, data_version, route_sig, strokes }`（`data_version` 可以是舊的，簽章仍用同一把金鑰驗）。簽章不對 → `422 invalid_route`；`data_version` 就是目前的路網 → 直接回 200（分數重算、簽章不變）；不同 → 在目前的路網上逐段檢查（缺口、禁行的 way、逆向、判斷不了都算有問題，與 bench 的安全斷言同一套，`engine/src/engine/matching/safety.py`），再查每個接點的轉彎，全部通過才以目前的版本重新簽章回 200；沒過 → `422 verify_failed`，`detail.segments` 是有問題的段落序號（接點有問題時兩側都列），不回半成品。期限 `verify_timeout_s`（預設 15 秒，`504 timeout`），與 `/match` 共用名額與斷線取消。
 - `ErrorDetail` 多 `segments: int[] | null`（只有 `/verify` 的 `verify_failed` 會帶）。
 
 ### 4.6 自動搜尋（engine）

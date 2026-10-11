@@ -519,3 +519,12 @@ EDIT_DRAG_MAP: list[MeterWay] = [
 ]
 
 EDIT_MAPS: list[MeterWay] = [*EDIT_NEST_MAP, *EDIT_ONEWAY_MAP, *EDIT_SHAPE_MAP, *EDIT_DRAG_MAP]
+
+# /verify：同一張圖的兩個版本（舊路網、新路網）。東西向的街 (0, 0)–(600, 0)＋南邊 40 m 的平行路（_one_way_block），
+# 200–400 m 那條路在舊路網雙向、在新路網改成 oneway=yes（只能往西）：舊路網往東騎出來的路線在新路網上逆向。
+EDIT_VERIFY_X = 40_000.0
+EDIT_VERIFY_WAY_ID = 15001  # 200–400 m 那條路
+EDIT_VERIFY_OLD_MAP: list[MeterWay] = _one_way_block(EDIT_VERIFY_X, EDIT_VERIFY_WAY_ID - 1, [(400.0, 0.0), (200.0, 0.0)], {})
+EDIT_VERIFY_NEW_MAP: list[MeterWay] = _one_way_block(
+    EDIT_VERIFY_X, EDIT_VERIFY_WAY_ID - 1, [(400.0, 0.0), (200.0, 0.0)], {"oneway": "yes"}
+)

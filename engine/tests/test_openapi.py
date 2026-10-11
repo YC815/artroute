@@ -31,3 +31,15 @@ def test_match_declares_its_error_bodies(tmp_path: Path) -> None:
     detail = spec["components"]["schemas"]["ErrorDetail"]
     assert set(detail["properties"]) == {"code", "message", "warnings", "segments"}
     assert detail["required"] == ["code", "message"]
+
+
+def test_edit_and_verify_declare_their_error_bodies(tmp_path: Path) -> None:
+    paths = create_app(tmp_path).openapi()["paths"]
+    for path, statuses in {"/edit": ("409", "503", "504"), "/verify": ("503", "504")}.items():
+        responses = paths[path]["post"]["responses"]
+        for status in statuses:
+            assert _schema_refs(responses[status]["content"]["application/json"]["schema"]) == {"ErrorResponse"}
+        assert _schema_refs(responses["422"]["content"]["application/json"]["schema"]) == {
+            "ErrorResponse",
+            "ValidationErrorResponse",
+        }

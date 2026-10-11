@@ -4,7 +4,18 @@ import pytest
 
 from engine.data.build import build_with_patch
 from engine.routing.tiles import build_tiles
-from osm_fixture import CROSSING_MAP, EDIT_MAPS, PLANNER_MAPS, PRUNE_MAP, TEST_MAP, write_grid_pbf, write_meter_pbf
+from osm_fixture import (
+    CROSSING_MAP,
+    EDIT_MAPS,
+    EDIT_VERIFY_NEW_MAP,
+    EDIT_VERIFY_OLD_MAP,
+    PLANNER_MAPS,
+    PRUNE_MAP,
+    TEST_MAP,
+    MeterWay,
+    write_grid_pbf,
+    write_meter_pbf,
+)
 
 
 @pytest.fixture(scope="session")
@@ -41,6 +52,25 @@ def edit_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
     pbf = root / "edit.osm.pbf"
     write_meter_pbf(pbf, EDIT_MAPS)
     return build_tiles(pbf, root / "build")
+
+
+def _meter_config(tmp_path_factory: pytest.TempPathFactory, name: str, ways: list[MeterWay]) -> Path:
+    root = tmp_path_factory.mktemp(name)
+    pbf = root / f"{name}.osm.pbf"
+    write_meter_pbf(pbf, ways)
+    return build_tiles(pbf, root / "build")
+
+
+@pytest.fixture(scope="session")
+def verify_old_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """/verify 的舊路網：200–400 m 的路雙向。"""
+    return _meter_config(tmp_path_factory, "verify_old", EDIT_VERIFY_OLD_MAP)
+
+
+@pytest.fixture(scope="session")
+def verify_new_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """/verify 的新路網：同一張圖，200–400 m 的路改成 oneway=yes（只能往西）。"""
+    return _meter_config(tmp_path_factory, "verify_new", EDIT_VERIFY_NEW_MAP)
 
 
 @pytest.fixture(scope="session")
