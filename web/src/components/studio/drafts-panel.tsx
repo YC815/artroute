@@ -113,6 +113,11 @@ export function DraftsPanel({ view, openId, engineVersion, onOpen, onRemove }: P
     <section className="flex flex-col gap-2" aria-label="我的路線">
       <h2 className="text-sm font-semibold">我的路線</h2>
       {view.unavailable && <p className="text-xs text-muted-foreground">這個瀏覽器不能儲存草稿，微調過的路線不會保留。</p>}
+      {view.actionError && (
+        <p role="alert" className="text-xs text-destructive">
+          {view.actionError}
+        </p>
+      )}
       {view.overLimit && (
         <p role="status" className="text-xs text-destructive">
           {draftNoticeMessage("over_limit")}

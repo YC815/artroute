@@ -11,9 +11,17 @@ export type DraftsView = {
   unavailable: boolean;
   /** 草稿數超過上限（全部打開過、新草稿照樣存的結果）：請使用者刪幾份。 */
   overLimit: boolean;
+  /** 刪除、標記「打開過」失敗（IndexedDB 出錯）的說明；下一次成功的操作清掉。 */
+  actionError: string | null;
 };
 
-export const INITIAL_DRAFTS_VIEW: DraftsView = { drafts: [], loaded: false, unavailable: false, overLimit: false };
+export const INITIAL_DRAFTS_VIEW: DraftsView = {
+  drafts: [],
+  loaded: false,
+  unavailable: false,
+  overLimit: false,
+  actionError: null,
+};
 
 export type DraftsController = {
   refresh(): Promise<void>;
@@ -41,6 +49,7 @@ export function createDraftsController(deps: {
   let applied = 0;
   let disposed = false;
   let swept = false;
+  let actionError: string | null = null;
 
   const getDb = () => (db ??= deps.openDb());
 
@@ -55,21 +64,26 @@ export function createDraftsController(deps: {
       const drafts = await handle.list();
       if (disposed || seq < applied) return;
       applied = seq;
-      deps.onChange({ drafts, loaded: true, unavailable: false, overLimit: drafts.length > DRAFT_LIMIT });
+      deps.onChange({ drafts, loaded: true, unavailable: false, overLimit: drafts.length > DRAFT_LIMIT, actionError });
     } catch {
       if (disposed || seq < applied) return;
       applied = seq;
       db = null;
-      deps.onChange({ drafts: [], loaded: true, unavailable: true, overLimit: false });
+      deps.onChange({ drafts: [], loaded: true, unavailable: true, overLimit: false, actionError: null });
     }
   };
 
   const unsubscribe = deps.subscribe(() => void refresh());
   void refresh();
 
-  const change = async (apply: (handle: DraftDb) => Promise<unknown>) => {
+  /** 失敗不丟例外（呼叫端是 `void`，丟了就是未處理的 rejection）：留下說明給畫面，並記到 console。 */
+  const change = async (apply: (handle: DraftDb) => Promise<unknown>, failure: string) => {
     try {
       await apply(await getDb());
+      actionError = null;
+    } catch (error) {
+      console.error(failure, error);
+      actionError = failure;
     } finally {
       deps.notify();
       await refresh();
@@ -78,8 +92,8 @@ export function createDraftsController(deps: {
 
   return {
     refresh,
-    remove: (id) => change((handle) => handle.remove(id)),
-    markOpened: (id) => change((handle) => handle.markOpened(id, deps.now())),
+    remove: (id) => change((handle) => handle.remove(id), "刪除草稿失敗，請再試一次"),
+    markOpened: (id) => change((handle) => handle.markOpened(id, deps.now()), "更新草稿失敗：這份草稿可能會被自動刪除"),
     dispose() {
       disposed = true;
       unsubscribe();
