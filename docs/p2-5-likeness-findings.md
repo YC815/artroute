@@ -157,3 +157,78 @@
   安全斷言全過；4 km 的 v3 overall 85 → 87。
 - **場景測試**（每個驗證一件事，真的 Valhalla）：平行路（長度 ≤ 1.08 L）、轉角（選 60° 岔路而不是 85° 路口）、斜路（方向分數比 fast 高 ≥ 30、路線更短）、單行道（往東、往西都不逆向；規劃器忽略單行道時 Valhalla 照樣擋下）、死巷（fine 不騎進去，fast 會）、封閉筆畫仍是圈、部分退回 fast、Hausdorff 超過時退回 fast、quality 不帶／fast／沒有圖時與 fast 逐點相等。
 - **edge_walk**：Valhalla 3.9.1 的 `edge_walk` 會逆向騎單行道（只檢查頭尾兩條邊），所以照著走只用 map_snap（主 spec §8 第 47 列）。
+
+## 4. Q3 真實路網（本機，2026-10-11）
+
+分支 `claude/p2-5-planner-rl4bgr`，`ba0baa1`（合併 PR A 的寫回之後）。
+
+### 4.1 驗證、部署與重建
+
+- 本機引擎 1421 passed、零警告；網站全套通過。容器測試（m1，`docker build --target test`）1421 passed。
+- 只部署引擎（`hl deploy artroute-engine --internal`，`ba0baa1`）；部署後、重建前 `planner_ready: false`，測試路線的分數與 PR A 完全相同（網站行為不變）。
+- 重建路網（同一份 Geofabrik pbf，MD5 相同）：約 5 分鐘、`EXIT=0`，新 build `20261011T095232Z`。可騎路網圖 1,797,813 個節點、2,089,622 條邊，建圖 47.3 s、RSS 1431 MB，圖檔 224 MB（雲端推估 250 MB）；整個重建的容器記憶體峰值 3.54 GiB／7.817 GiB。`planner_ready: true`，保留 `040535Z`（回滾用）與 `095232Z`。
+- 下面的 bench 都用部署後的引擎（`/app`）、新 build，Router × 2；記憶體峰值（bench 全程每 2 秒取樣）2.33 GiB。
+
+### 4.2 吸附 bench：fast vs fine（25 個案例）
+
+| | fast | fine |
+|---|---|---|
+| 平均 v3／v2／v1（成功案例） | 67.6／51.5／52.0 | 65.7／49.1／48.8 |
+| v3 比較 | — | 好 3、差 19、平 3 |
+| 時間中位數／最慢 | 344／805 ms | 239／508 ms |
+| 安全斷言：不安全／無法判斷／不能直騎的接點 | 1／0／0 | 1／0／0 |
+| footway／steps／parking_aisle（m） | 25526／0／611 | 25823／0／1988 |
+
+| 案例 | v3 | 方向 | 長度 km | ms |
+|---|---|---|---|---|
+| `heart@taipei_daan` | 68 → 66 | 23 → 23 | 10.51 → 10.24 | 805 → 508 |
+| `heart@taichung_west` | 70 → 68 | 27 → 32 | 10.09 → 9.59 | 364 → 166 |
+| `heart@kaohsiung_lingya` | 73 → 71 | 32 → 33 | 9.11 → 9.25 | 128 → 147 |
+| `heart@taipei_riverside` | 47 → 48 | 21 → 24 | 17.88 → 27.46 | 349 → 273 |
+| `star@taipei_daan` | 68 → 67 | 31 → 34 | 11.22 → 11.12 | 558 → 239 |
+| `star@taichung_west` | 72 → 69 | 33 → 34 | 10.14 → 10.24 | 205 → 150 |
+| `star@kaohsiung_lingya` | 69 → 69 | 27 → 32 | 11.40 → 9.52 | 344 → 182 |
+| `star@taipei_riverside` | 53 → 50 | 32 → 29 | 21.08 → 26.82 | 317 → 297 |
+| `letter_l@taipei_daan` | 71 → 78 | 72 → 59 | 7.54 → 5.57 | 267 → 168 |
+| `letter_l@taichung_west` | 79 → 77 | 64 → 70 | 4.51 → 3.90 | 73 → 97 |
+| `letter_l@kaohsiung_lingya` | 78 → 73 | 40 → 39 | 4.17 → 4.46 | 34 → 116 |
+| `letter_l@taipei_riverside` | 68 → 68 | 82 → 83 | 2.00 → 1.88 | 100 → 214 |
+| `square@taipei_daan` | 75 → 73 | 57 → 57 | 12.12 → 12.62 | 792 → 458 |
+| `square@taichung_west` | 76 → 76 | 46 → 48 | 10.99 → 10.62 | 302 → 155 |
+| `square@kaohsiung_lingya` | 73 → 69 | 46 → 47 | 12.35 → 13.09 | 499 → 175 |
+| `square@taipei_riverside` | 56 → 51 | 52 → 51 | 25.45 → 27.82 | 466 → 338 |
+| `hi@taipei_daan`（兩邊都被判逆向，§4.5） | 74 → 71 | 69 → 72 | 14.47 → 13.61 | 433 → 413 |
+| `hi@taichung_west` | 69 → 68 | 60 → 59 | 15.31 → 15.09 | 217 → 254 |
+| `hi@kaohsiung_lingya` | 69 → 62 | 49 → 48 | 14.64 → 16.32 | 211 → 267 |
+| `hi@taipei_riverside` | 63 → 60 | 55 → 52 | 19.66 → 23.17 | 299 → 451 |
+| `heart@taipei_daan@r30` | 69 → 66 | 31 → 35 | 11.58 → 10.44 | 508 → 223 |
+| `star@taipei_daan@r30` | 63 → 64 | 29 → 31 | 11.70 → 12.02 | 669 → 472 |
+| `letter_l@taipei_daan@r30` | 59 → 57 | 22 → 22 | 5.23 → 4.49 | 241 → 133 |
+| `square@taipei_daan@r30` | 69 → 66 | 20 → 21 | 12.90 → 12.93 | 1185 → 270 |
+| `hi@taipei_daan@r30` | 66 → 61 | 20 → 21 | 14.77 → 15.58 | 653 → 403 |
+
+- fine 比 fast 快（中位數 239 ms），遠低於 P2.5 spec §3 的 3 秒；`graph.region` 在真實路網上也不是瓶頸。
+- 看圖（`heart@taipei_daan`、`hi@kaohsiung_lingya`、`square@taipei_riverside`）：
+  - fine 去掉了 `heart@taipei_daan` 右側那段 708 m 的繞路（§2.5），但左側多出幾根出去又折回的 detour。
+  - 斜邊仍是細碎的階梯，沒有變成 P2.5 spec §6.2 預期的「均勻的大階梯」。
+  - `hi@kaohsiung_lingya` 的筆畫差不多，差在串接的順序與方向：連接線變長、多一段繞路。
+  - 河濱（`taipei_riverside`）的 fine 路線普遍長很多（heart 17.9 → 27.5 km）。
+- 還沒查：fine 有多少範圍退回 fast（bench 沒有輸出這個數字）、折回的 detour 從哪裡來。進 backlog。
+
+### 4.3 搜尋 bench（12 個案例，搜尋仍用 fast）
+
+時間中位數 10.0 s、最慢 28.5 s（`heart@taipei_daan`），12 個案例都有 5 個候選，前 5 名平均 v3 81.6，與 §2.3 的 PR A 相同（搜尋 Q4 才改用規劃器）。不合格 1 個：`heart@taichung_west` 第 2 名被判逆向（way 544377822，§4.5）。
+
+### 4.4 第二輪盲測（`engine/tests/data/likeness/2026-10-11/`）
+
+- 樣本：12 個案例 × 前 3 名擺放 × 變體 Q2／P2／F，41 組配對（Q2 vs F 35 組、Q2 不同擺放 6 組；Q2 vs P2 沒有一組的 v3 差距達到 3）。被判不安全的兩條（`heart@taichung_west` Q2、P2 第 2 名）不進配對。
+- 使用者 41 組全標，有表態只有 10 組（目標 40 組沒有達到）：
+
+| 配對 | 差不多 | 選 Q2（fast） | 選 F（fine） |
+|---|---|---|---|
+| Q2 vs F | 27 | 5 | 3 |
+
+  不同擺放 6 組：選第 1 名 1、第 3 名 1、差不多 4。
+- **F 沒有達到「有表態的配對裡選 F ≥ 60%」**（3/8 = 38%）。
+- v3 與使用者一致 6/10（Q2 vs F 5/8、不同擺放 1/2），留一案例交叉驗證 6/10；v2 同樣 6/10。差不多的配對 v3 差距中位數 1.60、有表態 1.80：v3 分不出使用者覺得差不多和有差的配對。
+- 使用者看並排縮圖的意見：有的案例 fast 好（`hi@kaohsiung_lingya`），有的 fine 好很多（`letter_l@taipei_daan`，v3 71 → 78），**兩個都要保留、讓使用者切換**。網站改成兩版都算、可切換、預設快速版（主 spec §8 第 60 列）。
