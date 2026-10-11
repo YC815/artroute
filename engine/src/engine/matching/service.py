@@ -269,6 +269,14 @@ def _fallback_points(points: list[LonLat], items: list[_Item], k: int, closed: b
     return [head, *(points[i % n] for i in range(item.start + 1, item.end)), tail]
 
 
+def _wrap_fallbacks(items: list[_Item], n: int) -> list[_Item]:
+    """封閉筆畫首尾相鄰：第一個與最後一個都是退回範圍時（規劃的起點落在兩個輸入點之間，交界那段兩邊都含），
+    跨過起點合成一個 (最後一個的頭, 第一個的尾 + n)、放到最後，交給 fast 一次；不然那段會被前後兩次 fast 各畫一遍。"""
+    if len(items) > 1 and isinstance(items[0], _Fallback) and isinstance(items[-1], _Fallback):
+        return [*items[1:-1], _Fallback(items[-1].start, items[0].end + n)]
+    return items
+
+
 def _link_blocks(fine: _Fine, blocks: list[tuple[list[list[Segment]], bool]], index: int) -> list[list[Segment]]:
     """依目標順序把各段（照著走收下的段、退回 fast 的 chain）串成 chain。blocks 是 (chain 的 list, 這段有沒有警告)。
 
@@ -301,6 +309,8 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
         整個筆畫都沒規劃時，交給 fast 的就是整個目標，結果與 fast 相同。"""
         stroke, plan = strokes[index], fine.plans[index]
         items = _follow_pieces(fine, plan.steps, index, stroke.closed)
+        if stroke.closed:
+            items = _wrap_fallbacks(items, len(stroke.points))
         blocks: list[tuple[list[list[Segment]], bool]] = []
         for k, item in enumerate(items):
             if not isinstance(item, _Fallback):

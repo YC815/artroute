@@ -218,6 +218,33 @@ def test_cancellation_during_fine_propagates(monkeypatch) -> None:
                     graph=Graph())
 
 
+SQUARE = [(121.50, LAT), (121.51, LAT), (121.51, LAT + 0.01), (121.50, LAT + 0.01)]
+
+
+def test_closed_stroke_merges_the_first_and_last_fallbacks_across_its_start(monkeypatch) -> None:
+    """封閉筆畫的規劃從輸入點 1–2 之間開始：第一段照著走失敗、最後一段沒規劃時，兩個退回範圍跨過起點合成一個，
+    交給 fast 一次；不會讓輸入點 1–2 那段被前後兩次 fast 各畫一遍。"""
+    failing = [(121.51, LAT + 0.002), SQUARE[2], (121.505, LAT + 0.01)]  # 輸入點 1–2 之間 → 2–3 之間
+    followed_piece = [(121.50, LAT + 0.005), SQUARE[0], (121.505, LAT)]  # 3–0 之間 → 0–1 之間
+    use_plans(monkeypatch, [StrokePlan([piece(failing, (1, 3)), piece(followed_piece, (3, 5)), (4, 6)], None)])
+
+    class FailsFirst(Router):
+        def trace(self, points, *, search_radius_m):
+            if search_radius_m == FOLLOW_RADIUS_M and points[0] == failing[0]:
+                self.traces.append((list(points), search_radius_m))
+                raise RoutingError("走不了")
+            return super().trace(points, search_radius_m=search_radius_m)
+
+    router = FailsFirst()
+    result = fine(router, [StrokeInput(SQUARE, True)])
+    fallback = [p for p, r in router.traces if r == RADIUS]
+    assert len(fallback) == 1
+    assert fallback[0][0] == followed_piece[-1] and fallback[0][-1] == followed_piece[0]
+    assert result.route_points.count(SQUARE[1]) == 1 and result.route_points.count(SQUARE[2]) == 1
+    assert_joined(result.segments)
+    assert result.warnings == []
+
+
 def test_closed_stroke_fallback_wraps_around_to_its_neighbours() -> None:
     """封閉筆畫首尾相鄰：第一個 item 的前一段是最後一個 item。"""
     points = [(121.50, LAT), (121.51, LAT), (121.51, LAT + 0.01), (121.50, LAT + 0.01)]
