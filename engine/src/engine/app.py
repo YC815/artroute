@@ -109,7 +109,7 @@ EDIT_ERRORS: dict[int | str, dict[str, Any]] = {
 VERIFY_ERRORS: dict[int | str, dict[str, Any]] = {
     422: {
         "model": ErrorResponse | ValidationErrorResponse,
-        "description": "簽章不對（invalid_route）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤",
+        "description": "簽章不對（invalid_route）、圖形太小（too_small）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤",
     },
     503: {"model": ErrorResponse, "description": "路網資料尚未就緒（no_data）"},
     504: {"model": ErrorResponse, "description": "重新檢查超過時間上限（timeout）"},
@@ -263,6 +263,20 @@ def _problem_segments(
     return sorted(bad)
 
 
+def _check_on_current(
+    router: Any, version: str, denied: _CurrentDenied, segments: list[Segment], deadline: Deadline
+) -> None:
+    """舊版本的路線在 current 的路網上重新檢查，有問題丟 422 verify_failed。"""
+    try:
+        denied_ids = denied.get(version)
+    except (OSError, ValueError, KeyError, TypeError) as error:  # 沒有禁行清單：判斷不了，不放行
+        logger.error("讀不到 %s 的禁行 way 清單：%s", version, error)
+        raise _error(503, "no_data", NO_DATA_MESSAGE) from error
+    bad = _problem_segments(router, denied_ids, segments, deadline)
+    if bad:
+        raise _error(422, "verify_failed", VERIFY_FAILED_MESSAGE, segments=bad)
+
+
 def _verify(
     current: CurrentRouter, key: _EditKey, denied: _CurrentDenied, payload: VerifyRequest, deadline: Deadline
 ) -> MatchResponse:
@@ -275,14 +289,7 @@ def _verify(
     strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
     try:
         if payload.data_version != version:
-            try:
-                denied_ids = denied.get(version)
-            except (OSError, ValueError, KeyError, TypeError) as error:  # 沒有禁行清單：判斷不了，不放行
-                logger.error("讀不到 %s 的禁行 way 清單：%s", version, error)
-                raise _error(503, "no_data", NO_DATA_MESSAGE) from error
-            bad = _problem_segments(router, denied_ids, segments, deadline)
-            if bad:
-                raise _error(422, "verify_failed", VERIFY_FAILED_MESSAGE, segments=bad)
+            _check_on_current(router, version, denied, segments, deadline)
         result = build_result(strokes, segments, [])
     except TargetTooSmall as error:
         raise _error(422, "too_small", str(error)) from error
@@ -339,8 +346,8 @@ async def _watch_disconnect(request: Request, deadline: Deadline) -> None:
     deadline.cancel()
 
 
-async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
-    """等名額：拿到回傳 True；等待中呼叫端離開回傳 False；到期丟 504。
+async def _admit(admission: asyncio.Semaphore, deadline: Deadline, timeout_message: str) -> bool:
+    """等名額：拿到回傳 True；等待中呼叫端離開回傳 False；到期丟 504（訊息是 timeout_message：各端點講的事不同）。
 
     以 DISCONNECT_POLL_S 為單位重試，每次之間檢查取消與期限，所以不保證先到先得：
     即時吸附只在乎最新的請求，每個等待者又各有期限，可以接受。
@@ -349,7 +356,7 @@ async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
     while not deadline.cancelled:
         remaining = deadline.remaining()
         if remaining <= 0:
-            raise _error(504, "timeout", TIMEOUT_MESSAGE)
+            raise _error(504, "timeout", timeout_message)
         try:
             async with asyncio.timeout(min(DISCONNECT_POLL_S, remaining)):
                 await admission.acquire()
@@ -364,12 +371,14 @@ async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
 
 @dataclass
 class _RequestLog:
-    """一個 /match 或 /edit 的紀錄：結束時寫一行 INFO，拿來確認取消有效、之後調查吸附品質。
-    label：行首（"match" 或 "edit op=cut"）；work：做事那段的名稱（match_ms／edit_ms）。"""
+    """一個 /match、/edit 或 /verify 的紀錄：結束時寫一行 INFO，拿來確認取消有效、之後調查吸附品質。
+    label：行首（"match"、"edit op=cut" 或 "verify"）；work：做事那段的名稱（match_ms／edit_ms／verify_ms）；
+    timeout_message：排隊逾時的 504 說明（各端點的說法不同）。"""
 
     label: str
     work: str
     strokes: int
+    timeout_message: str = TIMEOUT_MESSAGE
     arrived: float = field(default_factory=time.monotonic)
     admitted: float | None = None  # 拿到名額的時刻；沒拿到（離開、逾時）就是 None
     finished: float | None = None
@@ -392,7 +401,7 @@ class _RequestLog:
 async def _admitted(
     admission: asyncio.Semaphore, deadline: Deadline, log: _RequestLog, work: Callable[[], MatchResponse]
 ) -> Any:
-    if not await _admit(admission, deadline):
+    if not await _admit(admission, deadline, log.timeout_message):
         return Response(status_code=CLIENT_CLOSED)
     log.admitted = time.monotonic()
     try:
@@ -415,7 +424,7 @@ async def _serve(
     log: _RequestLog,
     work: Callable[[], MatchResponse],
 ) -> Any:
-    """/match 與 /edit 共用：排隊、跑、斷線取消、紀錄。
+    """/match、/edit 與 /verify 共用：排隊、跑、斷線取消、紀錄。
     期限在解依賴時起算（請求本文已讀完），等名額與吸附的時間都算在內；等名額不佔 thread。
     不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
     最壞情況：到期（或呼叫端離開）後，最多再多一次進行中的 Valhalla 呼叫，或串接排序（2-opt）的一列。
@@ -668,7 +677,7 @@ def create_app(
         request: Request, payload: EditRequest, deadline: Annotated[Deadline, Depends(start_deadline)]
     ) -> Any:
         """手動微調：剪掉、重畫、拖曳（route editing spec §3）。與 /match 共用名額、期限與斷線取消。"""
-        log = _RequestLog(f"edit op={payload.op.type}", "edit", len(payload.strokes))
+        log = _RequestLog(f"edit op={payload.op.type}", "edit", len(payload.strokes), EDIT_TIMEOUT_MESSAGE)
         work = functools.partial(_edit, current, edit_key, payload, deadline)
         return await _serve(request, admission, deadline, log, work)
 
@@ -679,7 +688,7 @@ def create_app(
         request: Request, payload: VerifyRequest, deadline: Annotated[Deadline, Depends(start_verify_deadline)]
     ) -> Any:
         """舊路網的草稿重新檢查（route editing spec §3.6）。與 /match 共用名額與斷線取消，期限是 verify_timeout_s。"""
-        log = _RequestLog("verify", "verify", len(payload.strokes))
+        log = _RequestLog("verify", "verify", len(payload.strokes), VERIFY_TIMEOUT_MESSAGE)
         work = functools.partial(_verify, current, edit_key, denied_cache, payload, deadline)
         return await _serve(request, admission, deadline, log, work)
 

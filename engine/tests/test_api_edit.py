@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from engine.app import create_app
+from engine.app import EDIT_TIMEOUT_MESSAGE, create_app
 from engine.data.layout import DataLayout
 from engine.data.pipeline import run_build
 from engine.edit.splice import DEFAULT_MESSAGES, EditRejected
@@ -280,6 +280,27 @@ def test_edit_waits_for_the_match_holding_the_slot(tmp_path: Path, monkeypatch: 
         assert match.result().status_code == 200
         assert edit.result().status_code == 200
     assert router.calls
+
+
+def test_edit_queue_timeout_uses_the_edit_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/match 佔著名額、/edit 排到期限：504 的說明是微調的，不是 /match 的「吸附超過時間上限」。
+    拿掉 _admit 的 timeout_message 參數（寫回 TIMEOUT_MESSAGE）會紅。"""
+    release, started = threading.Event(), threading.Event()
+
+    def holding(router, strokes, *, search_radius_m, deadline, start=None) -> MatchResult:
+        started.set()
+        assert release.wait(timeout=5)
+        return MatchResult([], 0.0, [], Score(0, 0, 0), 0.0, [])
+
+    monkeypatch.setattr("engine.app.match_shape", holding)
+    with fake_api(tmp_path, FakeRouter(), match_timeout_s=0.3) as api, ThreadPoolExecutor(max_workers=2) as pool:
+        match = pool.submit(api.post, "/match", json={"strokes": STROKES})
+        assert started.wait(timeout=3)
+        response = api.post("/edit", json=signed(tmp_path, ROUTE, REROUTE))
+        release.set()
+        match.result()
+    assert response.status_code == 504
+    assert response.json()["detail"] == {"code": "timeout", "message": EDIT_TIMEOUT_MESSAGE}
 
 
 EDIT_LOG = re.compile(
