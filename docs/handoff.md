@@ -4,8 +4,8 @@
 
 - P0、P1、P1.5、P2 已完成。P2.5 的設計：`docs/superpowers/specs/2026-10-11-p2-5-likeness-design.md`；實作計畫：`docs/superpowers/plans/2026-10-11-p2-5-likeness.md`。
 - **雲端已做（2026-10-11，還沒在真實路網上跑過）**：
-  - **PR A**（分支 `claude/p2-5-likeness-rl4bgr`）：Q1＋Q2。評分 v3、搜尋排名 rank、A 參數（轉彎懲罰 500）、剪小刺與小圈、旋轉 ±15°、隱藏原圖、bench 的 v3／v2／SVG／改前旗標、標註樣本工具。校正沒達到 80%，**使用者決定改成防退步**（findings §1、主 spec §8 第 38、39 列）。
-  - **PR B**（分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖（建圖流程新增，要重建路網）、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`、網站放開後換精緻版。
+  - **PR A**（#3，分支 `claude/p2-5-likeness-rl4bgr`）：Q1＋Q2。評分 v3、搜尋排名 rank、A 參數（轉彎懲罰 500）、剪小刺與小圈、旋轉 ±15°、隱藏原圖、bench 的 v3／v2／SVG／改前旗標、標註樣本工具。校正沒達到 80%，**使用者決定改成防退步**（findings §1、主 spec §8 第 38、39 列）。
+  - **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖（建圖流程新增，要重建路網）、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`、網站放開後換精緻版。
   - 兩個 PR 的說明各有「本機待辦」與「給本機 Agent 的 prompt」。**本機先驗 PR A、再驗 PR B**。
 - 部署中（m1，和 P2 收尾時相同，P2.5 還沒部署）：
   - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。程式是 P2（`dc48f8a`）。
