@@ -12,7 +12,7 @@ __all__ = [
     "try_route",
 ]
 
-type SegmentKind = Literal["stroke", "detour", "connector"]
+type SegmentKind = Literal["stroke", "detour", "connector", "edit"]  # edit：手動微調換上的段落（route editing spec §3.2）
 
 
 @dataclass(frozen=True)
