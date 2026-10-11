@@ -3,7 +3,15 @@
 import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
-from engine.matching.turns import TURN_PROBE_M, head_points, rideable, tail_points, turn_deg
+from engine.matching.turns import (
+    TURN_PROBE_M,
+    head_points,
+    rideable,
+    rideable_strict,
+    strict_needs_no_route_to_reject,
+    tail_points,
+    turn_deg,
+)
 from engine.matching.types import Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
@@ -138,4 +146,56 @@ def test_outgoing_that_folds_onto_its_own_start_is_not_rideable() -> None:
     start = north(J, 0.9)
     router = TurnBlockRouter(blocked=J)
     assert not rideable(router, Deadline(10), INCOMING, [start, east(start, -4), start, east(start, 100)])
+    assert router.route_calls == []
+
+
+# ---- P2.5 A4：嚴格版（剪小刺與小圈的新接點）：量不出來的不放行，其餘與 rideable 相同 ----
+
+
+def test_strict_rejects_a_u_turn_that_rideable_lets_through() -> None:
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), INCOMING, BACK)
+    assert not rideable_strict(router, Deadline(10), INCOMING, BACK)
+    assert strict_needs_no_route_to_reject(INCOMING, BACK)
+    assert router.route_calls == []  # 原地迴轉 route 量不出來：不靠 route 決定
+
+
+def test_strict_rejects_an_arm_too_short_to_measure() -> None:
+    router = TurnBlockRouter(blocked=None)
+    short_in = [east(J, -0.5), J]
+    assert rideable(router, Deadline(10), short_in, STRAIGHT)
+    assert not rideable_strict(router, Deadline(10), short_in, STRAIGHT)
+    assert not rideable_strict(router, Deadline(10), INCOMING, [J, east(J, 0.5)])
+    assert router.route_calls == []
+
+
+def test_strict_still_lets_a_gentle_turn_through_without_route() -> None:
+    router = TurnBlockRouter(blocked=J)
+    assert rideable_strict(router, Deadline(10), INCOMING, STRAIGHT)
+    assert not strict_needs_no_route_to_reject(INCOMING, STRAIGHT)
+    assert router.route_calls == []
+
+
+def test_strict_checks_a_sharp_turn_with_route_like_rideable() -> None:
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), INCOMING, LEFT)
+    assert not rideable_strict(TurnBlockRouter(blocked=J), Deadline(10), INCOMING, LEFT)
+    assert not strict_needs_no_route_to_reject(INCOMING, LEFT)  # 要 route 才知道
+
+
+def test_strict_rejects_a_fold_back_like_rideable() -> None:
+    spur_in = [east(J, -200), J, east(J, 4), J]
+    assert not rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), spur_in, LEFT)
+    assert strict_needs_no_route_to_reject(spur_in, LEFT)
+
+
+def test_strict_rejects_a_short_dead_end_u_turn_the_probes_wrap_around() -> None:
+    # 往北 6 m 的死巷尖端原地迴轉：兩個探針繞過尖端，落在 J 的西邊、東邊各 2 m（不是同一處），轉角約 143°，
+    # rideable 交給 route（直線 4 m）就放行了；嚴格版看得出接點前後的頂點是同一個（沿原路折回），不放行
+    tip = north(J, 6)
+    incoming, outgoing = [east(J, -200), J, tip], [tip, J, east(J, 200)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    router.route_calls.clear()
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+    assert strict_needs_no_route_to_reject(incoming, outgoing)
     assert router.route_calls == []

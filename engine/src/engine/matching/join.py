@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from itertools import chain
 
 from engine.matching.deadline import Deadline
-from engine.matching.turns import TURN_PROBE_M, head_points, rideable, tail_points
+from engine.matching.turns import TURN_PROBE_M, head_points, rideable, rideable_strict, tail_points
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment, SegmentKind, segment_from, try_route
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
@@ -44,15 +44,23 @@ def _marks(points: list[LonLat]) -> list[int]:
     return out
 
 
-def _cut(segment: Segment, points: list[LonLat]) -> Segment:
+def cut(segment: Segment, points: list[LonLat]) -> Segment:
+    """segment 的一段切片（點全是原本的點），長度用切片的幾何長度；沒切就原樣回傳。"""
     if points == segment.points:
         return segment
     return Segment(segment.kind, segment.stroke_index, points, polyline_length_m(points))
 
 
-def _junction_ok(router: MatchRouter, deadline: Deadline, segments: list[Segment], i: int) -> bool:
-    """segments[i] 與 segments[i + 1] 之間的接點：探針沿整條路線走（跨過短片段）。"""
-    return rideable(router, deadline, tail_points(segments[: i + 1]), head_points(segments[i + 1 :]))
+def junction_arms(segments: list[Segment], i: int) -> tuple[list[LonLat], list[LonLat]]:
+    """segments[i] 與 segments[i + 1] 之間的接點的兩條臂（rideable 的 incoming、outgoing）：探針沿整條路線走（跨過短片段）。"""
+    return tail_points(segments[: i + 1]), head_points(segments[i + 1 :])
+
+
+def junction_ok(router: MatchRouter, deadline: Deadline, segments: list[Segment], i: int, *, strict: bool = False) -> bool:
+    """segments[i] 與 segments[i + 1] 之間的接點能不能直接騎。
+    strict=True 用 rideable_strict（剪小刺與小圈的新接點：量不出來的不放行）。"""
+    turn = rideable_strict if strict else rideable
+    return turn(router, deadline, *junction_arms(segments, i))
 
 
 def _length_upto(points: list[LonLat], cap_m: float) -> float:
@@ -66,7 +74,7 @@ def _length_upto(points: list[LonLat], cap_m: float) -> float:
     return total
 
 
-def _before_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
+def before_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
     """接點 junction 之前、沿路線距離不到 TURN_PROBE_M 的既有接點，由近到遠：它們的探針會伸進新接上的幾何。"""
     walked = 0.0
     for i in range(junction - 1, -1, -1):
@@ -76,7 +84,7 @@ def _before_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
         yield i
 
 
-def _after_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
+def after_neighbours(segments: list[Segment], junction: int) -> Iterator[int]:
     """接點 junction 之後、沿路線距離不到 TURN_PROBE_M 的既有接點，由近到遠。"""
     walked = 0.0
     for i in range(junction + 1, len(segments) - 1):
@@ -110,18 +118,18 @@ def _attempt(
     end_missed = haversine_m(result.points[-1], end) > JOIN_TOLERANCE_M
     if start_missed or end_missed:
         return None, start_missed, end_missed
-    kept_before, kept_after = _cut(before, before.points[: tail + 1]), _cut(after, after.points[head:])
+    kept_before, kept_after = cut(before, before.points[: tail + 1]), cut(after, after.points[head:])
     link = segment_from(kind, stroke_index, result)
     segments = [*lead, kept_before, link, kept_after, *trail]
     first = len(lead)  # 起點側接點 kept_before|link；終點側接點 link|kept_after 是 first + 1
-    start_missed = not _junction_ok(router, deadline, segments, first)
-    end_missed = not _junction_ok(router, deadline, segments, first + 1)
+    start_missed = not junction_ok(router, deadline, segments, first)
+    end_missed = not junction_ok(router, deadline, segments, first + 1)
     # 新幾何也落在鄰近既有接點的探針裡（lead／trail 的短片段）：一併重量，沒過的算那一側沒接上
     start_missed = start_missed or not all(
-        _junction_ok(router, deadline, segments, i) for i in _before_neighbours(segments, first)
+        junction_ok(router, deadline, segments, i) for i in before_neighbours(segments, first)
     )
     end_missed = end_missed or not all(
-        _junction_ok(router, deadline, segments, i) for i in _after_neighbours(segments, first + 1)
+        junction_ok(router, deadline, segments, i) for i in after_neighbours(segments, first + 1)
     )
     if start_missed or end_missed:
         return None, start_missed, end_missed
@@ -164,8 +172,8 @@ def adjacent(router: MatchRouter, deadline: Deadline, left: list[Segment], right
         return False
     segments = [*left, *right]
     seam = len(left) - 1
-    junctions = chain([seam], _before_neighbours(segments, seam), _after_neighbours(segments, seam))
-    return all(_junction_ok(router, deadline, segments, i) for i in junctions)
+    junctions = chain([seam], before_neighbours(segments, seam), after_neighbours(segments, seam))
+    return all(junction_ok(router, deadline, segments, i) for i in junctions)
 
 
 def connect(
