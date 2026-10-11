@@ -106,7 +106,7 @@ describe("createDraftsController", () => {
     const { draft } = await db.create(INPUT, T0 + 8 * DAY);
     const controller = start();
     await settle();
-    await controller.remove(draft.id);
+    await expect(controller.remove(draft.id)).resolves.toBe(true);
     expect(notify).toHaveBeenCalledTimes(1);
     expect(views.at(-1)!.drafts).toEqual([]);
     expect(await db.get(draft.id)).toBeNull();
@@ -169,7 +169,7 @@ describe("createDraftsController", () => {
       const controller = startWith(failing("remove"));
       await settle();
       const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await expect(controller.remove(draft.id)).resolves.toBeUndefined();
+      await expect(controller.remove(draft.id)).resolves.toBe(false);
       expect(spy).toHaveBeenCalled();
       spy.mockRestore();
       expect(views.at(-1)!.drafts.map((d) => d.id)).toEqual([draft.id]);
@@ -181,7 +181,7 @@ describe("createDraftsController", () => {
       const controller = startWith(failing("markOpened"));
       await settle();
       const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await expect(controller.markOpened(draft.id)).resolves.toBeUndefined();
+      await expect(controller.markOpened(draft.id)).resolves.toBe(false);
       spy.mockRestore();
       expect(views.at(-1)!.actionError).toContain("自動刪除");
     });

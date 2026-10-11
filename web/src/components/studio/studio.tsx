@@ -280,6 +280,8 @@ export function Studio() {
     setTransform(draft.transform);
     setDragging(false);
     editSession.begin(session);
+    // 這份草稿之前刪除失敗過：它還在，之後的編輯要存
+    editSession.restoreDraft(draft.id);
     setDraftNotice(null);
     edit.enter(draft.route, draft.id, placementOf(session));
     // 草稿可能在別的地方：看不到路線就把地圖移過去（圖形鎖住，沒有「移到畫面中央」可用）
@@ -292,7 +294,10 @@ export function Studio() {
     // 先讓排隊中的存檔失效，再刪：否則它們會發現草稿不在了而重新建立
     editSession.discardDraft(draft.id);
     if (edit.state?.draftId === draft.id) backToAuto();
-    void drafts.remove(draft.id);
+    // 刪除失敗：草稿還在，撤銷 discard（否則之後打開它的編輯不會存）
+    void drafts.remove(draft.id).then((deleted) => {
+      if (!deleted) editSession.restoreDraft(draft.id);
+    });
   };
 
   const chooseRouteVariant = (variant: RouteVariant) => {

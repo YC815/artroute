@@ -25,10 +25,10 @@ export const INITIAL_DRAFTS_VIEW: DraftsView = {
 
 export type DraftsController = {
   refresh(): Promise<void>;
-  /** 刪除一份（確認由呼叫端做）；通知其他分頁並重新讀取。 */
-  remove(id: string): Promise<void>;
+  /** 刪除一份（確認由呼叫端做）；通知其他分頁並重新讀取。回傳有沒有真的刪掉（失敗時 false，說明在 actionError）。 */
+  remove(id: string): Promise<boolean>;
   /** 標成「打開過」（之後不會被自動刪除）。 */
-  markOpened(id: string): Promise<void>;
+  markOpened(id: string): Promise<boolean>;
   dispose(): void;
 };
 
@@ -81,9 +81,11 @@ export function createDraftsController(deps: {
     try {
       await apply(await getDb());
       actionError = null;
+      return true;
     } catch (error) {
       console.error(failure, error);
       actionError = failure;
+      return false;
     } finally {
       deps.notify();
       await refresh();
@@ -101,7 +103,7 @@ export function createDraftsController(deps: {
   };
 }
 
-export type Drafts = { view: DraftsView; remove: (id: string) => Promise<void>; markOpened: (id: string) => Promise<void> };
+export type Drafts = { view: DraftsView; remove: (id: string) => Promise<boolean>; markOpened: (id: string) => Promise<boolean> };
 
 /** 草稿列表（IndexedDB）；其他分頁改了就自動重新讀取。 */
 export function useDrafts(): Drafts {
@@ -126,8 +128,8 @@ export function useDrafts(): Drafts {
   return useMemo(
     () => ({
       view,
-      remove: async (id) => void (await controllerRef.current?.remove(id)),
-      markOpened: async (id) => void (await controllerRef.current?.markOpened(id)),
+      remove: async (id) => (await controllerRef.current?.remove(id)) ?? false,
+      markOpened: async (id) => (await controllerRef.current?.markOpened(id)) ?? false,
     }),
     [view],
   );

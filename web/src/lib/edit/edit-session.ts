@@ -36,6 +36,8 @@ export function createEditSession(deps: {
   saveDraft: SaveDraft;
   /** 使用者刪掉了這份草稿：排隊中與之後的存檔都不做（見 DraftSaver.discard）。 */
   discardDraft: (id: string) => void;
+  /** 撤銷 discardDraft（刪除失敗、或又打開了那份草稿）。 */
+  restoreDraft: (id: string) => void;
 } {
   const { post = postEditRequest } = deps;
   let current: EditSession | null = null;
@@ -69,6 +71,7 @@ export function createEditSession(deps: {
     postEdit,
     saveDraft: saver.save,
     discardDraft: saver.discard,
+    restoreDraft: saver.restore,
   };
 }
 

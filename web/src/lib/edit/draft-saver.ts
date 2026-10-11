@@ -21,6 +21,11 @@ export type DraftSaver = {
    * 沒有這個，排隊中的 update 會發現草稿不在了而重新建立，把剛刪的救回來。
    */
   discard: (id: string) => void;
+  /**
+   * 撤銷 discard：草稿其實還在（刪除失敗），或使用者又打開了它——既然要編輯它，之後的存檔就要寫。
+   * 沒有這個，discard 只加不減，那份草稿之後的編輯會靜默不存。
+   */
+  restore: (id: string) => void;
 };
 
 /**
@@ -64,5 +69,5 @@ export function createDraftSaver(deps: DraftSaverDeps): DraftSaver {
     }
   };
 
-  return { save, discard: (id) => void discarded.add(id) };
+  return { save, discard: (id) => void discarded.add(id), restore: (id) => void discarded.delete(id) };
 }

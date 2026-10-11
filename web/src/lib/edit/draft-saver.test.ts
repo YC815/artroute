@@ -159,4 +159,28 @@ describe("createDraftSaver", () => {
     expect(await pending).toBeNull();
     expect(await db.list()).toEqual([]);
   });
+
+  it("刪除失敗（草稿還在）→ restore → 之後的編輯照存：資料庫是新路線、沒有「存不了」", async () => {
+    const s = saverOf();
+    const id = await s.save(R1, null, PLACEMENT);
+    s.discard(id!); // 刪除前先讓排隊中的存檔失效；刪除失敗，草稿還在
+    s.restore(id!);
+    statuses.length = 0;
+    expect(await s.save(R2, id, PLACEMENT)).toBe(id);
+    expect((await db.get(id!))?.route.routeSig).toBe("sig-2");
+    expect(statuses).toEqual(["saved"]);
+  });
+
+  it("restore 只撤銷那一份的 discard：另一份被使用者刪掉的仍然不復活", async () => {
+    const s = saverOf();
+    const kept = await s.save(R1, null, PLACEMENT);
+    const gone = await s.save(R1, null, PLACEMENT);
+    s.discard(kept!);
+    s.discard(gone!);
+    s.restore(kept!);
+    await db.remove(gone!);
+    expect(await s.save(R2, gone, PLACEMENT)).toBeNull();
+    expect(await s.save(R2, kept, PLACEMENT)).toBe(kept);
+    expect((await db.list()).map((d) => d.id)).toEqual([kept]);
+  });
 });
