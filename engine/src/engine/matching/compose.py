@@ -253,7 +253,8 @@ def compose(router: MatchRouter, parts: list[Part], deadline: Deadline, rematch:
 
     組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），兩端都接不上的部件丟棄。
     舊版固定從第 0 個部件往後接：它的尾巴 route 不出去時，其餘部件全部被丟掉（ledger L64）。
-    沒有部件被丟掉時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同。
+    所有部件都接上原定那一端時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同；
+    有部件被擱置後才補接上、或被丟掉時，輸出就和舊版不同。
     開放部件可能反向走（見 Part.reversible）：規劃的進出點本來就從各部件的選項挑最近的，反向選項自動被考慮。
     """
     if not parts:

@@ -215,7 +215,7 @@ def create_app(
         # 期限在解依賴時起算（請求本文已讀完），等名額與吸附的時間都算在內；等名額不佔 thread。
         # 不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
         # 最壞情況：到期（或呼叫端離開）後，最多再多一次進行中的 Valhalla 呼叫，或串接排序（2-opt）的一列。
-        # 呼叫端離開（web 拖曳時取消上一筆）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。
+        # 呼叫端離開（web 放開、微調或離開頁面時取消在途的請求）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。
         log, status = _MatchLog(strokes=len(payload.strokes)), 500  # 沒被下面接住的例外會變成 500
         watcher = asyncio.create_task(_watch_disconnect(request, deadline))
         try:
