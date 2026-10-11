@@ -1,277 +1,427 @@
 {
   "heart@kaohsiung_lingya": {
-    "cleanliness": 65,
-    "coverage": 80,
+    "bad_turns": 0,
+    "cleanliness": 68,
+    "coverage": 78,
     "error": null,
-    "length_m": 11499.0,
-    "ms": 240,
+    "length_m": 9731.0,
+    "ms": 117,
     "name": "heart@kaohsiung_lingya",
-    "overall": 72,
+    "overall": 73,
     "safety": null,
-    "target_length_m": 6768.7
+    "target_length_m": 6768.7,
+    "use_m": {
+      "footway": 142.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "heart@taichung_west": {
-    "cleanliness": 60,
+    "bad_turns": 0,
+    "cleanliness": 62,
     "coverage": 76,
     "error": null,
-    "length_m": 10970.0,
-    "ms": 151,
+    "length_m": 10489.0,
+    "ms": 313,
     "name": "heart@taichung_west",
-    "overall": 68,
+    "overall": 69,
     "safety": null,
-    "target_length_m": 6768.7
+    "target_length_m": 6768.7,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 70.0,
+      "steps": 0.0
+    }
   },
   "heart@taipei_daan": {
-    "cleanliness": 53,
+    "bad_turns": 0,
+    "cleanliness": 55,
     "coverage": 75,
     "error": null,
-    "length_m": 12553.8,
-    "ms": 354,
+    "length_m": 11417.8,
+    "ms": 733,
     "name": "heart@taipei_daan",
-    "overall": 64,
+    "overall": 65,
     "safety": null,
-    "target_length_m": 6768.7
+    "target_length_m": 6768.7,
+    "use_m": {
+      "footway": 2248.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "heart@taipei_daan@r30": {
-    "cleanliness": 45,
-    "coverage": 58,
+    "bad_turns": 0,
+    "cleanliness": 57,
+    "coverage": 74,
     "error": null,
-    "length_m": 12826.0,
-    "ms": 329,
+    "length_m": 11872.0,
+    "ms": 446,
     "name": "heart@taipei_daan@r30",
-    "overall": 52,
+    "overall": 66,
     "safety": null,
-    "target_length_m": 6766.7
+    "target_length_m": 6766.7,
+    "use_m": {
+      "footway": 2686.0,
+      "parking_aisle": 84.0,
+      "steps": 0.0
+    }
   },
   "heart@taipei_riverside": {
+    "bad_turns": 0,
     "cleanliness": 0,
-    "coverage": 41,
+    "coverage": 47,
     "error": null,
-    "length_m": 19632.0,
-    "ms": 205,
+    "length_m": 18470.0,
+    "ms": 278,
     "name": "heart@taipei_riverside",
-    "overall": 20,
+    "overall": 24,
     "safety": null,
-    "target_length_m": 6768.7
+    "target_length_m": 6768.7,
+    "use_m": {
+      "footway": 1326.0,
+      "parking_aisle": 360.0,
+      "steps": 0.0
+    }
   },
   "hi@kaohsiung_lingya": {
-    "cleanliness": 0,
-    "coverage": 75,
+    "bad_turns": 0,
+    "cleanliness": 46,
+    "coverage": 71,
     "error": null,
-    "length_m": 21348.0,
-    "ms": 200,
+    "length_m": 15562.0,
+    "ms": 197,
     "name": "hi@kaohsiung_lingya",
-    "overall": 38,
+    "overall": 58,
     "safety": null,
-    "target_length_m": 7232.4
+    "target_length_m": 7232.4,
+    "use_m": {
+      "footway": 136.0,
+      "parking_aisle": 293.0,
+      "steps": 0.0
+    }
   },
   "hi@taichung_west": {
-    "cleanliness": 11,
-    "coverage": 70,
+    "bad_turns": 0,
+    "cleanliness": 3,
+    "coverage": 71,
     "error": null,
-    "length_m": 16717.0,
-    "ms": 111,
+    "length_m": 15701.0,
+    "ms": 161,
     "name": "hi@taichung_west",
-    "overall": 40,
+    "overall": 37,
     "safety": null,
-    "target_length_m": 7232.4
+    "target_length_m": 7232.4,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "hi@taipei_daan": {
-    "cleanliness": 17,
-    "coverage": 75,
+    "bad_turns": 0,
+    "cleanliness": 42,
+    "coverage": 73,
     "error": null,
-    "length_m": 17997.0,
-    "ms": 224,
+    "length_m": 15965.0,
+    "ms": 378,
     "name": "hi@taipei_daan",
-    "overall": 46,
+    "overall": 58,
     "safety": null,
-    "target_length_m": 7232.4
+    "target_length_m": 7232.4,
+    "use_m": {
+      "footway": 3282.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "hi@taipei_daan@r30": {
-    "cleanliness": 39,
-    "coverage": 84,
+    "bad_turns": 0,
+    "cleanliness": 44,
+    "coverage": 79,
     "error": null,
-    "length_m": 19898.0,
-    "ms": 314,
+    "length_m": 15136.0,
+    "ms": 606,
     "name": "hi@taipei_daan@r30",
     "overall": 62,
     "safety": null,
-    "target_length_m": 7224.3
+    "target_length_m": 7224.3,
+    "use_m": {
+      "footway": 3526.0,
+      "parking_aisle": 43.0,
+      "steps": 0.0
+    }
   },
   "hi@taipei_riverside": {
+    "bad_turns": 0,
     "cleanliness": 0,
-    "coverage": 31,
+    "coverage": 59,
     "error": null,
-    "length_m": 32353.0,
-    "ms": 244,
+    "length_m": 24012.0,
+    "ms": 220,
     "name": "hi@taipei_riverside",
-    "overall": 16,
+    "overall": 30,
     "safety": null,
-    "target_length_m": 7232.4
+    "target_length_m": 7232.4,
+    "use_m": {
+      "footway": 966.0,
+      "parking_aisle": 18.0,
+      "steps": 0.0
+    }
   },
   "letter_l@kaohsiung_lingya": {
-    "cleanliness": 52,
-    "coverage": 80,
+    "bad_turns": 0,
+    "cleanliness": 66,
+    "coverage": 76,
     "error": null,
-    "length_m": 5837.0,
-    "ms": 94,
+    "length_m": 4343.0,
+    "ms": 34,
     "name": "letter_l@kaohsiung_lingya",
-    "overall": 66,
+    "overall": 71,
     "safety": null,
-    "target_length_m": 3210.0
+    "target_length_m": 3210.0,
+    "use_m": {
+      "footway": 224.0,
+      "parking_aisle": 60.0,
+      "steps": 0.0
+    }
   },
   "letter_l@taichung_west": {
-    "cleanliness": 43,
-    "coverage": 48,
+    "bad_turns": 0,
+    "cleanliness": 58,
+    "coverage": 69,
     "error": null,
-    "length_m": 4488.0,
-    "ms": 49,
+    "length_m": 4574.0,
+    "ms": 57,
     "name": "letter_l@taichung_west",
-    "overall": 46,
+    "overall": 64,
     "safety": null,
-    "target_length_m": 3210.0
+    "target_length_m": 3210.0,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "letter_l@taipei_daan": {
-    "cleanliness": 87,
-    "coverage": 0,
+    "bad_turns": 0,
+    "cleanliness": 0,
+    "coverage": 67,
     "error": null,
-    "length_m": 1711.0,
-    "ms": 175,
+    "length_m": 7694.0,
+    "ms": 235,
     "name": "letter_l@taipei_daan",
-    "overall": 44,
+    "overall": 34,
     "safety": null,
-    "target_length_m": 3210.0
+    "target_length_m": 3210.0,
+    "use_m": {
+      "footway": 1027.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "letter_l@taipei_daan@r30": {
-    "cleanliness": 28,
-    "coverage": 55,
+    "bad_turns": 0,
+    "cleanliness": 31,
+    "coverage": 56,
     "error": null,
-    "length_m": 7028.0,
-    "ms": 135,
+    "length_m": 6310.0,
+    "ms": 243,
     "name": "letter_l@taipei_daan@r30",
-    "overall": 42,
+    "overall": 44,
     "safety": null,
-    "target_length_m": 3208.6
+    "target_length_m": 3208.6,
+    "use_m": {
+      "footway": 1177.0,
+      "parking_aisle": 43.0,
+      "steps": 0.0
+    }
   },
   "letter_l@taipei_riverside": {
+    "bad_turns": 0,
     "cleanliness": 59,
     "coverage": 0,
     "error": null,
-    "length_m": 2000.0,
-    "ms": 103,
+    "length_m": 2004.0,
+    "ms": 92,
     "name": "letter_l@taipei_riverside",
     "overall": 30,
     "safety": null,
-    "target_length_m": 3210.0
+    "target_length_m": 3210.0,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "square@kaohsiung_lingya": {
-    "cleanliness": 0,
-    "coverage": 78,
+    "bad_turns": 0,
+    "cleanliness": 42,
+    "coverage": 76,
     "error": null,
-    "length_m": 16231.0,
-    "ms": 285,
+    "length_m": 12683.0,
+    "ms": 449,
     "name": "square@kaohsiung_lingya",
-    "overall": 39,
+    "overall": 59,
     "safety": null,
-    "target_length_m": 8018.0
+    "target_length_m": 8018.0,
+    "use_m": {
+      "footway": 845.0,
+      "parking_aisle": 20.0,
+      "steps": 0.0
+    }
   },
   "square@taichung_west": {
-    "cleanliness": 58,
-    "coverage": 81,
+    "bad_turns": 0,
+    "cleanliness": 62,
+    "coverage": 79,
     "error": null,
-    "length_m": 12042.0,
-    "ms": 130,
+    "length_m": 11449.0,
+    "ms": 284,
     "name": "square@taichung_west",
     "overall": 70,
     "safety": null,
-    "target_length_m": 8018.0
+    "target_length_m": 8018.0,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "square@taipei_daan": {
-    "cleanliness": 38,
+    "bad_turns": 0,
+    "cleanliness": 59,
     "coverage": 74,
     "error": null,
-    "length_m": 15022.0,
-    "ms": 314,
+    "length_m": 13300.0,
+    "ms": 724,
     "name": "square@taipei_daan",
-    "overall": 56,
+    "overall": 66,
     "safety": null,
-    "target_length_m": 8018.0
+    "target_length_m": 8018.0,
+    "use_m": {
+      "footway": 4314.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "square@taipei_daan@r30": {
-    "cleanliness": 60,
-    "coverage": 83,
+    "bad_turns": 0,
+    "cleanliness": 59,
+    "coverage": 79,
     "error": null,
-    "length_m": 16087.0,
-    "ms": 510,
+    "length_m": 13240.0,
+    "ms": 1135,
     "name": "square@taipei_daan@r30",
-    "overall": 72,
+    "overall": 69,
     "safety": null,
-    "target_length_m": 8018.0
+    "target_length_m": 8018.0,
+    "use_m": {
+      "footway": 2839.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "square@taipei_riverside": {
+    "bad_turns": 0,
     "cleanliness": 0,
-    "coverage": 40,
+    "coverage": 49,
     "error": null,
-    "length_m": 31371.0,
-    "ms": 299,
+    "length_m": 27184.0,
+    "ms": 390,
     "name": "square@taipei_riverside",
-    "overall": 20,
+    "overall": 24,
     "safety": null,
-    "target_length_m": 8018.0
+    "target_length_m": 8018.0,
+    "use_m": {
+      "footway": 813.0,
+      "parking_aisle": 12.0,
+      "steps": 0.0
+    }
   },
   "star@kaohsiung_lingya": {
-    "cleanliness": 54,
-    "coverage": 74,
+    "bad_turns": 0,
+    "cleanliness": 56,
+    "coverage": 77,
     "error": null,
-    "length_m": 12179.0,
-    "ms": 237,
+    "length_m": 12238.0,
+    "ms": 302,
     "name": "star@kaohsiung_lingya",
-    "overall": 64,
+    "overall": 66,
     "safety": null,
-    "target_length_m": 7177.0
+    "target_length_m": 7177.0,
+    "use_m": {
+      "footway": 394.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   },
   "star@taichung_west": {
-    "cleanliness": 41,
+    "bad_turns": 0,
+    "cleanliness": 63,
     "coverage": 76,
     "error": null,
-    "length_m": 11327.0,
-    "ms": 113,
+    "length_m": 10410.0,
+    "ms": 179,
     "name": "star@taichung_west",
-    "overall": 58,
+    "overall": 70,
     "safety": null,
-    "target_length_m": 7177.0
+    "target_length_m": 7177.0,
+    "use_m": {
+      "footway": 0.0,
+      "parking_aisle": 20.0,
+      "steps": 0.0
+    }
   },
   "star@taipei_daan": {
-    "cleanliness": 44,
-    "coverage": 78,
+    "bad_turns": 0,
+    "cleanliness": 54,
+    "coverage": 72,
     "error": null,
-    "length_m": 15029.0,
-    "ms": 283,
+    "length_m": 11551.0,
+    "ms": 451,
     "name": "star@taipei_daan",
-    "overall": 61,
+    "overall": 63,
     "safety": null,
-    "target_length_m": 7177.0
+    "target_length_m": 7177.0,
+    "use_m": {
+      "footway": 1977.0,
+      "parking_aisle": 96.0,
+      "steps": 0.0
+    }
   },
   "star@taipei_daan@r30": {
-    "cleanliness": 67,
-    "coverage": 0,
+    "bad_turns": 0,
+    "cleanliness": 17,
+    "coverage": 69,
     "error": null,
-    "length_m": 2617.0,
-    "ms": 366,
+    "length_m": 13310.0,
+    "ms": 608,
     "name": "star@taipei_daan@r30",
-    "overall": 34,
+    "overall": 43,
     "safety": null,
-    "target_length_m": 7177.0
+    "target_length_m": 7177.0,
+    "use_m": {
+      "footway": 1897.0,
+      "parking_aisle": 173.0,
+      "steps": 0.0
+    }
   },
   "star@taipei_riverside": {
+    "bad_turns": 0,
     "cleanliness": 0,
-    "coverage": 43,
+    "coverage": 53,
     "error": null,
-    "length_m": 22548.0,
-    "ms": 239,
+    "length_m": 21451.0,
+    "ms": 292,
     "name": "star@taipei_riverside",
-    "overall": 22,
+    "overall": 26,
     "safety": null,
-    "target_length_m": 7177.0
+    "target_length_m": 7177.0,
+    "use_m": {
+      "footway": 947.0,
+      "parking_aisle": 0.0,
+      "steps": 0.0
+    }
   }
 }
