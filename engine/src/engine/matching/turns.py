@@ -79,7 +79,7 @@ def _folds_back(walked_m: float, chord_m: float) -> bool:
 RETRACE_PROBE_M = 2 * JOIN_TOLERANCE_M  # rideable_strict 的原地迴轉判斷：從接點沿兩條臂各走這麼遠
 
 
-def _distance_to_polyline_m(point: LonLat, line: list[LonLat]) -> float:
+def distance_to_polyline_m(point: LonLat, line: list[LonLat]) -> float:
     """point 到折線 line 的最短距離（以 point 為中心的局部平面）。"""
     kx, ky = 111_320.0 * math.cos(math.radians(point[1])), 110_574.0
     xy = [((lon - point[0]) * kx, (lat - point[1]) * ky) for lon, lat in line]
@@ -98,8 +98,8 @@ def _retraces(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
     所以兩側的頂點不必相同（段落邊界、內插點只在一側也一樣）。一般轉彎要超過約 150° 才會被當成折回。"""
     p, back_m = _walk(incoming[::-1], RETRACE_PROBE_M)
     q, ahead_m = _walk(outgoing, RETRACE_PROBE_M)
-    return (ahead_m >= RETRACE_PROBE_M and _distance_to_polyline_m(q, incoming) <= JOIN_TOLERANCE_M) or (
-        back_m >= RETRACE_PROBE_M and _distance_to_polyline_m(p, outgoing) <= JOIN_TOLERANCE_M
+    return (ahead_m >= RETRACE_PROBE_M and distance_to_polyline_m(q, incoming) <= JOIN_TOLERANCE_M) or (
+        back_m >= RETRACE_PROBE_M and distance_to_polyline_m(p, outgoing) <= JOIN_TOLERANCE_M
     )
 
 

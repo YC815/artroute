@@ -10,8 +10,8 @@ from engine.matching.prune import (
     MIN_LOOP_M,
     PRUNE_BUDGET_S,
     PRUNE_RESERVE_S,
-    _candidates,
-    _cut_loop,
+    cut_loop,
+    loop_candidates,
     prune_loops,
 )
 from engine.matching.score import Score, target_extent_m
@@ -103,7 +103,7 @@ def test_input_is_not_modified() -> None:
 def test_candidates_go_from_short_to_long_and_then_by_position() -> None:
     small, big, same = east(W, 600), east(W, 200), east(W, 800)
     points = [W, *square(big, 40), *square(small, 20), *square(same, 20), C]
-    loops = _candidates(points, 1000)
+    loops = loop_candidates(points, 1000)
     assert [round(loop.length_m) for loop in loops] == [80, 80, 160]
     assert loops[0].start < loops[1].start
     assert all(loop.length_m >= MIN_LOOP_M for loop in loops)
@@ -114,16 +114,16 @@ def test_repeated_points_give_one_candidate_per_loop() -> None:
     x = east(W, 400)
     loop = square(x, 30)
     points = [W, x, x, *loop[1:-1], x, x, C]
-    (only,) = _candidates(points, 1000)
+    (only,) = loop_candidates(points, 1000)
     assert (only.start, only.end) == (2, 6)
 
 
 def test_loops_shorter_than_the_minimum_or_longer_than_the_cap_are_not_candidates() -> None:
     x = east(W, 400)
     tiny = [W, *square(x, 3.9), C]  # 周長 15.6 m < 16 m
-    assert _candidates(tiny, 1000) == []
+    assert loop_candidates(tiny, 1000) == []
     big = [W, *square(x, 40), C]  # 周長 160 m
-    assert _candidates(big, 159) == [] and len(_candidates(big, 161)) == 1
+    assert loop_candidates(big, 159) == [] and len(loop_candidates(big, 161)) == 1
 
 
 def test_nested_loops_are_found_again_after_each_cut() -> None:
@@ -133,7 +133,7 @@ def test_nested_loops_are_found_again_after_each_cut() -> None:
     inner = square(p, 5)  # 在 p 繞一圈（周長 20 m）
     outer = [x, p, *inner[1:], east(p, 25), east(x, 25), x]  # 在 x 繞一圈（含小圈約 100 m）
     segments = [seg([W, *outer, C])]
-    assert len(_candidates(all_points(segments), 1000)) >= 2
+    assert len(loop_candidates(all_points(segments), 1000)) >= 2
     result = run(segments)
     assert [s.points for s in result] == [[W, x], [x, C]]
 
@@ -149,7 +149,7 @@ def test_cut_that_would_need_a_u_turn_is_not_made_and_costs_no_route() -> None:
     # 直線走到 X、繞一圈回到 X、原路回 W：剪掉圈就是在 X 原地迴轉，嚴格版不放行（不呼叫 route）
     x = east(W, 400)
     segments = [seg([W, *square(x, 30), W])]
-    (loop,) = _candidates(all_points(segments), 0.15 * 1000)  # 前提：周長 120 m 的圈是候選（上限 150 m）
+    (loop,) = loop_candidates(all_points(segments), 0.15 * 1000)  # 前提：周長 120 m 的圈是候選（上限 150 m）
     assert round(loop.length_m) == 120
     router = TurnBlockRouter()
     assert run(segments, router=router, targets=[[W, x]], extent_m=1000) == segments
@@ -178,7 +178,7 @@ def stacked_case(*, loop_m: float = 15.0) -> tuple[list[Segment], list]:
 def test_cut_from_the_lower_road_onto_the_deck_right_above_it_is_not_made() -> None:
     # 剪完新接點轉角 0°：以前直行直接放行，輸出從下層跳到高架。現在嚴格版也用 route 量，X 不能直接接上就不剪
     segments, (x, deck) = stacked_case()
-    (loop,) = _candidates(all_points(segments), 0.15 * 1000)  # 前提：X→X' 的圈是唯一候選
+    (loop,) = loop_candidates(all_points(segments), 0.15 * 1000)  # 前提：X→X' 的圈是唯一候選
     assert haversine_m(x, deck) < JOIN_TOLERANCE_M and round(loop.length_m) == 100
     router = TurnBlockRouter(blocked=x)
     assert run(segments, router=router) == segments
@@ -223,7 +223,7 @@ def test_junction_beyond_one_meter_is_never_cut() -> None:
     loop = [x, north(x, 30), east(north(x, 30), 30), east(x, 30), back]
     segments = [seg([W, x]), seg([x, *loop[1:]], "detour"), seg([back, C], "stroke", 1)]
     assert haversine_m(x, back) > JOIN_TOLERANCE_M
-    assert _candidates(all_points(segments), 1000)  # 候選有它
+    assert loop_candidates(all_points(segments), 1000)  # 候選有它
     result = run(segments)
     assert result == segments
     assert_joins_within_tolerance(result)
@@ -252,7 +252,7 @@ def test_zero_length_piece_left_by_the_cut_is_dropped_only_if_the_join_stays_wit
         positions = flat(segments)
         first = next(p for p in positions if p.point == x)
         last = next(p for p in positions if p.point == back)
-        pruned = _cut_loop(segments, first, last)
+        pruned = cut_loop(segments, first, last)
         if cut:
             assert pruned is not None and pruned.junction == 0
             assert [s.points for s in pruned.segments] == [prev.points, [back, C]]
@@ -272,7 +272,7 @@ def test_whole_route_being_the_loop_is_not_cut_to_nothing(monkeypatch: pytest.Mo
     loop = square(W, 30)
     segments = [seg(loop)]
     positions = flat(segments)
-    assert _cut_loop(segments, positions[0], positions[-1]) is None
+    assert cut_loop(segments, positions[0], positions[-1]) is None
     # 就算評分說剪了比較好，也不會剪成空的路線
     monkeypatch.setattr(prune, "score", lambda targets, route: Score(0, 0, 0, 0, -float(len(route))))
     assert run(segments, targets=[[W, east(W, 200)]], extent_m=1000) == segments
@@ -286,7 +286,7 @@ def test_cut_that_removes_a_whole_stroke_is_not_made() -> None:
     dot = [d, east(d, 4), east(north(d, 4), 4), north(d, 4), d]
     segments = [seg([W, x]), seg([x, d], "connector", None), seg(dot, "stroke", 1), seg([d, x], "connector", None), seg([x, C])]
     targets = [[W, C], dot]
-    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
+    assert loop_candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
     result = run(segments, targets=targets, extent_m=target_extent_m(targets))
     assert any(s.stroke_index == 1 and s.kind == "stroke" for s in result)
 
@@ -299,7 +299,7 @@ def test_cut_that_leaves_only_a_few_meters_of_a_stroke_is_not_made() -> None:
     segments = [seg([W, x]), stroke, seg([tail, C], "connector", None)]
     targets = [[W, C]]
     positions = flat(segments)
-    pruned = _cut_loop(segments, positions[1], next(p for p in positions if p.point == x and p.segment == 1))
+    pruned = cut_loop(segments, positions[1], next(p for p in positions if p.point == x and p.segment == 1))
     assert pruned is not None
     assert prune.score(targets, prune.route_points(pruned.segments)).exact >= prune.score(
         targets, prune.route_points(segments)
@@ -315,7 +315,7 @@ def test_cut_that_removes_a_stroke_drawn_only_by_a_detour_is_not_made() -> None:
     dot = [d, east(d, 4), east(north(d, 4), 4), north(d, 4), d]
     segments = [seg([W, x]), seg([x, d], "connector", None), seg(dot, "detour", 1), seg([d, x], "connector", None), seg([x, C])]
     targets = [[W, C], dot]
-    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
+    assert loop_candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
     result = run(segments, targets=targets, extent_m=target_extent_m(targets))
     assert any(s.stroke_index == 1 and s.kind == "detour" for s in result)
 
@@ -362,7 +362,7 @@ def test_existing_junction_near_a_trimmed_start_is_rechecked() -> None:
     targets = [[W, k, north(k, 1000)]]
     router = NoLeftAtK(k)
     assert every_junction_rideable(router, segments)  # 前提：原本的接點都能騎
-    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))
+    assert loop_candidates(all_points(segments), 0.15 * target_extent_m(targets))
     assert run(segments, router=router, targets=targets, extent_m=target_extent_m(targets)) == segments
     # 對照：K 能左轉就剪
     free = run(segments, targets=targets, extent_m=target_extent_m(targets))
@@ -486,7 +486,7 @@ def test_at_most_max_attempts_are_scored(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(prune, "score", worse_when_shorter)
     segments = many_loops(MAX_PRUNE_ATTEMPTS + 5)
-    assert len(_candidates(all_points(segments), 1000)) > MAX_PRUNE_ATTEMPTS
+    assert len(loop_candidates(all_points(segments), 1000)) > MAX_PRUNE_ATTEMPTS
     assert run(segments) == segments
     assert len(calls) == 1 + MAX_PRUNE_ATTEMPTS  # 剪前算一次，之後每個嘗試一次
 
@@ -496,7 +496,7 @@ def test_successful_cuts_count_as_attempts_too(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(prune, "score", lambda targets, route: Score(0, 0, 0, 0, -float(len(route))))
     segments = many_loops(MAX_PRUNE_ATTEMPTS + 5)
     result = run(segments)
-    assert len(_candidates(all_points(result), 1000)) == 5  # 剪了 40 個，剩 5 個沒試
+    assert len(loop_candidates(all_points(result), 1000)) == 5  # 剪了 40 個，剩 5 個沒試
 
 
 def test_cheap_rejects_do_not_use_up_the_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
