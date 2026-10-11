@@ -2,10 +2,10 @@
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from engine.bench.cases import Case, place
 from engine.bench.svg import case_svg, safe_name
@@ -145,11 +145,16 @@ def use_meters(router: BenchRouter, segments: list[Segment]) -> dict[str, float]
 
 
 def _evaluate(
-    router: BenchRouter, strokes: list[StrokeInput], case: Case, timeout_s: float, denied_ids: frozenset[int]
+    router: BenchRouter,
+    strokes: list[StrokeInput],
+    case: Case,
+    timeout_s: float,
+    denied_ids: frozenset[int],
+    match_options: Mapping[str, Any],
 ) -> tuple[CaseResult, list[Segment]]:
     started = time.perf_counter()
     try:
-        result = match_shape(router, strokes, search_radius_m=None, deadline=Deadline(timeout_s))
+        result = match_shape(router, strokes, search_radius_m=None, deadline=Deadline(timeout_s), **match_options)
     except (AllStrokesFailed, MatchTimeout) as error:
         ms = round((time.perf_counter() - started) * 1000)
         failed = CaseResult(
@@ -181,10 +186,15 @@ def score_line(r: CaseResult) -> str:
 
 
 def _run_one(
-    router: BenchRouter, case: Case, timeout_s: float, denied_ids: frozenset[int], svg_dir: Path | None = None
+    router: BenchRouter,
+    case: Case,
+    timeout_s: float,
+    denied_ids: frozenset[int],
+    svg_dir: Path | None = None,
+    match_options: Mapping[str, Any] | None = None,
 ) -> CaseResult:
     strokes = place(case.shape, case.center, case.size_m, case.rotation_deg)
-    result, segments = _evaluate(router, strokes, case, timeout_s, denied_ids)
+    result, segments = _evaluate(router, strokes, case, timeout_s, denied_ids, match_options or {})
     if svg_dir is not None:  # 失敗的案例也畫（只有目標），看得出是哪個圖形在哪裡失敗
         notes = [score_line(result)] + ([" ".join(filter(None, [result.error, result.safety]))] if result.error else [])
         svg = case_svg(case.name, stroke_targets(strokes), segments, extra_lines=notes)
@@ -192,13 +202,19 @@ def _run_one(
     return result
 
 
-def _warm_up(router: BenchRouter, cases: list[Case], timeout_s: float, denied_ids: frozenset[int]) -> None:
+def _warm_up(
+    router: BenchRouter,
+    cases: list[Case],
+    timeout_s: float,
+    denied_ids: frozenset[int],
+    match_options: Mapping[str, Any] | None = None,
+) -> None:
     """每個不同的地點先跑一次、不計時：讓 Valhalla 載入該處的 tiles，之後量到的 ms 才是熱的。"""
     first_at: dict[tuple[float, float], Case] = {}
     for case in cases:
         first_at.setdefault(case.center, case)
     for case in first_at.values():
-        _run_one(router, case, timeout_s, denied_ids)
+        _run_one(router, case, timeout_s, denied_ids, match_options=match_options)
 
 
 def run_cases(
@@ -210,16 +226,18 @@ def run_cases(
     warm_up: bool = True,
     on_result: Callable[[CaseResult], None] | None = None,
     svg_dir: Path | None = None,
+    match_options: Mapping[str, Any] | None = None,
 ) -> list[CaseResult]:
     """依序跑案例；每跑完一個立刻呼叫 on_result（讓呼叫端邊跑邊印）。denied_ids 是 build 標記為禁行的 way。
-    svg_dir 有值時每個案例寫一張 `<safe_name(案例)>.svg`（疊圖＋縮圖；預熱不寫），目錄不存在就建立。"""
+    svg_dir 有值時每個案例寫一張 `<safe_name(案例)>.svg`（疊圖＋縮圖；預熱不寫），目錄不存在就建立。
+    match_options 是傳給 match_shape 的額外參數（例如 prune=False，產生改前的路線）。"""
     if svg_dir is not None:
         svg_dir.mkdir(parents=True, exist_ok=True)
     if warm_up:
-        _warm_up(router, cases, timeout_s, denied_ids)
+        _warm_up(router, cases, timeout_s, denied_ids, match_options)
     results: list[CaseResult] = []
     for case in cases:
-        result = _run_one(router, case, timeout_s, denied_ids, svg_dir)
+        result = _run_one(router, case, timeout_s, denied_ids, svg_dir, match_options)
         results.append(result)
         if on_result is not None:
             on_result(result)

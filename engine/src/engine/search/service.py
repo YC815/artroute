@@ -1,6 +1,7 @@
 """自動搜尋（spec §4.6）：粗篩（距離場）→ NMS 與微調 → 精算（完整吸附）→ 前 5 名。"""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -44,7 +45,9 @@ def run_search(
     roads: RoadIndex,
     deadline: Deadline,
     emit: Callable[[SearchEventOut], None],
+    match_options: Mapping[str, Any] | None = None,
 ) -> SearchOutcome:
+    """match_options：精算時傳給 match_shape 的額外參數（只給 bench 比較改前／改後用，/search 不帶）。"""
     shape = shape_model(params.strokes)
     half_extent = field_half_extent(params, shape)
     deadline.check()
@@ -61,6 +64,7 @@ def run_search(
         deadline,
         on_progress=lambda done, total: emit(Progress("match", done, total)),
         on_best=lambda candidate: emit(Best(candidate)),
+        match_options=match_options,
     )
     candidates = fine.run(placements)
     return SearchOutcome(

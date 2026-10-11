@@ -4,7 +4,14 @@ import argparse
 
 import pytest
 
-from engine.bench.options import add_router_options, describe_router_options, router_options
+from engine.bench.options import (
+    add_match_options,
+    add_router_options,
+    describe_match_options,
+    describe_router_options,
+    match_options,
+    router_options,
+)
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR
 
 
@@ -55,3 +62,11 @@ def test_description_names_the_values_actually_used() -> None:
     assert describe_router_options({"turn_penalty_factor": None, "sigma_z": 8.5}) == (
         "吸附參數：turn_penalty_factor none（不帶，由 meili 設定決定）、sigma_z 8.5"
     )
+
+
+def test_no_prune_flag() -> None:
+    parser = argparse.ArgumentParser()
+    add_match_options(parser)
+    assert match_options(parser.parse_args([])) == {}
+    assert match_options(parser.parse_args(["--no-prune"])) == {"prune": False}
+    assert "關" in describe_match_options({"prune": False}) and "開" in describe_match_options({})

@@ -9,7 +9,14 @@ from pathlib import Path
 
 from engine.bench import runner
 from engine.bench.cases import CASES
-from engine.bench.options import add_router_options, describe_router_options, router_options
+from engine.bench.options import (
+    add_match_options,
+    add_router_options,
+    describe_match_options,
+    describe_router_options,
+    match_options,
+    router_options,
+)
 from engine.bench.runner import (
     SAFETY_ERRORS,
     CaseResult,
@@ -24,7 +31,7 @@ from engine.bench.runner import (
 )
 from engine.data.build import DENIED_FILE, load_denied
 from engine.data.layout import DataLayout
-from engine.routing.router import Router
+from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router
 
 DEFAULT_BASELINE = Path(__file__).with_name("baseline.json")
 
@@ -39,7 +46,10 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--svg-dir", type=Path, help="每個案例寫一張 SVG（疊圖＋縮圖）到這個目錄，不存在就建立")
     add_router_options(parser)
+    add_match_options(parser)
     args = parser.parse_args(argv)
+    if args.update_baseline and (args.no_prune or args.turn_penalty_factor != FAST_TURN_PENALTY_FACTOR or args.sigma_z is not None):
+        parser.error("--update-baseline 只能用正式環境的吸附參數（不能搭配 --no-prune、--turn-penalty-factor、--sigma-z）")
     if args.force and not args.update_baseline:
         parser.error("--force 只能搭配 --update-baseline")
     return args
@@ -98,12 +108,15 @@ def main(argv: list[str] | None = None) -> None:
     # edges 是 edge_walk（逐點對上路段形狀，不用 sigma_z），都不受影響
     router = Router.from_build(build, **options)
 
+    matching = match_options(args)
     print(describe_router_options(options), flush=True)
+    print(describe_match_options(matching), flush=True)
     print("每個地點先預熱一次（不計時），之後的 ms 為單次取樣。", flush=True)
     print(f"安全斷言：相鄰路段 ≤ 1 m、不經過 {len(denied_ids)} 條被禁行的 way、接點轉彎能直接騎；沒過的案例算失敗。", flush=True)
     print(format_header(), flush=True)
     results = run_cases(
-        router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True), svg_dir=args.svg_dir
+        router, CASES, denied_ids=denied_ids, on_result=lambda r: print(format_row(r), flush=True), svg_dir=args.svg_dir,
+        match_options=matching,
     )
     print(summarize(results), flush=True)
 
