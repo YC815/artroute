@@ -532,6 +532,57 @@ def test_part_that_still_cannot_be_attached_after_the_others_is_dropped() -> Non
     assert_continuous(result.segments)
 
 
+class PairBlockedRouter(StraightRouter):
+    """起點在 src、終點在 dst 附近（300 m 內）的 route 找不到路：只有這一個方向的這一對接不上，
+    其他走直線。2 個點的部件沒有可裁的地方，所以一次 join 嘗試 = 1 次 route。"""
+
+    def __init__(self, src, dst) -> None:
+        super().__init__()
+        self.src, self.dst = src, dst
+
+    def route(self, start, end, *, shortest=False):
+        self.calls.append((start, end))
+        if haversine_m(start, self.src) < 300 and haversine_m(end, self.dst) < 300:
+            raise RoutingError("這一對接不上")
+        return RouteResult(points=[start, end], length_km=haversine_m(start, end) / 1000)
+
+
+def test_deferred_part_is_retried_at_its_planned_end_once_another_part_took_that_end() -> None:
+    # 規劃 0 → 1 → 2 → 3，錨點 1。anchor 尾 → 2 接不上，2 先擱著；3 接在尾端，尾端換了：
+    # 補的時候在原定那端（3 的尾）接得上，不必改接開頭
+    head = seg([(121.500, LAT), (121.505, LAT)], index=0)
+    anchor = seg([(121.51, LAT), (121.53, LAT)], index=1)
+    middle = seg([(121.54, LAT), (121.545, LAT)], index=2)
+    tail = seg([(121.55, LAT), (121.555, LAT)], index=3)
+    parts = [Part([head], False), Part([anchor], False), Part([middle], False), Part([tail], False)]
+    router = PairBlockedRouter(src=anchor.points[-1], dst=middle.points[0])
+    result = compose(router, parts, Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [0, 1, 3, 2]  # 補接在原定那端（尾端）；改接開頭會是 [2, 0, 1, 3]
+    assert_continuous(result.segments)
+    assert router.calls == [
+        (anchor.points[-1], middle.points[0]),  # 2 原定的接點：失敗，擱著
+        (anchor.points[-1], tail.points[0]),  # 3 接在同一端
+        (head.points[-1], anchor.points[0]),  # 0 接在開頭
+        (tail.points[-1], middle.points[0]),  # 補 2：尾端已經換成 3 的終點，在原端接上
+    ]
+
+
+def test_deferred_part_does_not_retry_the_same_join_when_its_end_did_not_change() -> None:
+    # 擱著的部件，原定那一端後來沒有接任何別的部件：同一個接點、同樣的結果，不再打一次 route，直接試另一端
+    anchor = seg([(121.50, LAT), (121.53, LAT)], index=0)
+    after = seg([(121.54, LAT), (121.545, LAT)], index=1)
+    router = PairBlockedRouter(src=anchor.points[-1], dst=after.points[0])
+    result = compose(router, [Part([anchor], False), Part([after], False)], Deadline(10))
+    assert result.dropped == []
+    assert strokes_in(result) == [1, 0]  # 改接在開頭
+    assert_continuous(result.segments)
+    assert router.calls == [
+        (anchor.points[-1], after.points[0]),  # 只有一次：失敗後沒有重打
+        (after.points[-1], anchor.points[0]),
+    ]
+
+
 # ---- P1.5 Task 9：開放筆畫可以反向走（以反向的點重新吸附，不是把路線倒過來） ----
 
 
