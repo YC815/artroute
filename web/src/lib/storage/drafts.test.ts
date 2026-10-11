@@ -213,15 +213,25 @@ describe(`上限 ${DRAFT_LIMIT} 份`, () => {
     expect(await db.list()).toHaveLength(DRAFT_LIMIT + 1);
   });
 
-  it("仍超過上限時，就算刪了一份未打開的，也繼續回 overLimit", async () => {
+  it("已經超過上限時不刪前幾次新建的未打開草稿，照存並繼續回 overLimit", async () => {
     await fill(DRAFT_LIMIT, () => true);
     const first = await db.create(INPUT, T0 + 100_000);
     const second = await db.create(INPUT, T0 + 200_000);
     expect(second.overLimit).toBe(true);
     const left = (await db.list()).map((d) => d.id);
-    expect(left).toHaveLength(DRAFT_LIMIT + 1);
-    expect(left).not.toContain(first.draft.id);
+    expect(left).toHaveLength(DRAFT_LIMIT + 2);
+    expect(left).toContain(first.draft.id);
     expect(left).toContain(second.draft.id);
+  });
+
+  it("刪掉未打開的就能回到上限以內時，一次刪到剛好 20 份", async () => {
+    const ids = await fill(DRAFT_LIMIT, (i) => i >= 2);
+    await db.create(INPUT, T0 + 100_000);
+    await db.create(INPUT, T0 + 200_000);
+    const left = (await db.list()).map((d) => d.id);
+    expect(left).toHaveLength(DRAFT_LIMIT);
+    expect(left).not.toContain(ids[0]);
+    expect(left).not.toContain(ids[1]);
   });
 
   it("存檔失敗時不會先刪掉舊草稿（同一個交易）", async () => {

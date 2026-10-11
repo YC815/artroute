@@ -147,18 +147,17 @@ export async function openDraftDb(factory: IDBFactory = globalThis.indexedDB): P
       }),
 
     // 壞掉的紀錄不算進上限：使用者在「我的路線」看不到，也就刪不掉它。
+    // 刪掉未打開的草稿也回不到上限以內時一份都不刪：已經超過上限（全部打開過）時，未打開的只剩前幾次新建的草稿，
+    // 刪了就是讓使用者剛做的修改消失。
     create: (input, now) =>
       inTransaction(db, "readwrite", async (store) => {
         const drafts = parseDrafts(await request(store.getAll()));
         let count = drafts.length;
-        if (count >= DRAFT_LIMIT) {
-          const oldest = drafts
-            .filter((d) => d.openedAt === null)
-            .reduce<Draft | null>((a, d) => (a === null || d.updatedAt < a.updatedAt ? d : a), null);
-          if (oldest) {
-            store.delete(oldest.id);
-            count -= 1;
-          }
+        const excess = count + 1 - DRAFT_LIMIT;
+        const unopened = drafts.filter((d) => d.openedAt === null).sort((a, b) => a.updatedAt - b.updatedAt);
+        if (excess > 0 && unopened.length >= excess) {
+          for (const old of unopened.slice(0, excess)) store.delete(old.id);
+          count -= excess;
         }
         const draft: Draft = { v: 1, id: crypto.randomUUID(), createdAt: now, updatedAt: now, openedAt: null, ...input };
         store.put(draft);
