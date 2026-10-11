@@ -4,10 +4,12 @@
 退回 fast 的目標從相鄰照著走那段的實際端點接著畫；預算用完的部分交給 fast；反向用規劃器的 backward。
 """
 
+import logging
+
 import pytest
 
 from engine.matching import service
-from engine.matching.deadline import Deadline, MatchCancelled
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.service import StrokeInput, _Fallback, _fallback_points, match_shape
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.matching.stroke import densify
@@ -143,12 +145,22 @@ def test_follow_failure_falls_back_to_fast_for_that_range(monkeypatch) -> None:
     assert_joined(result.segments)
 
 
-def test_out_of_budget_pieces_are_not_followed_and_the_result_is_fast(monkeypatch) -> None:
+class CountingGraph(Graph):
+    def __init__(self) -> None:
+        self.regions = 0
+
+    def region(self, *bbox):
+        self.regions += 1
+        return None
+
+
+def test_without_budget_fine_is_fast_and_never_touches_the_graph(monkeypatch) -> None:
     monkeypatch.setattr(service, "PLANNER_BUDGET_S", 0.0)
     calls = use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [piece(TARGET[::-1], (12, 0))])])
-    router = Router()
-    result = fine(router, [StrokeInput(TARGET, False)])
-    assert calls[0]["budget_s"] == 0.0
+    router, graph = Router(), CountingGraph()
+    result = match_shape(router, [StrokeInput(TARGET, False)], search_radius_m=RADIUS, deadline=Deadline(30),
+                         quality="fine", graph=graph)
+    assert calls == [] and graph.regions == 0
     assert router.follows() == []
     fast = match_shape(Router(), [StrokeInput(TARGET, False)], search_radius_m=RADIUS, deadline=Deadline(30))
     assert result == fast
@@ -219,6 +231,39 @@ def test_fast_quality_or_missing_graph_never_plans(monkeypatch) -> None:
     for kwargs in ({"quality": "fast", "graph": Graph()}, {"quality": None, "graph": Graph()},
                    {"quality": "fine", "graph": None}):
         assert match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30), **kwargs) == baseline
+
+
+class BrokenGraph(Graph):
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def region(self, *bbox):
+        raise self.error
+
+
+def test_unexpected_planning_errors_fall_back_to_fast(monkeypatch, caplog) -> None:
+    """規劃階段的非期限例外（壞的路網圖、規劃器的 bug）不讓 /match 變成 500：記下來，整張圖走 fast。"""
+    strokes = [StrokeInput(TARGET, False)]
+    fast = match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30))
+    with caplog.at_level(logging.ERROR, logger="engine.matching.service"):
+        broken = match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30), quality="fine",
+                             graph=BrokenGraph(ValueError("壞掉的路網圖")))
+    assert broken == fast
+    assert [r.levelno for r in caplog.records] == [logging.ERROR] and caplog.records[0].exc_info
+
+    def failing_plan(*args, **kwargs):
+        raise IndexError("規劃器的 bug")
+
+    monkeypatch.setattr(service, "plan_shape", failing_plan)
+    assert match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30), quality="fine",
+                       graph=Graph()) == fast
+
+
+@pytest.mark.parametrize("error", [MatchCancelled("離開"), MatchTimeout("逾時")])
+def test_deadline_errors_during_planning_still_propagate(error) -> None:
+    with pytest.raises(type(error)):
+        match_shape(Router(), [StrokeInput(TARGET, False)], search_radius_m=RADIUS, deadline=Deadline(30),
+                    quality="fine", graph=BrokenGraph(error))
 
 
 def test_cancellation_during_fine_propagates(monkeypatch) -> None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from engine.matching.compose import Part, Rematch, compose, route_points
-from engine.matching.deadline import Deadline
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.join import adjacent, connect
 from engine.matching.prune import prune_loops
 from engine.matching.score import Score, score, target_extent_m
@@ -205,16 +205,30 @@ class _Fine:
 
 def _start_fine(
     router: MatchRouter, graph: RideGraph, strokes: list[StrokeInput], radius: float, deadline: Deadline
-) -> _Fine:
-    """規劃所有筆畫。預算從現在起算 min(PLANNER_BUDGET_S, 期限剩餘 − FINE_RESERVE_S)（不小於 0），規劃與照著走共用：
-    規劃先用（plan_shape 超過預算就把剩下的記成沒規劃），剩下的給照著走。期限本身（逾時、取消）照常丟例外。"""
+) -> _Fine | None:
+    """規劃所有筆畫；回傳 None 表示整張圖改走 fast。
+
+    預算從現在起算 min(PLANNER_BUDGET_S, 期限剩餘 − FINE_RESERVE_S)，規劃與照著走共用：規劃先用（plan_shape 超過預算
+    就把剩下的記成沒規劃），剩下的給照著走。預算 ≤ 0 時直接走 fast，不碰路網圖。
+    期限（逾時、取消）照常丟例外；其他例外（壞掉的路網圖、規劃器的 bug）記下來後走 fast：fine 是選用的改善，
+    不能讓 /match 因此變成 500。
+    """
     started = time.monotonic()
-    stop_at = started + max(0.0, min(PLANNER_BUDGET_S, deadline.remaining() - FINE_RESERVE_S))
+    budget = min(PLANNER_BUDGET_S, deadline.remaining() - FINE_RESERVE_S)
+    if budget <= 0:
+        return None
+    stop_at = started + budget
     points = [s.points for s in strokes]
-    region = graph.region(*region_bounds(points))
-    plans = plan_shape(
-        region, points, [s.closed for s in strokes], deadline=deadline, budget_s=max(0.0, stop_at - time.monotonic())
-    )
+    try:
+        region = graph.region(*region_bounds(points))
+        plans = plan_shape(
+            region, points, [s.closed for s in strokes], deadline=deadline, budget_s=max(0.0, stop_at - time.monotonic())
+        )
+    except (MatchTimeout, MatchCancelled):
+        raise
+    except Exception:
+        logger.exception("fine 規劃失敗，整張圖改走 fast")
+        return None
     deadline.check()
     return _Fine(router, deadline, radius, plans, stop_at, planned_ms=(time.monotonic() - started) * 1000)
 
@@ -414,7 +428,7 @@ def match_shape(
     """prune：串接之後剪小刺與小圈（prune_loops）。False 時與沒有這一步的版本完全相同（bench 與標註工具產生「改前」用）。
 
     quality="fine" 而且有 graph（current build 的可騎路網圖）時逐部件吸附改用規劃器（見模組說明），否則就是 fast：
-    與沒有這兩個參數的版本完全相同。串接、剪小刺、連續性檢查與評分兩種都一樣。
+    與沒有這兩個參數的版本完全相同。fine 的預算是 0 或規劃失敗（非期限的例外）時也整張圖走 fast（_start_fine）。串接、剪小刺、連續性檢查與評分兩種都一樣。
     """
     _check_inside_taiwan(strokes)
     targets = [_target(s) for s in strokes]
@@ -424,9 +438,8 @@ def match_shape(
     radius = _resolve_radius(search_radius_m, strokes)
 
     rematch: Rematch
-    fine: _Fine | None = None
-    if quality == "fine" and graph is not None:
-        fine = _start_fine(router, graph, strokes, radius, deadline)
+    fine = _start_fine(router, graph, strokes, radius, deadline) if quality == "fine" and graph is not None else None
+    if fine is not None:
         parts, owners, warnings = _match_parts(router, strokes, _fine_matcher(fine, strokes), deadline)
         rematch = _fine_rematcher(fine, strokes, owners)
     else:
