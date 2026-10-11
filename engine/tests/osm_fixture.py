@@ -185,3 +185,49 @@ def opposite_footway_map(cycleway: str) -> list[GridWay]:
         GridWay(751, [(X4 + 24, 1), (X4 + 25, 1)], RESIDENTIAL),
         GridWay(752, [(X4 + 27, 1), (X4 + 28, 1)], RESIDENTIAL),
     ]
+
+
+# ---- 剪小刺與小圈（P2.5 A4）：每個場景在不同的列、彼此不相連 ----
+X5 = 140  # 與其他地圖分開（search_city.py 從 200 開始）
+PRUNE_SPUR_ROW = 0  # 主街旁一條約 55 m 的死巷
+PRUNE_BLOCK_ROW = 2  # 主街旁一個約 50 m × 27 m 的街廓（南邊就是主街）
+PRUNE_RING_ROW = 4  # 主街走到底，只有一個小環可以迴轉
+PRUNE_BRIDGE_ROW = 6  # 橋跨過下面那條路（平面上相距 0.3 m，不相通），只能繞一小圈下橋
+PRUNE_MOTORWAY_WAY_ID = 899
+BRIDGE_GAP_COL = 0.3 / 201.7  # 橋上的節點在下面那條路東邊 0.3 m：不共用節點，剪小刺找得到這一對
+
+
+def _row_way(way_id: int, row: float, cols: list[float]) -> GridWay:
+    return GridWay(way_id, [(X5 + c, row) for c in cols], RESIDENTIAL)
+
+
+PRUNE_MAP: list[GridWay] = [
+    # 死巷：主街 (X5, 0)–(X5 + 6, 0)，X = (X5 + 3, 0) 往北到 (X5 + 3, 0.25)
+    _row_way(800, PRUNE_SPUR_ROW, [0, 1, 2, 3, 4, 5, 6]),
+    GridWay(801, [(X5 + 3, PRUNE_SPUR_ROW), (X5 + 3, PRUNE_SPUR_ROW + 0.25)], RESIDENTIAL),
+    # 街廓：主街經過 X = (X5 + 3, 2)、Y = (X5 + 3.25, 2)；北邊三條邊 X → (X5 + 3, 2.12) → (X5 + 3.25, 2.12) → Y
+    _row_way(810, PRUNE_BLOCK_ROW, [0, 1, 2, 3, 3.25, 4, 5, 6]),
+    GridWay(
+        811,
+        [(X5 + 3 + dc, PRUNE_BLOCK_ROW + dr) for dc, dr in ((0, 0), (0, 0.12), (0.25, 0.12), (0.25, 0))],
+        RESIDENTIAL,
+    ),
+    # 小環：主街 (X5, 4)–(X5 + 5, 4) 到 X 為止，X 接一個約 135 m 的環 X → R1 → R2 → R3 → X
+    _row_way(820, PRUNE_RING_ROW, [0, 1, 2, 3, 4, 5]),
+    GridWay(
+        821,
+        [(X5 + 5 + dc, PRUNE_RING_ROW + dr) for dc, dr in ((0, 0), (0.1, 0.08), (0.25, 0), (0.1, -0.12), (0, 0))],
+        RESIDENTIAL,
+    ),
+    # 立體交叉：橋 (X5, 6) → K'（下面那條路東邊 0.3 m）→ E = (X5 + 3.1, 6)；下橋往南、往西接到下面那條路的南端 S，
+    # 下面那條路 S = (X5 + 3, 5.9) → K = (X5 + 3, 6) → (X5 + 3, 9)。從橋上到下面那條路只能繞 K' → E → S → K（約 84 m）
+    GridWay(
+        830,
+        [(X5, PRUNE_BRIDGE_ROW), (X5 + 3 + BRIDGE_GAP_COL, PRUNE_BRIDGE_ROW), (X5 + 3.1, PRUNE_BRIDGE_ROW)],
+        {**RESIDENTIAL, "bridge": "yes", "layer": "1"},
+    ),
+    GridWay(831, [(X5 + 3.1, PRUNE_BRIDGE_ROW), (X5 + 3.1, PRUNE_BRIDGE_ROW - 0.1), (X5 + 3, PRUNE_BRIDGE_ROW - 0.1)], RESIDENTIAL),
+    GridWay(832, [(X5 + 3, PRUNE_BRIDGE_ROW - 0.1), (X5 + 3, PRUNE_BRIDGE_ROW), (X5 + 3, PRUNE_BRIDGE_ROW + 3)], RESIDENTIAL),
+    # 禁行的快速道路（bench 安全斷言用），離所有場景都遠
+    GridWay(PRUNE_MOTORWAY_WAY_ID, [(X5 + c, -3) for c in range(7)], {"highway": "motorway"}),
+]
