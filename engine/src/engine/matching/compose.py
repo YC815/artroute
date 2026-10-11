@@ -45,7 +45,7 @@ class Composition:
     dropped: list[int]
 
 
-class _Pos(NamedTuple):
+class Pos(NamedTuple):
     """全域攤平後的一個點：它在第 segment 段的第 offset 個點。"""
 
     segment: int
@@ -53,13 +53,20 @@ class _Pos(NamedTuple):
     point: LonLat
 
 
-def _flat(segments: list[Segment]) -> list[_Pos]:
+def flat(segments: list[Segment]) -> list[Pos]:
     """依序攤平所有點；相鄰段共用的接點只算一次（歸前一段）。"""
-    out: list[_Pos] = []
+    out: list[Pos] = []
     for i, segment in enumerate(segments):
         skip = 1 if out else 0
-        out.extend(_Pos(i, skip + k, p) for k, p in enumerate(segment.points[skip:]))
+        out.extend(Pos(i, skip + k, p) for k, p in enumerate(segment.points[skip:]))
     return out
+
+
+def route_points(segments: list[Segment]) -> list[LonLat]:
+    """攤平成一條折線（flat 的點），不留零長度的一步（connector 可能有 3 個點卻只有 2 個不同）。
+    後一段的第一點會被丟掉，所以輸出前必須先確認相鄰段落相接（service._check_continuous）。"""
+    points = [p.point for p in flat(segments)]
+    return [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
 
 
 def _with_points(segment: Segment, points: list[LonLat]) -> Segment:
@@ -72,10 +79,10 @@ def rotate(segments: list[Segment], index: int) -> list[Segment]:
     切點由攤平時記下的段內位置決定，不是用座標去找：八字形、來回的路線會重複經過同一個座標，
     用座標找會切在較早的那一次，繞出另一條路。
     """
-    flat = _flat(segments)
-    if index <= 0 or index >= len(flat) - 1:
+    flattened = flat(segments)
+    if index <= 0 or index >= len(flattened) - 1:
         return list(segments)
-    pivot = flat[index]
+    pivot = flattened[index]
     segment = segments[pivot.segment]
     tail = segments[: pivot.segment]
     head = segments[pivot.segment + 1 :]
@@ -100,21 +107,21 @@ class _Option:
 
 def _options(part: Part) -> list[_Option]:
     """每個部件只算一次：規劃會反覆比較進出點，不能每次都重新攤平整條折線。"""
-    flat = _flat(part.segments)
+    flattened = flat(part.segments)
     if not part.closed:
-        forward = _Option(0, flat[0].point, part.segments[-1].points[-1])
+        forward = _Option(0, flattened[0].point, part.segments[-1].points[-1])
         if not part.reversible:
             return [forward]
         return [forward, _Option(0, forward.exit, forward.entry, reverse=True)]
     # 封閉圈的進入點：起點，加上沿途每隔 step_m 一個（不含與起點重合的終點）
     step_m = max(CLOSED_ROTATION_STEP_M, sum(s.length_m for s in part.segments) / MAX_CLOSED_ENTRIES)
     picks, walked = [0], 0.0
-    for k in range(1, len(flat) - 1):
-        walked += haversine_m(flat[k - 1].point, flat[k].point)
+    for k in range(1, len(flattened) - 1):
+        walked += haversine_m(flattened[k - 1].point, flattened[k].point)
         if walked >= step_m:
             picks.append(k)
             walked = 0.0
-    return [_Option(k, flat[k].point, flat[k].point) for k in picks]
+    return [_Option(k, flattened[k].point, flattened[k].point) for k in picks]
 
 
 def _nearest(position: LonLat, options: list[_Option]) -> _Option:

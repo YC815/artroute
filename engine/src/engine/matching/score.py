@@ -60,6 +60,13 @@ def _projector(targets: list[list[LonLat]]):
     return project
 
 
+def target_extent_m(targets: list[list[LonLat]]) -> float:
+    """目標外框（局部平面，北朝上）的長邊公尺：v3 把它縮放到 CANVAS_PX，剪小刺與小圈拿它定圈長上限。"""
+    project = _projector(targets)
+    stacked = np.vstack([project(line) for line in targets])
+    return float((stacked.max(axis=0) - stacked.min(axis=0)).max())
+
+
 def _sample(line: np.ndarray, step_m: float = SAMPLE_STEP_M) -> np.ndarray:
     """依累積弧長等距重取樣，取樣密度與頂點疏密無關。
     間距是 ≤ step_m 的等分（含兩端點），所以反過來走取到的是同一組點。"""
