@@ -186,3 +186,13 @@ def test_long_plan_is_measured_without_blowing_up() -> None:
     """10 km 的路徑（取樣上萬點）也能量：分批算點到線段距離。"""
     long = line(*((100.0 * k, 30.0 * math.sin(k)) for k in range(101)))
     assert follow(CannedRouter(long), piece(long), Deadline(5), stroke_index=0) is not None
+
+
+def test_hausdorff_never_underestimates_when_the_worst_point_falls_between_samples() -> None:
+    # 複審：B 是 U 形（左邊長 21 m）、A 沿著 B 的上蓋、右邊、底邊走但沒有左邊。精確值 10.5 m 出現在 B 左邊的中點
+    # (0, −10.5)，那一點不是 1 m 取樣點（取樣點離它 0.5 m）：只量取樣點會得到約 10.4994、低估；加上半個間距才是上界
+    b = line((0.0, 0.0), (0.0, -21.0), (10.5, -21.0), (10.5, 0.0))
+    a = line((0.0, 0.0), (10.5, 0.0), (10.5, -21.0), (0.0, -21.0))
+    measured = hausdorff_m(a, b)
+    assert measured >= 10.5 - 1e-6
+    assert measured <= 10.5 + 1.0 + 1e-6

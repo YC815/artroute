@@ -179,3 +179,25 @@ def test_build_without_graph_files_is_never_retried(tmp_path: Path) -> None:
     assert cache.get(current.name) is None
     clock.now += 10_000
     assert cache.get(current.name) is None and len(loader.loaded) == 1
+
+
+def test_unexpected_loader_errors_fall_back_to_fast_and_are_retried(tmp_path: Path, caplog) -> None:
+    """複審：讀取器丟 GraphDataMissing 以外的例外（例如 numpy 讀到截斷的檔案）時不能讓 /match 變成 500，
+    也不能把 None 記到換 build（之後靜靜停用 fine）：同樣記 ERROR、GRAPH_RETRY_S 之後再試。"""
+    from engine.app import GRAPH_RETRY_S
+
+    current = build(tmp_path, "20261010T000000Z")
+    calls: list[Path] = []
+
+    def loader(build_dir: Path):
+        calls.append(build_dir)
+        if len(calls) == 1:
+            raise ValueError("cannot reshape array")
+        return ("graph", build_dir.name)
+
+    clock = Clock()
+    cache = _CurrentGraph(DataLayout(tmp_path), loader, clock=clock)
+    assert cache.get(current.name) is None
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    clock.now += GRAPH_RETRY_S + 1
+    assert cache.get(current.name) == ("graph", current.name) and len(calls) == 2

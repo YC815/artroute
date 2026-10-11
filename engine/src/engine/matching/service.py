@@ -286,10 +286,12 @@ def _fallback_points(points: list[LonLat], items: list[_Item], k: int, closed: b
 
 def _wrap_fallbacks(items: list[_Item], n: int) -> list[_Item]:
     """封閉筆畫首尾相鄰：第一個與最後一個都是退回範圍時（規劃的起點落在兩個輸入點之間，交界那段兩邊都含），
-    跨過起點合成一個 (最後一個的頭, 第一個的尾 + n)、放到最後，交給 fast 一次；不然那段會被前後兩次 fast 各畫一遍。"""
+    跨過起點合成一個 (最後一個的頭, 第一個的尾 + n)、放到最後，交給 fast 一次；不然那段會被前後兩次 fast 各畫一遍。
+    每個退回範圍也截到最多一整圈（n）。"""
     if len(items) > 1 and isinstance(items[0], _Fallback) and isinstance(items[-1], _Fallback):
-        return [*items[1:-1], _Fallback(items[-1].start, items[0].end + n)]
-    return items
+        items = [*items[1:-1], _Fallback(items[-1].start, items[0].end + n)]
+    # 一個退回範圍最多一整圈：整圈規劃成一段（長 n + 1，起點在兩個輸入點之間）卻沒照著走時，不截的話交界那段會畫兩次
+    return [_Fallback(i.start, min(i.end, i.start + n)) if isinstance(i, _Fallback) else i for i in items]
 
 
 def _link_blocks(fine: _Fine, blocks: list[tuple[list[list[Segment]], bool]], index: int) -> list[list[Segment]]:
@@ -415,6 +417,21 @@ def _merge_warnings(matching: list[MatchWarning], dropped: list[MatchWarning]) -
     return [merged[index] for index in sorted(merged)]
 
 
+def _never_raising(rematch: Rematch) -> Rematch:
+    """fine 的反向重新吸附出非期限的例外時記下來、照畫的方向走（回 None），不讓 /match 變成 500。"""
+
+    def guarded(part_index: int) -> list[Segment] | None:
+        try:
+            return rematch(part_index)
+        except (MatchTimeout, MatchCancelled):
+            raise
+        except Exception:
+            logger.exception("fine 的反向重新吸附失敗，照畫的方向走")
+            return None
+
+    return guarded
+
+
 def match_shape(
     router: MatchRouter,
     strokes: list[StrokeInput],
@@ -441,8 +458,15 @@ def match_shape(
     rematch: Rematch
     fine = _start_fine(router, graph, strokes, radius, deadline) if quality == "fine" and graph is not None else None
     if fine is not None:
-        parts, owners, warnings = _match_parts(router, strokes, _fine_matcher(fine, strokes), deadline)
-        rematch = _fine_rematcher(fine, strokes, owners)
+        try:
+            parts, owners, warnings = _match_parts(router, strokes, _fine_matcher(fine, strokes), deadline)
+        except (MatchTimeout, MatchCancelled):
+            raise
+        except Exception:  # 照著走、串接的程式錯誤：fine 是選用的改善，不能讓 /match 變成 500，整張圖改走 fast
+            logger.exception("fine 吸附失敗，整張圖改走 fast")
+            fine = None
+    if fine is not None:
+        rematch = _never_raising(_fine_rematcher(fine, strokes, owners))
     else:
         parts, owners, warnings = _match_parts(router, strokes, _fast_matcher(router, targets, radius, deadline), deadline)
         rematch = _rematcher(router, targets, owners, radius, deadline)

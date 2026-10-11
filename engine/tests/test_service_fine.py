@@ -327,6 +327,29 @@ def test_unexpected_planning_errors_fall_back_to_fast(monkeypatch, caplog) -> No
                        graph=Graph()) == fast
 
 
+def test_unexpected_errors_while_following_fall_back_to_fast(monkeypatch, caplog) -> None:
+    """複審 nit：照著走或串接（規劃以外）的非期限例外同樣不讓 /match 變成 500，整張圖走 fast；期限例外照丟。"""
+    strokes = [StrokeInput(TARGET, False)]
+    fast = match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30))
+    use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [])])
+
+    def broken_follow(*args, **kwargs):
+        raise IndexError("照著走的 bug")
+
+    monkeypatch.setattr(service, "follow", broken_follow)
+    with caplog.at_level(logging.ERROR, logger="engine.matching.service"):
+        result = match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30), quality="fine", graph=Graph())
+    assert result == fast
+    assert any(r.levelno == logging.ERROR and r.exc_info for r in caplog.records)
+
+    def cancelled_follow(*args, **kwargs):
+        raise MatchCancelled("離開")
+
+    monkeypatch.setattr(service, "follow", cancelled_follow)
+    with pytest.raises(MatchCancelled):
+        match_shape(Router(), strokes, search_radius_m=RADIUS, deadline=Deadline(30), quality="fine", graph=Graph())
+
+
 @pytest.mark.parametrize("error", [MatchCancelled("離開"), MatchTimeout("逾時")])
 def test_deadline_errors_during_planning_still_propagate(error) -> None:
     with pytest.raises(type(error)):
@@ -368,6 +391,18 @@ def test_closed_stroke_merges_the_first_and_last_fallbacks_across_its_start(monk
     assert result.route_points.count(SQUARE[1]) == 1 and result.route_points.count(SQUARE[2]) == 1
     assert_joined(result.segments)
     assert result.warnings == []
+
+
+def test_closed_stroke_single_fallback_longer_than_the_loop_is_cut_to_one_loop(monkeypatch) -> None:
+    """複審：整圈規劃成一段、範圍 (1, 6)（長 n + 1，起點在輸入點 1–2 之間）卻沒照著走時，整個筆畫只剩一個退回範圍；
+    不截到一圈的話點列是 p1, p2, p3, p0, p1, p2，輸入點 1–2 那段會畫兩次。"""
+    use_plans(monkeypatch, [StrokePlan([(1, 6)], None)])
+    router = Router()
+    result = fine(router, [StrokeInput(SQUARE, True)])
+    fallback = [p for p, r in router.traces if r == RADIUS]
+    assert len(fallback) == 1
+    assert result.route_points.count(SQUARE[2]) == 1 and result.route_points.count(SQUARE[3]) == 1
+    assert_joined(result.segments)
 
 
 def test_closed_stroke_fallback_wraps_around_to_its_neighbours() -> None:

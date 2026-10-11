@@ -301,6 +301,9 @@ class _CurrentGraph:
                     if has_graph_data(build):
                         logger.error("可騎路網圖載入失敗，%d 秒內 fine 退回 fast：%s", GRAPH_RETRY_S, error)
                         self._retry_at = self._clock() + GRAPH_RETRY_S
+                except Exception:  # 讀取器的其他錯誤（例如 numpy 讀到截斷的檔案）：同樣記下來、之後再試，不讓 /match 變成 500
+                    logger.exception("可騎路網圖載入失敗，%d 秒內 fine 退回 fast", GRAPH_RETRY_S)
+                    self._retry_at = self._clock() + GRAPH_RETRY_S
             return self._graph
 
 
