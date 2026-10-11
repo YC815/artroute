@@ -1,0 +1,292 @@
+{
+ "collected_at": "2026-10-11",
+ "pairs": [
+  {
+   "n": 1,
+   "case": "hi@taipei_daan",
+   "left": "F0",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 2,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "F1",
+   "right": "Q21",
+   "choice": "R"
+  },
+  {
+   "n": 3,
+   "case": "default_text@taipei_riverside",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 4,
+   "case": "hi@taichung_west",
+   "left": "F2",
+   "right": "Q22",
+   "choice": "same"
+  },
+  {
+   "n": 5,
+   "case": "hi@taipei_riverside",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "L"
+  },
+  {
+   "n": 6,
+   "case": "hi@taichung_west",
+   "left": "F0",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 7,
+   "case": "heart@kaohsiung_lingya",
+   "left": "F2",
+   "right": "Q22",
+   "choice": "same"
+  },
+  {
+   "n": 8,
+   "case": "heart@taichung_west",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "L"
+  },
+  {
+   "n": 9,
+   "case": "hi@kaohsiung_lingya",
+   "left": "F0",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 10,
+   "case": "heart@taichung_west",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 11,
+   "case": "default_text@taipei_daan",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 12,
+   "case": "default_text@taichung_west",
+   "left": "F0",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 13,
+   "case": "hi@taipei_daan",
+   "left": "F2",
+   "right": "Q22",
+   "choice": "same"
+  },
+  {
+   "n": 14,
+   "case": "default_text@taipei_daan",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 15,
+   "case": "hi@taipei_daan",
+   "left": "Q22",
+   "right": "Q20",
+   "choice": "R"
+  },
+  {
+   "n": 16,
+   "case": "default_text@taipei_riverside",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 17,
+   "case": "heart@taipei_daan",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 18,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "F0",
+   "right": "Q20",
+   "choice": "L"
+  },
+  {
+   "n": 19,
+   "case": "default_text@taichung_west",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 20,
+   "case": "hi@taichung_west",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 21,
+   "case": "heart@taipei_daan",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "same"
+  },
+  {
+   "n": 22,
+   "case": "heart@taipei_daan",
+   "left": "Q22",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 23,
+   "case": "hi@kaohsiung_lingya",
+   "left": "F1",
+   "right": "Q21",
+   "choice": "same"
+  },
+  {
+   "n": 24,
+   "case": "heart@taipei_riverside",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "L"
+  },
+  {
+   "n": 25,
+   "case": "hi@kaohsiung_lingya",
+   "left": "Q20",
+   "right": "Q22",
+   "choice": "R"
+  },
+  {
+   "n": 26,
+   "case": "hi@taipei_riverside",
+   "left": "F1",
+   "right": "Q21",
+   "choice": "same"
+  },
+  {
+   "n": 27,
+   "case": "default_text@taichung_west",
+   "left": "F2",
+   "right": "Q22",
+   "choice": "L"
+  },
+  {
+   "n": 28,
+   "case": "default_text@taipei_daan",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "same"
+  },
+  {
+   "n": 29,
+   "case": "hi@taipei_daan",
+   "left": "F1",
+   "right": "Q21",
+   "choice": "R"
+  },
+  {
+   "n": 30,
+   "case": "heart@taichung_west",
+   "left": "Q22",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 31,
+   "case": "heart@kaohsiung_lingya",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 32,
+   "case": "heart@kaohsiung_lingya",
+   "left": "Q21",
+   "right": "F1",
+   "choice": "same"
+  },
+  {
+   "n": 33,
+   "case": "heart@taipei_riverside",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 34,
+   "case": "heart@taipei_riverside",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "same"
+  },
+  {
+   "n": 35,
+   "case": "hi@taipei_riverside",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 36,
+   "case": "default_text@taichung_west",
+   "left": "Q22",
+   "right": "Q20",
+   "choice": "same"
+  },
+  {
+   "n": 37,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "same"
+  },
+  {
+   "n": 38,
+   "case": "hi@taichung_west",
+   "left": "Q20",
+   "right": "Q22",
+   "choice": "same"
+  },
+  {
+   "n": 39,
+   "case": "heart@taipei_daan",
+   "left": "Q20",
+   "right": "F0",
+   "choice": "same"
+  },
+  {
+   "n": 40,
+   "case": "hi@kaohsiung_lingya",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "R"
+  },
+  {
+   "n": 41,
+   "case": "default_text@taipei_riverside",
+   "left": "Q22",
+   "right": "F2",
+   "choice": "same"
+  }
+ ]
+}
