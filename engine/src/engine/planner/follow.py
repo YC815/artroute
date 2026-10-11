@@ -17,6 +17,7 @@ map_snap 與現行 fast 吸附同一條路（meili 在候選之間用 bicycle �
 import math
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from engine.matching.deadline import Deadline
 from engine.matching.stroke import densify
@@ -29,7 +30,7 @@ FOLLOW_STEP_M = 15.0  # 交給 map_snap 的點最多相距這麼遠（spec §6.4
 FOLLOW_RADIUS_M = 10.0  # map_snap 的搜尋半徑（spec §6.4）；_ensure_matched 的端點容許是它的 MAX_SNAP_GAP_RADII 倍
 MAX_HAUSDORFF_M = 10.0  # Valhalla 結果與規劃路徑的雙向 Hausdorff 上限（spec §6.4）
 HAUSDORFF_STEP_M = 1.0  # 量 Hausdorff 時沿折線的取樣間距
-_CHUNK = 2048  # 點到線段距離分批算，每批這麼多個取樣點（記憶體上限約 _CHUNK × 線段數）
+_BATCH = 65_536  # KD-tree 每批查這麼多個取樣點，批次之間檢查期限
 
 
 def _local(origin: LonLat, points: list[LonLat]) -> np.ndarray:
@@ -51,33 +52,33 @@ def _samples(xy: np.ndarray, step: float) -> np.ndarray:
     return np.vstack([xy[seg] + vec[seg] * frac[:, None], xy[-1:]])
 
 
-def _distances(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
-    """每個點到折線 poly（線段，不是頂點）的最短距離；poly 只有一點時就是到那一點。"""
-    if len(poly) < 2:
-        return np.hypot(*(points - poly[0]).T)
-    a, vec = poly[:-1], poly[1:] - poly[:-1]
-    length2 = np.einsum("ij,ij->i", vec, vec)
-    out = np.empty(len(points))
-    for start in range(0, len(points), _CHUNK):
-        rel = points[start:start + _CHUNK, None, :] - a[None]  # (k, m, 2)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            t = np.einsum("kmj,mj->km", rel, vec) / length2
-        t = np.clip(np.nan_to_num(t, nan=0.0), 0.0, 1.0)  # 零長度的線段：就是到它的端點
-        diff = rel - vec[None] * t[..., None]
-        out[start:start + _CHUNK] = np.hypot(diff[..., 0], diff[..., 1]).min(axis=1)
-    return out
+def _farthest(points: np.ndarray, tree: cKDTree, deadline: Deadline | None) -> float:
+    """points 裡離 tree 的點最遠的那一點的距離。分批查，批次之間檢查期限。"""
+    worst = 0.0
+    for start in range(0, len(points), _BATCH):
+        if deadline is not None:
+            deadline.check()
+        distance, _ = tree.query(points[start:start + _BATCH])
+        worst = max(worst, float(distance.max()))
+    return worst
 
 
-def hausdorff_m(a: list[LonLat], b: list[LonLat], *, step_m: float = HAUSDORFF_STEP_M) -> float:
-    """兩條折線的雙向 Hausdorff 距離（公尺，局部平面）的上界。
+def hausdorff_m(
+    a: list[LonLat], b: list[LonLat], *, step_m: float = HAUSDORFF_STEP_M, deadline: Deadline | None = None
+) -> float:
+    """兩條折線的雙向 Hausdorff 距離（公尺，局部平面）的上界，O(N log N)。
 
-    每條折線沿弧長每 ≤ step_m 取樣，量取樣點到另一條折線（線段）的距離取最大，再加 step_m / 2：
-    到折線的距離沿折線走是 1-Lipschitz，取樣點之間最多再遠半個間距，所以結果不會低估。
+    做法：兩條折線各沿弧長每 ≤ step_m 取樣（含所有頂點），用 KD-tree 量 A 的每個取樣點到 B 最近的取樣點（反之亦然），
+    取最大，再加 step_m / 2。設 s = step_m，S_A、S_B 是兩邊的取樣點：
+    - 不低估：A 上任一點 a 離某個取樣點 a_i 不到 s / 2（每段等分、間距 ≤ s），到折線的距離是 1-Lipschitz，
+      所以 d(a, B) ≤ d(a_i, B) + s / 2 ≤ d(a_i, S_B) + s / 2（S_B 在 B 上）。反方向同理。
+    - 最多高估 s：B 上離 a_i 最近的點 q 離某個取樣點不到 s / 2，所以 d(a_i, S_B) ≤ d(a_i, B) + s / 2。
+    deadline：批次之間檢查（逾時、取消照常丟例外）。
     """
     origin = a[0]
-    xa, xb = _local(origin, a), _local(origin, b)
-    forward = float(_distances(_samples(xa, step_m), xb).max())
-    backward = float(_distances(_samples(xb, step_m), xa).max())
+    sa, sb = _samples(_local(origin, a), step_m), _samples(_local(origin, b), step_m)
+    forward = _farthest(sa, cKDTree(sb), deadline)
+    backward = _farthest(sb, cKDTree(sa), deadline)
     return max(forward, backward) + step_m / 2
 
 
@@ -109,6 +110,6 @@ def follow(router: MatchRouter, piece: PlannedPiece, deadline: Deadline, *, stro
         result = router.trace(densify(piece.points, FOLLOW_STEP_M), search_radius_m=FOLLOW_RADIUS_M)
     except RoutingError:
         return None
-    if hausdorff_m(result.points, piece.points) > MAX_HAUSDORFF_M:
+    if hausdorff_m(result.points, piece.points, deadline=deadline) > MAX_HAUSDORFF_M:
         return None
     return [segment_from("stroke", stroke_index, result)]
