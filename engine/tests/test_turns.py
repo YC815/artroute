@@ -169,11 +169,28 @@ def test_strict_rejects_an_arm_too_short_to_measure() -> None:
     assert router.route_calls == []
 
 
-def test_strict_still_lets_a_gentle_turn_through_without_route() -> None:
-    router = TurnBlockRouter(blocked=J)
+def test_strict_measures_a_straight_continuation_with_route_too() -> None:
+    # 轉角 ≤ TURN_CHECK_DEG：rideable 直接放行；嚴格版不走捷徑，交給 route 量（能騎就放行）
+    router = TurnBlockRouter(blocked=None)
     assert rideable_strict(router, Deadline(10), INCOMING, STRAIGHT)
-    assert not strict_needs_no_route_to_reject(INCOMING, STRAIGHT)
+    assert not strict_needs_no_route_to_reject(INCOMING, STRAIGHT)  # 不用 route 不會拒絕：要量了才知道
+    ((p, q),) = router.route_calls
+    assert haversine_m(p, J) == pytest.approx(TURN_PROBE_M, abs=0.1)
+    assert haversine_m(q, J) == pytest.approx(TURN_PROBE_M, abs=0.1)
+
+
+def test_strict_rejects_a_straight_continuation_valhalla_would_not_ride() -> None:
+    # 剪圈接出來的接點：下層道路在 J 往東，正上方（平面上相距 0.5 m）同向的高架從 J' 往東。轉角 0°，
+    # 但 Valhalla 不會從下層直接接上高架（route 要繞一大圈）。rideable 照舊直行放行，嚴格版要拒絕
+    lower, deck = [east(J, -200), east(J, -100), J], [north(J, 0.5), east(north(J, 0.5), 100), east(north(J, 0.5), 200)]
+    router = TurnBlockRouter(blocked=J)
+    assert turn_deg(east(J, -8), J, east(north(J, 0.5), 8)) < 5  # 前提：轉角遠小於 TURN_CHECK_DEG
+    assert rideable(router, Deadline(10), lower, deck)  # 非嚴格版完全不變：不量、放行
     assert router.route_calls == []
+    assert not strict_needs_no_route_to_reject(lower, deck)  # 不是便宜判斷就能拒絕的
+    assert not rideable_strict(router, Deadline(10), lower, deck)
+    assert len(router.route_calls) == 1
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), lower, deck)  # 對照：接得上就放行
 
 
 def test_strict_checks_a_sharp_turn_with_route_like_rideable() -> None:

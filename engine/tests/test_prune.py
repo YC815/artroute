@@ -166,6 +166,31 @@ def test_cut_whose_new_turn_valhalla_would_not_ride_is_not_made() -> None:
     assert [s.points for s in free] == [[W, x], [x, north(x, 400)]]
 
 
+def stacked_case(*, loop_m: float = 15.0) -> tuple[list[Segment], list]:
+    """立體交叉：路線在下層往東經過 X，繞一圈（東、南、西、北）回到 X 正上方 0.5 m 的 X'（高架，同向往東）。
+    只有頂點算候選：下層與高架在平面上重疊的路段中間沒有頂點。剪掉圈 = 從下層直接接上高架，轉角 0°。"""
+    x = east(W, 500)
+    deck = north(x, 0.5)
+    around = [east(x, loop_m), east(north(x, -20), loop_m), east(north(x, -20), -loop_m), east(deck, -loop_m)]
+    return [seg([W, x, *around, deck, C])], [x, deck]
+
+
+def test_cut_from_the_lower_road_onto_the_deck_right_above_it_is_not_made() -> None:
+    # 剪完新接點轉角 0°：以前直行直接放行，輸出從下層跳到高架。現在嚴格版也用 route 量，X 不能直接接上就不剪
+    segments, (x, deck) = stacked_case()
+    (loop,) = _candidates(all_points(segments), 0.15 * 1000)  # 前提：X→X' 的圈是唯一候選
+    assert haversine_m(x, deck) < JOIN_TOLERANCE_M and round(loop.length_m) == 100
+    router = TurnBlockRouter(blocked=x)
+    assert run(segments, router=router) == segments
+    assert router.route_calls  # 是 route 量了才拒絕的（不是便宜判斷）
+    # 對照：同樣的幾何、X 能接上就剪（證明不是別的條件擋住）
+    free = TurnBlockRouter()
+    result = run(segments, router=free)
+    assert [s.points for s in result] == [[W, x], [deck, C]]
+    assert free.route_calls
+    assert_joins_within_tolerance(result)
+
+
 NODE = east(W, 600)
 WEST_LEG = seg([W, NODE])  # 由西往東到 NODE
 

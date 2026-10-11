@@ -58,7 +58,7 @@ def junction_arms(segments: list[Segment], i: int) -> tuple[list[LonLat], list[L
 
 def junction_ok(router: MatchRouter, deadline: Deadline, segments: list[Segment], i: int, *, strict: bool = False) -> bool:
     """segments[i] 與 segments[i + 1] 之間的接點能不能直接騎。
-    strict=True 用 rideable_strict（剪小刺與小圈的新接點：量不出來的不放行）。"""
+    strict=True 用 rideable_strict（剪小刺與小圈的新接點：量不出來的不放行，轉角 ≤ 30° 也用 route 量）。"""
     turn = rideable_strict if strict else rideable
     return turn(router, deadline, *junction_arms(segments, i))
 
