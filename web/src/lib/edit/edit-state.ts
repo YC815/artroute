@@ -48,7 +48,8 @@ export type EditAction =
   | { type: "redo" }
   | { type: "finish" }
   | { type: "resume" }
-  | { type: "setDraftId"; draftId: string };
+  | { type: "setDraftId"; draftId: string }
+  | { type: "replaceRoute"; route: EditedRoute };
 
 export function startEdit(route: EditedRoute, draftId: string | null): EditState {
   return {
@@ -147,6 +148,9 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       return state.active ? { ...state, ...noSelection, ...noMessage, active: false, tool: null, pending: false } : state;
     case "resume":
       return state.active ? state : { ...state, active: true };
+    case "replaceRoute":
+      // 重新驗證通過：新版路網的路線取代目前的，歷史從這裡重新開始（舊版路網上的每一步都不能再編輯）
+      return state.active ? { ...state, ...noSelection, ...noMessage, history: startHistory(action.route), pending: false } : state;
     case "setDraftId":
       return state.draftId === action.draftId ? state : { ...state, draftId: action.draftId };
   }

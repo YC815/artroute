@@ -214,6 +214,47 @@ describe("createRouteEditController", () => {
     expect(bodies[0]).toMatchObject({ route_sig: "sig-0", data_version: R0.dataVersion, op: { type: "cut" } });
   });
 
+  it("replaceRoute：換成新路線、abort 在途的請求、更新打開的草稿", async () => {
+    const t = setup();
+    t.controller.enter(R0, "d9");
+    cutOnce(t);
+    t.controller.replaceRoute(R2);
+    expect(t.edits[0].signal.aborted).toBe(true);
+    expect(t.state()).toMatchObject({ pending: false });
+    expect(t.state().history).toEqual({ past: [], present: R2, future: [] });
+    await flush();
+    expect(t.saves.map((s) => [s.route, s.draftId])).toEqual([[R2, "d9"]]);
+    t.edits[0].reply.resolve({ ok: true, route: R1 });
+    await flush();
+    expect(t.state().history.present).toBe(R2);
+  });
+
+  it("replaceRoute：還沒存過草稿的微調不會因為驗證而建立草稿；存過了（id 還沒回來）就接著存", async () => {
+    const t = setup();
+    t.controller.enter(R0, null);
+    t.controller.replaceRoute(R1);
+    await flush();
+    expect(t.saves).toHaveLength(0);
+
+    cutOnce(t);
+    t.edits[0].reply.resolve({ ok: true, route: R2 });
+    await flush();
+    t.controller.replaceRoute(R1);
+    t.saves[0].reply.resolve("d1");
+    await flush();
+    expect(t.saves.map((s) => [s.route, s.draftId])).toEqual([[R2, null], [R1, "d1"]]);
+  });
+
+  it("replaceRoute：按了「完成」之後不做事", async () => {
+    const t = setup();
+    t.controller.enter(R0, "d9");
+    t.controller.finish();
+    t.controller.replaceRoute(R2);
+    await flush();
+    expect(t.state().history.present).toBe(R0);
+    expect(t.saves).toHaveLength(0);
+  });
+
   it("postEdit 丟例外時不會一直卡在等待中", async () => {
     const t = setup();
     t.controller.enter(R0, null);

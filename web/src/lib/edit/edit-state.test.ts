@@ -25,6 +25,7 @@ function route(sig: string): EditedRoute {
 const R0 = route("sig-0");
 const R1 = route("sig-1");
 const P: RoutePos = { segment: 0, offsetM: 12.5, point: [121.5001, 25.03] };
+const R2 = route("sig-2");
 const Q: RoutePos = { segment: 2, offsetM: 40, point: [121.5025, 25.031] };
 
 function run(state: EditState, ...actions: EditAction[]): EditState {
@@ -258,5 +259,20 @@ describe("離開與回到微調、草稿 id", () => {
     const s = editReducer(startEdit(R0, null), { type: "setDraftId", draftId: "d1" });
     expect(s.draftId).toBe("d1");
     expect(editReducer(s, { type: "setDraftId", draftId: "d1" })).toBe(s);
+  });
+});
+
+describe("replaceRoute（重新驗證通過）", () => {
+  it("換成新路線、歷史重新開始（舊版路網的每一步都不能再復原）、清掉選取與訊息", () => {
+    const edited = run(startEdit(R0, "d1"), { type: "selectTool", tool: "cut" }, { type: "pick", pos: P }, { type: "submit" }, { type: "succeeded", route: R1 });
+    const failed = { ...edited, message: "路網已更新", errorCode: "stale_data", tool: "cut" as const };
+    const next = editReducer(failed, { type: "replaceRoute", route: R2 });
+    expect(next.history).toEqual({ past: [], present: R2, future: [] });
+    expect(next).toMatchObject({ message: null, errorCode: null, picks: [], pending: false, draftId: "d1", tool: "cut" });
+  });
+
+  it("按了「完成」之後不收", () => {
+    const finished = editReducer(startEdit(R0, null), { type: "finish" });
+    expect(editReducer(finished, { type: "replaceRoute", route: R2 })).toBe(finished);
   });
 });

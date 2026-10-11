@@ -34,6 +34,11 @@ export type RouteEditActions = {
   finish(): void;
   /** 圖形移動、回到自動吸附：取消在途的請求、丟掉微調狀態（路線已經在草稿裡）。 */
   reset(): void;
+  /**
+   * 重新驗證通過：換成新版路網的路線、歷史重新開始，並存進草稿（已經有草稿，或這次微調已經存過才存；
+   * 還沒存過草稿的微調不會因為驗證而建立草稿）。
+   */
+  replaceRoute(route: EditedRoute): void;
   selectTool(tool: EditTool | null): void;
   pick(pos: RoutePos): void;
   chooseMode(mode: RerouteMode): void;
@@ -65,7 +70,7 @@ export function createRouteEditController(deps: {
   let state: EditState | null = null;
   let inflight: AbortController | null = null;
   // 每次 enter 一個新的草稿紀錄：上一次微調的存檔晚到時，id 只記回它自己那一次
-  let draft: { id: string | null } | null = null;
+  let draft: { id: string | null; saved: boolean } | null = null;
   let saving: Promise<void> = Promise.resolve();
   let disposed = false;
 
@@ -87,6 +92,7 @@ export function createRouteEditController(deps: {
   const save = (route: EditedRoute) => {
     const target = draft;
     if (!target) return;
+    target.saved = true;
     saving = saving.then(async () => {
       try {
         const id = await deps.saveDraft(route, target.id);
@@ -137,7 +143,7 @@ export function createRouteEditController(deps: {
     enter(route, draftId) {
       if (disposed) return;
       abortInflight();
-      draft = { id: draftId };
+      draft = { id: draftId, saved: false };
       set(startEdit(route, draftId));
     },
     resume: () => dispatch({ type: "resume" }),
@@ -149,6 +155,12 @@ export function createRouteEditController(deps: {
       abortInflight();
       draft = null;
       set(null);
+    },
+    replaceRoute(route) {
+      if (!state?.active) return;
+      abortInflight();
+      dispatch({ type: "replaceRoute", route });
+      if (draft && (draft.id !== null || draft.saved)) save(route);
     },
     selectTool: (tool) => dispatch({ type: "selectTool", tool }),
     pick(pos) {
@@ -214,6 +226,7 @@ export function useRouteEdit(deps: { postEdit: PostEdit; saveDraft: SaveDraft })
       resume: () => controllerRef.current?.resume(),
       finish: () => controllerRef.current?.finish(),
       reset: () => controllerRef.current?.reset(),
+      replaceRoute: (route) => controllerRef.current?.replaceRoute(route),
       selectTool: (tool) => controllerRef.current?.selectTool(tool),
       pick: (pos) => controllerRef.current?.pick(pos),
       chooseMode: (mode) => controllerRef.current?.chooseMode(mode),

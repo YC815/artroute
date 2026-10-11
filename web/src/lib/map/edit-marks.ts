@@ -39,3 +39,21 @@ export function dragPreviewGeoJson(
     ],
   };
 }
+
+/** 重新驗證沒過的段落（序號 0 起算）：整段用紅色疊在路線上。序號超出範圍的略過。 */
+export function badSegmentsGeoJson(
+  route: { segments: readonly { points: readonly LonLat[] }[] } | null,
+  bad: readonly number[],
+): FeatureCollection<LineString, Record<string, never>> {
+  const segments = route?.segments ?? [];
+  return {
+    type: "FeatureCollection",
+    features: [...new Set(bad)]
+      .filter((i) => i >= 0 && i < segments.length)
+      .map((i) => ({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: segments[i].points.map((p) => [p[0], p[1]]) },
+      })),
+  };
+}
