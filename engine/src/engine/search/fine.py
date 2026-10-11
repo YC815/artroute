@@ -22,7 +22,7 @@ from engine.routing.geo import haversine_m
 from engine.routing.router import RoutingError
 from engine.search.coarse import MAX_SIZE_M, MIN_SIZE_M
 from engine.search.geometry import place
-from engine.search.types import Candidate, Placement, SearchParams
+from engine.search.types import Candidate, Evaluation, Placement, SearchParams
 
 TOP_N = 5
 MIN_EVALUATED = 10  # spec §4.6：前 K=10 名跑完整吸附
@@ -70,6 +70,7 @@ class FineStage:
         self.lock = threading.Lock()
         self.queue: deque[_Job] = deque()
         self.by_origin: dict[int, Candidate] = {}  # 每個粗篩候選只留最好的一個結果
+        self.evaluations: list[Evaluation] = []
         self.done = 0
         self.best: Candidate | None = None
         self.stop = False
@@ -119,6 +120,13 @@ class FineStage:
             candidate = None
             if result is not None:
                 candidate = self._candidate(job.placement, result)
+            self.evaluations.append(
+                Evaluation(
+                    job.origin, job.rescaled, None if result is None else result.score.overall,
+                    candidate is not None, bool(candidate and candidate.length_ok),
+                )
+            )
+            if result is not None:
                 if candidate is not None:
                     previous = self.by_origin.get(job.origin)
                     if previous is None or rank_key(candidate, self.params) < rank_key(previous, self.params):

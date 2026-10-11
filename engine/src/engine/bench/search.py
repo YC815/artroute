@@ -1,0 +1,211 @@
+"""python -m engine.bench.search：在真實路網上量自動搜尋（在引擎容器內執行）。
+
+每個案例照正式的 /search 流程跑（每次重建 SEARCH_ROUTERS 個 Router、讀 current build 的可騎道路索引），量：
+- 完成條件（spec §7）：從開始搜尋到產生前 5 名的時間 ≤ 30 s，而且有 5 個候選；
+- 安全不變式：每個回傳的候選都要通過吸附 bench 的同一套斷言（相鄰路段 ≤ 1 m、不經過禁行 way、接點轉彎能直接騎），
+  樓梯 0 m；沒過一律算失敗；
+- 粗篩成本排名與精算 overall 的 Spearman 相關（spec §6.3，調整 K 的依據；只是量測）。
+每個地點的第一個案例要載入該處的 tiles（冷），表格標 cold；完成條件對冷熱一視同仁。
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+
+import numpy as np
+
+from engine.bench.runner import BenchRouter, bad_turns, safety_problem, use_meters
+from engine.bench.search_cases import SEARCH_CASES, SearchCase
+from engine.data.build import DENIED_FILE, load_denied
+from engine.data.layout import DataLayout
+from engine.matching.deadline import Deadline
+from engine.routing.router import Router
+from engine.search.roads import RoadDataMissing, RoadIndex
+from engine.search.service import run_search
+from engine.search.types import Evaluation, Progress, SearchParams
+
+TARGET_S = 30.0  # spec §7 的完成條件
+HARD_TIMEOUT_S = 60.0  # 與 /search 相同的硬上限
+TOP_N = 5
+
+
+@dataclass(frozen=True)
+class CandidateRow:
+    overall: int
+    coverage: int
+    cleanliness: int
+    length_km: float
+    length_ok: bool
+    start_distance_m: float
+    size_m: float
+    rotation_deg: float
+    unsafe: str | None
+    bad_turns: int
+    steps_m: float
+
+
+@dataclass(frozen=True)
+class SearchCaseResult:
+    name: str
+    elapsed_s: float
+    coarse_s: float  # 到精算開始（粗篩＋微調）
+    coarse_candidates: int
+    evaluated: int
+    candidates: list[CandidateRow]
+    spearman: float | None
+    cold: bool
+    error: str | None = None
+    notice: str | None = None
+    problems: list[str] = field(default_factory=list)
+
+
+def spearman(evaluations: list[Evaluation]) -> float | None:
+    """粗篩排名（origin 越小越好）與精算 overall 的 Spearman 相關；只看第一次（未修正大小）而且吸附成功的。
+    正值代表粗篩排名越前、精算分數越高。少於 3 個點時回傳 None。"""
+    pairs = [(e.origin, e.overall) for e in evaluations if not e.rescaled and e.overall is not None]
+    if len(pairs) < 3:
+        return None
+    ranks = np.array([-p[0] for p in pairs], dtype=float)  # 取負號：粗篩越前 = 越大
+    scores = np.array([p[1] for p in pairs], dtype=float)
+    def rank(values: np.ndarray) -> np.ndarray:
+        order = values.argsort(kind="stable")
+        out = np.empty(len(values))
+        out[order] = np.arange(len(values))
+        for v in np.unique(values):  # 同分取平均名次
+            out[values == v] = out[values == v].mean()
+        return out
+    a, b = rank(ranks), rank(scores)
+    if a.std() == 0 or b.std() == 0:
+        return None
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def problems_of(result: SearchCaseResult) -> list[str]:
+    out = []
+    if result.error:
+        out.append(f"{result.name}：搜尋失敗（{result.error}）")
+    if result.elapsed_s > TARGET_S:
+        out.append(f"{result.name}：{result.elapsed_s:.1f} s，超過 {TARGET_S:.0f} s")
+    if len(result.candidates) < TOP_N:
+        out.append(f"{result.name}：只有 {len(result.candidates)} 個候選")
+    for k, c in enumerate(result.candidates, 1):
+        if c.unsafe:
+            out.append(f"{result.name} 第 {k} 名：安全斷言沒過（{c.unsafe}）")
+        if c.bad_turns:
+            out.append(f"{result.name} 第 {k} 名：{c.bad_turns} 個接點的轉彎 Valhalla 不會直接騎")
+        if c.steps_m > 0:
+            out.append(f"{result.name} 第 {k} 名：走了樓梯 {c.steps_m:.0f} m")
+    return out
+
+
+def run_case(
+    case: SearchCase,
+    make_router: Callable[[], BenchRouter],
+    roads: RoadIndex,
+    denied_ids: frozenset[int],
+    routers: int,
+    cold: bool,
+) -> SearchCaseResult:
+    params = SearchParams(
+        case.strokes, case.center, case.radius_m, case.min_km, case.max_km, case.rotation[0], case.rotation[1]
+    )
+    started = time.monotonic()
+    first_match: list[float] = []
+
+    def emit(event: object) -> None:
+        if isinstance(event, Progress) and event.stage == "match" and not first_match:
+            first_match.append(time.monotonic())
+
+    try:
+        outcome = run_search(params, [make_router() for _ in range(routers)], roads, Deadline(HARD_TIMEOUT_S), emit)
+    except Exception as error:  # noqa: BLE001  一個案例失敗不擋住其他案例
+        elapsed = round(time.monotonic() - started, 2)
+        result = SearchCaseResult(case.name, elapsed, elapsed, 0, 0, [], None, cold, error=type(error).__name__)
+        return replace(result, problems=problems_of(result))
+    elapsed = time.monotonic() - started
+    checker = make_router()  # 安全斷言用另一個 Router，不計時
+    rows = []
+    for c in outcome.candidates:
+        unsafe = safety_problem(checker, c.result.segments, denied_ids)
+        rows.append(
+            CandidateRow(
+                c.result.score.overall, c.result.score.coverage, c.result.score.cleanliness,
+                round(c.result.route_length_m / 1000, 2), c.length_ok, round(c.start_distance_m),
+                round(c.placement.size_m), round(c.placement.rotation_deg % 360, 1),
+                None if unsafe is None else f"{unsafe[0]}：{unsafe[1]}",
+                bad_turns(checker, c.result.segments),
+                use_meters(checker, c.result.segments).get("steps", 0.0),
+            )
+        )
+    coarse_s = (first_match[0] if first_match else time.monotonic()) - started
+    result = SearchCaseResult(
+        case.name, round(elapsed, 2), round(coarse_s, 2), outcome.coarse_candidates, outcome.evaluated, rows,
+        spearman(outcome.evaluations), cold, notice=outcome.notice,
+    )
+    return replace(result, problems=problems_of(result))
+
+
+def format_row(r: SearchCaseResult) -> str:
+    top = " ".join(f"{c.overall}{'' if c.length_ok else '*'}" for c in r.candidates) or "-"
+    km = " ".join(f"{c.length_km:g}" for c in r.candidates) or "-"
+    rho = "-" if r.spearman is None else f"{r.spearman:+.2f}"
+    flags = " ".join(filter(None, ["cold" if r.cold else "", r.error, "FAIL" if r.problems else "ok"]))
+    return (
+        f"{r.name:34} {r.elapsed_s:6.1f} {r.coarse_s:6.1f} {r.coarse_candidates:9} {r.evaluated:4} "
+        f"{len(r.candidates):3}  {top:24} {km:30} {rho:>6}  {flags}"
+    )
+
+
+HEADER = f"{'name':34} {'total_s':>6} {'coarse':>6} {'coarse_n':>9} {'eval':>4} {'n':>3}  {'overall(*=公里數不符)':24} {'km':30} {'rho':>6}  note"
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="自動搜尋基準測試（完成條件：R = 5 km 時 30 s 內前 5 名）")
+    parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR", "/data")))
+    parser.add_argument("--routers", type=int, default=int(os.environ.get("SEARCH_ROUTERS", "2")))
+    parser.add_argument("--case", action="append", default=[], help="只跑名稱含這個字串的案例（可重複）")
+    parser.add_argument("--json", type=Path, help="把逐案例結果寫成 JSON（給 findings 文件用）")
+    args = parser.parse_args(argv)
+    build = DataLayout(args.data_dir).current()
+    if build is None:
+        sys.exit("沒有可用的路網資料")
+    try:
+        roads = RoadIndex.load(build)
+    except RoadDataMissing as error:
+        sys.exit(f"目前的 build 沒有可騎道路索引（要重建路網）：{error}")
+    try:
+        denied_ids = frozenset(d.id for d in load_denied(build))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        sys.exit(f"讀不到 {build / DENIED_FILE}，無法檢查安全：{error}")
+    cases = [c for c in SEARCH_CASES if not args.case or any(s in c.name for s in args.case)]
+    print(f"build {build.name}、{len(roads)} 條可騎路段、Router × {args.routers}；完成條件 ≤ {TARGET_S:.0f} s 且 {TOP_N} 個候選", flush=True)
+    print(HEADER, flush=True)
+    results, seen = [], set()
+    for case in cases:
+        cold = case.center not in seen
+        seen.add(case.center)
+        result = run_case(case, lambda: Router.from_build(build), roads, denied_ids, args.routers, cold)
+        results.append(result)
+        print(format_row(result), flush=True)
+    times = sorted(r.elapsed_s for r in results)
+    print(
+        f"共 {len(results)} 案例；時間中位數 {times[len(times) // 2]:.1f} s、最慢 {times[-1]:.1f} s；"
+        f"不合格 {sum(bool(r.problems) for r in results)} 個",
+        flush=True,
+    )
+    if args.json:
+        args.json.write_text(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2) + "\n")
+    problems = [p for r in results for p in r.problems]
+    for p in problems:
+        print(f"不合格：{p}")
+    if problems:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

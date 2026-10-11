@@ -458,4 +458,8 @@ def create_app(
 # uvicorn 只設定自己的 logger（uvicorn.*），engine.* 的紀錄要經 root logger 才會輸出。
 # root 已經有 handler 時（pytest、自訂的 log config）basicConfig 什麼都不做
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-app = create_app(Path(os.environ.get("DATA_DIR", "/data")))
+app = create_app(
+    Path(os.environ.get("DATA_DIR", "/data")),
+    # 搜尋精算用幾個 Router（各一個 Valhalla Actor、各自的 tile 快取上限 256 MiB，搜尋結束就釋放）
+    search_routers=int(os.environ.get("SEARCH_ROUTERS", "2")),
+)

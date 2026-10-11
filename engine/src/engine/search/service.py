@@ -68,4 +68,5 @@ def run_search(
         coarse_candidates=coarse.evaluated,
         evaluated=fine.done,
         notice=_notice(len(candidates), sum(c.length_ok for c in candidates)),
+        evaluations=list(fine.evaluations),
     )
