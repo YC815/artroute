@@ -50,6 +50,7 @@ from engine.matching.service import (
 )
 from engine.matching.types import StartHint
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router, RoutingError
+from engine.planner.graph import has_graph_data
 from engine.search.gate import SearchBusy, SearchGate
 from engine.search.roads import RoadDataMissing, RoadIndex, has_road_data
 from engine.search.service import run_search
@@ -386,6 +387,7 @@ def create_app(
         return StatusResponse(
             data=BuildInfo.model_validate(asdict(meta)) if meta else None,
             search_ready=bool(meta and build and has_road_data(build)),
+            planner_ready=bool(meta and build and has_graph_data(build)),
         )
 
     @app.post("/match", response_model=MatchResponse, responses=MATCH_ERRORS)

@@ -106,3 +106,11 @@ def test_radius_bounds_come_from_the_single_definition() -> None:
 def test_join_tolerance_and_snap_limit_have_one_definition() -> None:
     assert types.JOIN_TOLERANCE_M is router.JOIN_TOLERANCE_M
     assert stroke.MAX_SNAP_GAP_RADII is router.MAX_SNAP_GAP_RADII
+
+
+def test_quality_is_optional_and_only_accepts_fast_or_fine() -> None:
+    stroke = {"points": [[121.5, 25.05], [121.51, 25.05]]}
+    assert MatchRequest.model_validate({"strokes": [stroke]}).quality is None  # None = fast
+    assert MatchRequest.model_validate({"strokes": [stroke], "quality": "fine"}).quality == "fine"
+    with pytest.raises(ValidationError):
+        MatchRequest.model_validate({"strokes": [stroke], "quality": "best"})

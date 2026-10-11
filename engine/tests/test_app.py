@@ -24,7 +24,7 @@ def test_health_ok(tmp_path: Path) -> None:
 
 
 def test_status_without_data(tmp_path: Path) -> None:
-    assert client(tmp_path).get("/status").json() == {"data": None, "search_ready": False}
+    assert client(tmp_path).get("/status").json() == {"data": None, "search_ready": False, "planner_ready": False}
 
 
 def test_status_reports_active_build(tmp_path: Path) -> None:
@@ -56,4 +56,4 @@ def test_status_ignores_unknown_meta_fields(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr("engine.app.read_meta", lambda build: FutureMeta("b", "m", "t", 7))
     response = client(tmp_path).get("/status")
     assert response.status_code == 200
-    assert response.json() == {"data": {"build_id": "b", "osm_md5": "m", "created_at": "t"}, "search_ready": False}
+    assert response.json() == {"data": {"build_id": "b", "osm_md5": "m", "created_at": "t"}, "search_ready": False, "planner_ready": False}

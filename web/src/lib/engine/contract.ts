@@ -108,10 +108,12 @@ export const errorBodySchema = z.object({
 /**
  * GET /status：data 為 null 代表引擎還沒有可用的路網。
  * search_ready：目前的路網有沒有自動搜尋需要的資料。舊版引擎不送這個欄位，缺少時當成 false（不是格式錯誤）。
+ * planner_ready：目前的路網有沒有描形規劃器（quality: "fine"）需要的路網圖；同樣，缺少時當成 false。
  */
 export const statusResponseSchema = z.object({
   data: z.object({ build_id: z.string(), osm_md5: z.string(), created_at: z.string() }).nullable(),
   search_ready: z.boolean().default(false),
+  planner_ready: z.boolean().default(false),
 }) satisfies z.ZodType<Schemas["StatusResponse"]>;
 
 // ---- POST /search（spec §4.6）：請求是正規化圖形＋範圍，回應是 SSE，每個事件的 data 是下面其中一種 ----

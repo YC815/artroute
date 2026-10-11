@@ -141,6 +141,19 @@ def test_status_reports_search_ready(tmp_path: Path) -> None:
         assert client.get("/status").json()["search_ready"] is True
 
 
+def test_status_reports_planner_ready(tmp_path: Path) -> None:
+    from engine.planner.graph import GRAPH_FILES
+
+    with TestClient(make_app(tmp_path, ok_search)) as client:
+        assert client.get("/status").json()["planner_ready"] is False
+        build = DataLayout(tmp_path).current()
+        for name in GRAPH_FILES[:-1]:
+            (build / name).write_text("x")
+        assert client.get("/status").json()["planner_ready"] is False  # 少一個檔案就不算
+        (build / GRAPH_FILES[-1]).write_text("x")
+        assert client.get("/status").json()["planner_ready"] is True
+
+
 # ---- 經過真的 uvicorn：排隊與斷線 ----
 
 

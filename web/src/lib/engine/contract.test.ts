@@ -157,11 +157,25 @@ describe("matchResponseSchema", () => {
 
 describe("statusResponseSchema", () => {
   it("data 可以是 null", () => {
-    expect(statusResponseSchema.parse({ data: null, search_ready: false })).toEqual({ data: null, search_ready: false });
+    expect(statusResponseSchema.parse({ data: null, search_ready: false, planner_ready: false })).toEqual({
+      data: null,
+      search_ready: false,
+      planner_ready: false,
+    });
   });
 
-  it("舊版引擎沒有 search_ready：當成 false，不是格式錯誤", () => {
-    expect(statusResponseSchema.parse({ data: null })).toEqual({ data: null, search_ready: false });
+  it("舊版引擎沒有 search_ready／planner_ready：當成 false，不是格式錯誤", () => {
+    expect(statusResponseSchema.parse({ data: null })).toEqual({ data: null, search_ready: false, planner_ready: false });
+    expect(statusResponseSchema.parse({ data: null, search_ready: true })).toEqual({
+      data: null,
+      search_ready: true,
+      planner_ready: false,
+    });
+  });
+
+  it("planner_ready 原樣讀出；不是布林值就不合法", () => {
+    expect(statusResponseSchema.parse({ data: null, planner_ready: true }).planner_ready).toBe(true);
+    expect(statusResponseSchema.safeParse({ data: null, planner_ready: 1 }).success).toBe(false);
   });
 
   it("search_ready 原樣讀出；不是布林值就不合法", () => {
