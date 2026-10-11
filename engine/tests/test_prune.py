@@ -166,6 +166,31 @@ def test_cut_whose_new_turn_valhalla_would_not_ride_is_not_made() -> None:
     assert [s.points for s in free] == [[W, x], [x, north(x, 400)]]
 
 
+def stacked_case(*, loop_m: float = 15.0) -> tuple[list[Segment], list]:
+    """立體交叉：路線在下層往東經過 X，繞一圈（東、南、西、北）回到 X 正上方 0.5 m 的 X'（高架，同向往東）。
+    只有頂點算候選：下層與高架在平面上重疊的路段中間沒有頂點。剪掉圈 = 從下層直接接上高架，轉角 0°。"""
+    x = east(W, 500)
+    deck = north(x, 0.5)
+    around = [east(x, loop_m), east(north(x, -20), loop_m), east(north(x, -20), -loop_m), east(deck, -loop_m)]
+    return [seg([W, x, *around, deck, C])], [x, deck]
+
+
+def test_cut_from_the_lower_road_onto_the_deck_right_above_it_is_not_made() -> None:
+    # 剪完新接點轉角 0°：以前直行直接放行，輸出從下層跳到高架。現在嚴格版也用 route 量，X 不能直接接上就不剪
+    segments, (x, deck) = stacked_case()
+    (loop,) = _candidates(all_points(segments), 0.15 * 1000)  # 前提：X→X' 的圈是唯一候選
+    assert haversine_m(x, deck) < JOIN_TOLERANCE_M and round(loop.length_m) == 100
+    router = TurnBlockRouter(blocked=x)
+    assert run(segments, router=router) == segments
+    assert router.route_calls  # 是 route 量了才拒絕的（不是便宜判斷）
+    # 對照：同樣的幾何、X 能接上就剪（證明不是別的條件擋住）
+    free = TurnBlockRouter()
+    result = run(segments, router=free)
+    assert [s.points for s in result] == [[W, x], [deck, C]]
+    assert free.route_calls
+    assert_joins_within_tolerance(result)
+
+
 NODE = east(W, 600)
 WEST_LEG = seg([W, NODE])  # 由西往東到 NODE
 
@@ -264,6 +289,23 @@ def test_cut_that_removes_a_whole_stroke_is_not_made() -> None:
     assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
     result = run(segments, targets=targets, extent_m=target_extent_m(targets))
     assert any(s.stroke_index == 1 and s.kind == "stroke" for s in result)
+
+
+def test_cut_that_leaves_only_a_few_meters_of_a_stroke_is_not_made() -> None:
+    # 筆畫 1 繞完 80 m 小圈回到 X，收尾再往東 3 m。舊判斷只看還有兩個不同點，會把筆畫剪到只剩 3 m，
+    # 而 v3 只看可見幾何的聯集，剪掉偏離目標直線的小圈後分數反而上升，不能靠評分擋住。
+    x, tail = east(W, 500), east(W, 503)
+    stroke = seg([*square(x, 20), tail], "stroke", 1)
+    segments = [seg([W, x]), stroke, seg([tail, C], "connector", None)]
+    targets = [[W, C]]
+    positions = flat(segments)
+    pruned = _cut_loop(segments, positions[1], next(p for p in positions if p.point == x and p.segment == 1))
+    assert pruned is not None
+    assert prune.score(targets, prune.route_points(pruned.segments)).exact >= prune.score(
+        targets, prune.route_points(segments)
+    ).exact
+
+    assert run(segments, targets=targets, extent_m=target_extent_m(targets)) == segments
 
 
 def test_cut_that_removes_a_stroke_drawn_only_by_a_detour_is_not_made() -> None:

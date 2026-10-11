@@ -3,12 +3,14 @@
 候選：攤平的路線（compose.flat，相鄰段共用的接點只算一次）上，相距 ≤ JOIN_TOLERANCE_M（haversine）的兩點 (i, j)，
 中間那段沿路線的長度在 MIN_LOOP_M 到 MAX_LOOP_RATIO × 目標外框長邊之間。由短到長逐一嘗試（同長依 i），每剪一次重新找。
 每個候選依序檢查，任何一項沒過就不剪、換下一個：
-1. 不用 Valhalla：剪完的新接點相距 ≤ JOIN_TOLERANCE_M；原本有 stroke 段的筆畫都還在（整個筆畫被剪掉的話，
-   吸附階段決定的 warnings 不會有 no_route，前端也不會標紅，所以不剪）；新接點不是 rideable_strict 不用 route
-   就會拒絕的轉彎（原地迴轉、一側量不到 JOIN_TOLERANCE_M、探針折回）。
+1. 不用 Valhalla：剪完的新接點相距 ≤ JOIN_TOLERANCE_M；剪前存在的每個筆畫至少保留 min(剪前長度, TURN_PROBE_M)
+   （stroke 與同 stroke_index 的 detour 都算；否則筆畫可能只剩幾公尺，吸附階段決定的 warnings 不會有 no_route，
+   前端也不會標紅）；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎（原地迴轉、一側量不到
+   JOIN_TOLERANCE_M、探針折回）。
 2. v3 不下降：拿評分判斷這段有沒有畫到原圖（目標本身有那個圈，剪了覆蓋就掉）。比的是沒取整數的 exact，
    不是 overall：取整數後相同、其實略降的也不剪（比 spec 嚴）。
-3. 轉彎：新接點用 rideable_strict（量不出來的一律不放行：拿掉的可能正是讓路線能迴轉的那一圈）；
+3. 轉彎：新接點用 rideable_strict（量不出來的一律不放行：拿掉的可能正是讓路線能迴轉的那一圈；轉角 ≤ 30° 也交給
+   route 量：重疊的兩點常是立體交叉，下層道路與正上方同向的高架轉角 0° 也不能直接接）；
    沿路線離新接點不到 TURN_PROBE_M 的既有接點，探針會伸進新幾何，重量（同 join）：原本的接點用 rideable，
    前幾次剪出來的接點用 rideable_strict（它們當初就是用嚴格版收下的）。
 剪法只切 Valhalla 給的幾何：保留 i 之前（含 i）與 j 之後（含 j），所以輸出的點全是原本的點、新接點 ≤ JOIN_TOLERANCE_M，
@@ -119,14 +121,19 @@ def _junction_at(segments: list[Segment], k: int) -> _Junction:
     return segments[k].points[-1], segments[k + 1].points[0]
 
 
-def _strokes(segments: list[Segment]) -> set[int]:
-    """路線上畫了哪些筆畫：stroke 與 detour 段都算（整段 trace 失敗時筆畫可能全是 detour，detour 不記警告）；connector 不屬於筆畫。"""
-    return {s.stroke_index for s in segments if s.kind != "connector" and s.stroke_index is not None}
+def _stroke_lengths(segments: list[Segment]) -> dict[int, float]:
+    """各筆畫的總長：stroke 與 detour 段都算（整段 trace 失敗時筆畫可能全是 detour，detour 不記警告）；connector 不屬於筆畫。"""
+    lengths: dict[int, float] = {}
+    for segment in segments:
+        if segment.kind != "connector" and segment.stroke_index is not None:
+            lengths[segment.stroke_index] = lengths.get(segment.stroke_index, 0.0) + segment.length_m
+    return lengths
 
 
-def _cheap_ok(pruned: _Pruned, strokes: set[int]) -> bool:
-    """不用 Valhalla 的判斷：strokes（剪之前路線上畫了的筆畫，見 _strokes）都還在；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎。"""
-    if not strokes <= _strokes(pruned.segments):
+def _cheap_ok(pruned: _Pruned, stroke_lengths: dict[int, float]) -> bool:
+    """不用 Valhalla 的判斷：剪前存在的每個筆畫至少保留 min(剪前長度, TURN_PROBE_M)；新接點不是 rideable_strict 不用 route 就會拒絕的轉彎。"""
+    after = _stroke_lengths(pruned.segments)
+    if any(after.get(index, 0.0) < min(before_m, TURN_PROBE_M) for index, before_m in stroke_lengths.items()):
         return False
     return not _has_new_junction(pruned) or not strict_needs_no_route_to_reject(
         *junction_arms(pruned.segments, pruned.junction)
@@ -159,14 +166,14 @@ def _prune(router: MatchRouter, state: _State, targets: list[list[LonLat]], dead
     while True:
         flattened = flat(state.segments)
         points = [p.point for p in flattened]
-        strokes = _strokes(state.segments)
+        stroke_lengths = _stroke_lengths(state.segments)
         for loop in _candidates(points, max_m):
             deadline.check()
             key = tuple(points[loop.start : loop.end + 1])
             if key in state.rejected:
                 continue
             pruned = _cut_loop(state.segments, flattened[loop.start], flattened[loop.end])
-            if pruned is None or not _cheap_ok(pruned, strokes):
+            if pruned is None or not _cheap_ok(pruned, stroke_lengths):
                 state.rejected.add(key)
                 continue
             if state.attempts >= MAX_PRUNE_ATTEMPTS:

@@ -271,6 +271,26 @@ def test_gap_between_segments_is_an_internal_error_not_a_straight_line(
     assert [r.levelno for r in caplog.records] == [logging.ERROR]
 
 
+def test_gap_before_prune_is_not_masked_when_prune_hides_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 串接留下缺口時，剪圈若剛好剪掉含缺口的那段，剪後的連續性檢查會漏掉 bug；剪前也要檢查
+    a = Segment("stroke", 0, [(121.50, LAT), (121.51, LAT)], 1000.0)
+    b = Segment("detour", 0, [(121.5101, LAT), (121.52, LAT)], 1000.0)  # 與 a 相距約 10 m
+
+    def gappy(router, parts, deadline, rematch=None, start=None) -> Composition:
+        return Composition(segments=[a, b], dropped=[])
+
+    def prune_away_gap(router, segments, targets, deadline, *, extent_m):
+        return [segments[0]]
+
+    monkeypatch.setattr("engine.matching.service.compose", gappy)
+    monkeypatch.setattr("engine.matching.service.prune_loops", prune_away_gap)
+    with caplog.at_level(logging.ERROR, logger="engine.matching.service"), pytest.raises(DiscontinuousRoute):
+        match_shape(FakeRouter(), [StrokeInput(row(121.50, 121.51), False)], search_radius_m=50, deadline=Deadline(30))
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
+
 # ---- P1.5 Task 4：封閉筆畫斷成多條 chain 時，照筆畫順序接回 ----
 
 

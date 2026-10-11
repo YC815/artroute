@@ -10,6 +10,9 @@ rideable_strict（剪小刺與小圈用，主 spec §8 第 37 列）把這兩種
 探針折回接點（走了 TURN_PROBE_M 以內的路，終點卻落回接點 JOIN_TOLERANCE_M 內，走的路比直線距離多出超過
 JOIN_TOLERANCE_M）時量不出通過接點的方向，但這不是迴轉，所以不放行：視同不能騎；兩邊都折回更是。
 彎曲但很短的臂（走的路只比直線多一點）不算折回，照一般轉角量。
+轉角 ≤ TURN_CHECK_DEG 時 rideable 直接放行（直行不必量）；rideable_strict 不走這個捷徑，一律交給 route 量：
+剪圈專門找路線自己重疊的點，最容易碰到立體交叉（下層道路與正上方同向的高架在平面上相距不到 1 m），
+剪完轉角是 0° 也不代表 Valhalla 能從下層直接接上高架。
 """
 
 import math
@@ -102,7 +105,8 @@ def _retraces(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
 
 def _probe_verdict(incoming: list[LonLat], outgoing: list[LonLat], *, strict: bool) -> bool | tuple[LonLat, LonLat, float]:
     """不用 route 就能決定時回傳 True／False；否則回傳 (p, q, 沿原路線經過接點的長度)，交給 route 量。
-    strict=False：量不出來（一側可量的路線不到 JOIN_TOLERANCE_M、原地迴轉）放行；strict=True：不放行。"""
+    strict=False：量不出來（一側可量的路線不到 JOIN_TOLERANCE_M、原地迴轉）放行，轉角 ≤ TURN_CHECK_DEG 也放行；
+    strict=True：量不出來不放行，轉角 ≤ TURN_CHECK_DEG 也要 route 量（立體交叉在平面上同一點、同向，轉角 0° 也可能騎不過去）。"""
     p, back_m = _walk(incoming[::-1], TURN_PROBE_M)
     q, ahead_m = _walk(outgoing, TURN_PROBE_M)
     if min(back_m, ahead_m) < JOIN_TOLERANCE_M:
@@ -115,14 +119,14 @@ def _probe_verdict(incoming: list[LonLat], outgoing: list[LonLat], *, strict: bo
         return not strict  # 原地迴轉：route 量不出來
     if folded_p or folded_q:
         return False  # 臂長 0：探針折回接點，量不出方向（不是迴轉），不放行
-    if turn_deg(p, at, q) <= TURN_CHECK_DEG:
+    if not strict and turn_deg(p, at, q) <= TURN_CHECK_DEG:
         return True
     return p, q, back_m + haversine_m(at, outgoing[0]) + ahead_m
 
 
 def strict_needs_no_route_to_reject(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
     """rideable_strict 不用呼叫 route 就會回 False：剪小刺先用這個便宜的判斷篩掉候選（原地迴轉、量不出來、探針折回）。
-    回 False 不代表能騎：轉角超過 TURN_CHECK_DEG 的還要 route 量。"""
+    回 False 不代表能騎：其餘的（含直行）還要 route 量。"""
     return _probe_verdict(incoming, outgoing, strict=True) is False
 
 
@@ -144,5 +148,6 @@ def rideable(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], ou
 
 def rideable_strict(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
     """同 rideable，但量不出來的接點（一側可量的路線不到 JOIN_TOLERANCE_M、原地迴轉，含探針繞過尖端的 _retraces）一律不放行：
-    剪小刺與小圈拿掉的可能正是讓路線能迴轉的那一圈，剪完量不出來就不能當成能騎。"""
+    剪小刺與小圈拿掉的可能正是讓路線能迴轉的那一圈，剪完量不出來就不能當成能騎。
+    轉角 ≤ TURN_CHECK_DEG 也不走直行的捷徑、交給 route 量：剪圈的接點常是立體交叉（下層道路接到正上方同向的高架）。"""
     return _rideable(router, deadline, incoming, outgoing, strict=True)
