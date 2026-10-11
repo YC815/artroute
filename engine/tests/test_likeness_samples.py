@@ -485,3 +485,17 @@ def test_likeness_kind_handles_single_letter_and_new_current_variants() -> None:
     assert kind(Pair(1, "c", "P21", "Q21", "R")) == "現行 vs P2"
     assert kind(Pair(1, "c", "V00", "V20", "same")) == "現行 vs V2"
     assert kind(Pair(1, "c", "V00", "V02", "L")) == "不同擺放"
+
+
+def test_preferences_count_which_variant_the_user_picked() -> None:
+    from engine.bench.likeness import Pair, format_preferences, preferences
+
+    pairs = [
+        Pair(1, "a", "F0", "Q20", "L"), Pair(2, "a", "Q21", "F1", "R"), Pair(3, "b", "F0", "Q20", "R"),
+        Pair(4, "b", "Q22", "F2", "same"), Pair(5, "a", "P20", "Q20", "R"),
+    ]
+    prefs = preferences(pairs)
+    assert prefs["現行 vs F"] == {"F": 2, "Q2": 1, "差不多": 1}
+    assert prefs["現行 vs P2"] == {"Q2": 1}
+    text = format_preferences(prefs)
+    assert "F 2（67%）" in text and "Q2 1（33%）" in text and "差不多 1" in text

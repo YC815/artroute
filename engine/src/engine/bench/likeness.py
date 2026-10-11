@@ -215,9 +215,31 @@ def format_report(title: str, report: Report, *, rows: bool = True) -> str:
             )
     lines.append(f"有表態的配對一致：{report.agreed}/{report.decided}")
     for name, (agreed, total) in report.by_kind.items():
-        lines.append(f"  {name}：{agreed}/{total}")
+        if total:  # 第一輪的配對種類在下一輪的資料裡沒有：不印 0/0
+            lines.append(f"  {name}：{agreed}/{total}")
     lines.append(f"分數差距中位數：差不多 {report.same_gap_median:.2f}、有表態 {report.decided_gap_median:.2f}")
     lines.append(f"留一個案例交叉驗證：{report.loco_agreed}/{report.decided}")
+    return "\n".join(lines)
+
+
+def preferences(pairs: Sequence[Pair]) -> dict[str, dict[str, int]]:
+    """使用者的選擇，與評分無關：每種配對（kind）裡，各變體被選的次數與「差不多」的次數。
+    PR B 的判讀規則用它：「現行 vs F」有表態的配對中使用者選 F 的比例。"""
+    out: dict[str, dict[str, int]] = {}
+    for p in pairs:
+        counts = out.setdefault(kind(p), {})
+        picked = "差不多" if p.choice == "same" else split_key(p.left if p.choice == "L" else p.right)[0]
+        counts[picked] = counts.get(picked, 0) + 1
+    return out
+
+
+def format_preferences(prefs: dict[str, dict[str, int]]) -> str:
+    lines = ["== 使用者的選擇（與評分無關） =="]
+    for name, counts in prefs.items():
+        decided = {k: v for k, v in counts.items() if k != "差不多"}
+        total = sum(decided.values())
+        shares = "、".join(f"{k} {v}（{v / total:.0%}）" for k, v in sorted(decided.items())) if total else "沒有表態"
+        lines.append(f"  {name}：{shares}；差不多 {counts.get('差不多', 0)}")
     return "\n".join(lines)
 
 
@@ -230,6 +252,8 @@ def main(argv: list[str] | None = None) -> None:
     print(format_report("v3（spec 初始參數：權重 0.4／0.35／0.25、容差 3／15 px、簡化 1.5 px）", agreement(samples, pairs, initial_v3)))
     print()
     print(format_report("v2（對照，overall 是整數）", agreement(samples, pairs, fixed_v2), rows=False))
+    print()
+    print(format_preferences(preferences(pairs)))
 
 
 if __name__ == "__main__":
