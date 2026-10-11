@@ -86,7 +86,7 @@ def test_followed_pieces_that_do_not_touch_are_joined_by_connect_never_directly(
     """兩段照著走的結果之間差 200 m：用 connect 補一段合法 route（detour），不直接串成一條直線。
     把 _link_blocks 的 connect 換成直接串接時，這裡會變成 DiscontinuousRoute。"""
     first, second = row(121.50, 121.51, n=4), row(121.512, 121.53, n=8)
-    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), piece(second, (4, 12))], [], [], [])])
+    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), piece(second, (4, 12))], [])])
     router = Router()
     result = fine(router, [StrokeInput(TARGET, False)])
     assert [s.kind for s in result.segments] == ["stroke", "detour", "stroke"]
@@ -98,7 +98,7 @@ def test_followed_pieces_that_do_not_touch_are_joined_by_connect_never_directly(
 def test_fallback_continues_from_where_the_followed_pieces_end(monkeypatch) -> None:
     """沒規劃的範圍交給 fast：頭尾換成前後照著走那段的實際端點，中間是範圍內的輸入點。"""
     first, second = row(121.50, 121.5085, n=4), row(121.5215, 121.53, n=4)
-    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), piece(second, (8, 12))], [], [(3, 9)], [])])
+    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), (3, 9), piece(second, (8, 12))], [])])
     router = Router()
     result = fine(router, [StrokeInput(TARGET, False)])
     fallback = [p for p, r in router.traces if r == RADIUS]
@@ -109,10 +109,25 @@ def test_fallback_continues_from_where_the_followed_pieces_end(monkeypatch) -> N
     assert result.warnings == []
 
 
+def test_steps_are_taken_in_plan_order_even_when_ranges_tie(monkeypatch) -> None:
+    """兩點的直線筆畫所有範圍都是 (0, 1)：開頭沒規劃＋中間斷一次時，開頭那段也要交給 fast（照規劃的先後，
+    不是拿範圍排序把 piece 排到前面），路線從筆畫起點開始、沒有少畫。"""
+    two = [(121.50, LAT), (121.53, LAT)]
+    first, second = row(121.505, 121.512, n=4), row(121.52, 121.53, n=4)
+    use_plans(monkeypatch, [StrokePlan([(0, 1), piece(first, (0, 1)), (0, 1), piece(second, (0, 1))], [(1, 0)])])
+    router = Router()
+    result = fine(router, [StrokeInput(two, False)])
+    fallback = [p for p, r in router.traces if r == RADIUS]
+    assert [(p[0], p[-1]) for p in fallback] == [(two[0], first[0]), (first[-1], second[0])]
+    assert result.route_points[0] == two[0] and result.route_points[-1] == second[-1]
+    assert_joined(result.segments)
+    assert result.warnings == []
+
+
 def test_follow_failure_falls_back_to_fast_for_that_range(monkeypatch) -> None:
     """照著走失敗（第二段落在 trace 失敗的區間）：那段與相鄰的沒規劃範圍合成一個範圍交給 fast。"""
     first, second = row(121.50, 121.5085, n=4), row(121.5215, 121.53, n=4)
-    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), piece(second, (8, 12))], [], [(3, 9)], [])])
+    use_plans(monkeypatch, [StrokePlan([piece(first, (0, 4)), (3, 9), piece(second, (8, 12))], [])])
 
     class FailsSecond(Router):
         def trace(self, points, *, search_radius_m):
@@ -130,7 +145,7 @@ def test_follow_failure_falls_back_to_fast_for_that_range(monkeypatch) -> None:
 
 def test_out_of_budget_pieces_are_not_followed_and_the_result_is_fast(monkeypatch) -> None:
     monkeypatch.setattr(service, "PLANNER_BUDGET_S", 0.0)
-    calls = use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [piece(TARGET[::-1], (12, 0))], [], [])])
+    calls = use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [piece(TARGET[::-1], (12, 0))])])
     router = Router()
     result = fine(router, [StrokeInput(TARGET, False)])
     assert calls[0]["budget_s"] == 0.0
@@ -140,7 +155,7 @@ def test_out_of_budget_pieces_are_not_followed_and_the_result_is_fast(monkeypatc
 
 
 def test_budget_leaves_time_for_fast_when_the_deadline_is_short(monkeypatch) -> None:
-    calls = use_plans(monkeypatch, [StrokePlan([], [], [(0, 12)], [(12, 0)])])
+    calls = use_plans(monkeypatch, [StrokePlan([(0, 12)], [(12, 0)])])
     match_shape(Router(), [StrokeInput(TARGET, False)], search_radius_m=RADIUS, deadline=Deadline(3.0), quality="fine",
                 graph=Graph())
     assert calls[0]["budget_s"] == pytest.approx(3.0 - service.FINE_RESERVE_S, abs=0.05)
@@ -153,8 +168,8 @@ def test_reverse_uses_the_backward_plan_not_a_whole_trace(monkeypatch) -> None:
     """第二筆從遠端畫回來，串接器選反向：用規劃器 backward 的照著走結果，不是把整筆倒過來 trace 一次。"""
     one, two = row(121.50, 121.51), row(121.53, 121.52)
     back = row(121.52, 121.53)
-    use_plans(monkeypatch, [StrokePlan([piece(one, (0, 8))], [piece(one[::-1], (8, 0))], [], []),
-                            StrokePlan([piece(two, (0, 8))], [piece(back, (8, 0))], [], [])])
+    use_plans(monkeypatch, [StrokePlan([piece(one, (0, 8))], [piece(one[::-1], (8, 0))]),
+                            StrokePlan([piece(two, (0, 8))], [piece(back, (8, 0))])])
     router = Router()
     result = fine(router, [StrokeInput(one, False), StrokeInput(two, False)])
     second = [s for s in result.segments if s.stroke_index == 1]
@@ -167,9 +182,8 @@ def test_reverse_uses_the_backward_plan_not_a_whole_trace(monkeypatch) -> None:
 def test_incomplete_backward_keeps_the_drawn_direction(monkeypatch) -> None:
     """backward 有一段沒規劃、那段 trace_whole 也走不通：反向不完整，照畫的方向走。"""
     one, two = row(121.50, 121.51), row(121.53, 121.52)
-    use_plans(monkeypatch, [StrokePlan([piece(one, (0, 8))], [piece(one[::-1], (8, 0))], [], []),
-                            StrokePlan([piece(two, (0, 8))], [piece(row(121.52, 121.525, n=4), (8, 4))], [],
-                                       [(5, 0)])])
+    use_plans(monkeypatch, [StrokePlan([piece(one, (0, 8))], [piece(one[::-1], (8, 0))]),
+                            StrokePlan([piece(two, (0, 8))], [piece(row(121.52, 121.525, n=4), (8, 4)), (5, 0)])])
 
     class RefusesEastFrom121525(Router):
         def trace(self, points, *, search_radius_m):
@@ -196,7 +210,7 @@ def test_fast_quality_or_missing_graph_never_plans(monkeypatch) -> None:
 
 
 def test_cancellation_during_fine_propagates(monkeypatch) -> None:
-    use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [], [], [])])
+    use_plans(monkeypatch, [StrokePlan([piece(TARGET, (0, 12))], [])])
     deadline = Deadline(30)
     deadline.cancel()
     with pytest.raises(MatchCancelled):

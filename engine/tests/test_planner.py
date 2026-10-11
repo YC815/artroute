@@ -258,11 +258,24 @@ def test_unplannable_stretches_split_the_plan(tmp_path: Path) -> None:
     assert plan.backward_unplanned == [(10, 9), (9, 5)]
 
 
+def test_steps_keep_the_drawing_order_when_ranges_tie(tmp_path: Path) -> None:
+    """兩點的直線（所有範圍都是 (0, 1)）：開頭 300 m 沒有路、700–900 m 斷開。步驟依畫的先後交錯：沒規劃、段、沒規劃、段。"""
+    ways = [MeterWay(1, [(300.0, 0.0), (500.0, 0.0), (700.0, 0.0)], RESIDENTIAL),
+            MeterWay(2, [(900.0, 0.0), (1150.0, 0.0), (1400.0, 0.0)], RESIDENTIAL)]
+    target = [(0.0, 0.0), (1400.0, 0.0)]
+    plan = run(build_region(tmp_path, ways, [target]), [target], [False])[0]
+    assert [isinstance(step, PlannedPiece) for step in plan.steps] == [False, True, False, True]
+    assert all((step.target_range if isinstance(step, PlannedPiece) else step) == (0, 1) for step in plan.steps)
+    first, second = (meters(p) for p in plan.forward)
+    assert first[0, 0] < second[0, 0]
+    assert [isinstance(step, PlannedPiece) for step in plan.backward_steps] == [True, False, True, False]
+
+
 def test_zero_budget_plans_nothing(tmp_path: Path) -> None:
     region = build_region(tmp_path, PARALLEL_MAP, [PARALLEL_TARGET])
     plan = run(region, [PARALLEL_TARGET, PARALLEL_TARGET[:3]], [False, True], budget_s=0.0)
-    assert plan[0] == StrokePlan([], [], [(0, 4)], [(4, 0)])
-    assert plan[1] == StrokePlan([], None, [(0, 3)], None)
+    assert plan[0] == StrokePlan([(0, 4)], [(4, 0)])
+    assert plan[1] == StrokePlan([(0, 3)], None)
 
 
 def test_running_out_of_budget_stops_midway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,7 +321,7 @@ def test_empty_region_leaves_everything_unplanned(tmp_path: Path) -> None:
     graph = build_graph(tmp_path, [MeterWay(1, [(0.0, 0.0), (100.0, 0.0)], RESIDENTIAL)])
     far = [(90_000.0, 0.0), (91_000.0, 0.0)]
     plan = run(region_around(graph, [far]), [far], [False])[0]
-    assert plan == StrokePlan([], [], [(0, 1)], [(1, 0)])
+    assert plan == StrokePlan([(0, 1)], [(1, 0)])
 
 
 # ---- 效能：約 2 萬節點的棋盤、2 km 大小的網站預設文字 ----

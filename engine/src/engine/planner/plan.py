@@ -36,6 +36,8 @@ Valhalla 照著走（§6.4），合法性由 Valhalla 與既有的接點、轉�
 - 封閉筆畫的索引以 mod n 解讀（n = 輸入點數，最後一點不重複起點）：規劃從最尖的轉角開始，範圍 (a, b) 一律 a ≤ b、b 可以 ≥ n，
   表示從 a 往前繞過起點到 b mod n。
 - backward 的範圍用原筆畫的索引、依畫的先後排，所以 a ≥ b（從輸入點 a 畫回 b）。
+- 不同的段可能有一樣的範圍（兩點的直線筆畫全部都是 (0, 1)），所以結果是依畫的先後交錯排好的步驟（StrokePlan.steps），
+  呼叫端照這個順序處理，不能拿範圍排序。
 """
 
 import math
@@ -92,12 +94,39 @@ class PlannedPiece:
     cost: float  # 這段的總成本（公尺）
 
 
+type PlanStep = PlannedPiece | tuple[int, int]  # 規劃出的一段，或沒規劃的目標範圍（交給 fast）
+
+
 @dataclass(frozen=True)
 class StrokePlan:
-    forward: list[PlannedPiece]  # 依筆畫方向；可能斷成多段（中間有規劃不出來的地方 = 交給 fast 的範圍）
-    backward: list[PlannedPiece] | None  # 開放筆畫反向（從終點畫到起點）的規劃；封閉筆畫為 None
-    unplanned: list[tuple[int, int]]  # forward 沒規劃到的目標範圍（交給 fast），依筆畫方向排
-    backward_unplanned: list[tuple[int, int]] | None = None  # backward 沒規劃到的範圍（原筆畫索引，a ≥ b）；封閉筆畫為 None
+    """一個筆畫的規劃。steps 依畫的先後排，piece 與沒規劃的範圍交錯（相鄰的沒規劃範圍已合併）：
+    範圍用輸入點索引，不同的步驟可能有一樣的範圍（例如兩點的直線筆畫全都是 (0, 1)），所以先後只能看 steps 的順序，
+    不能用範圍排序。"""
+
+    steps: list[PlanStep]  # forward（依筆畫方向）
+    backward_steps: list[PlanStep] | None  # 開放筆畫反向（從終點畫到起點，範圍用原筆畫索引、a ≥ b）；封閉筆畫為 None
+
+    @property
+    def forward(self) -> list[PlannedPiece]:
+        """forward 規劃出的段，依筆畫方向；可能斷成多段（中間有規劃不出來的地方）。"""
+        return [step for step in self.steps if isinstance(step, PlannedPiece)]
+
+    @property
+    def unplanned(self) -> list[tuple[int, int]]:
+        """forward 沒規劃到的目標範圍，依筆畫方向。"""
+        return [step for step in self.steps if not isinstance(step, PlannedPiece)]
+
+    @property
+    def backward(self) -> list[PlannedPiece] | None:
+        if self.backward_steps is None:
+            return None
+        return [step for step in self.backward_steps if isinstance(step, PlannedPiece)]
+
+    @property
+    def backward_unplanned(self) -> list[tuple[int, int]] | None:
+        if self.backward_steps is None:
+            return None
+        return [step for step in self.backward_steps if not isinstance(step, PlannedPiece)]
 
 
 # ---- 局部平面與路網 ----
@@ -407,8 +436,8 @@ class _Piece:
 
 @dataclass
 class _Run:
-    pieces: list[_Piece] = field(default_factory=list)
-    gaps: list[tuple[int, int]] = field(default_factory=list)  # 沒規劃的取樣點範圍（含頭含尾）
+    # 依取樣順序：規劃出的段，或沒規劃的取樣點範圍（含頭含尾）
+    steps: list[_Piece | tuple[int, int]] = field(default_factory=list)
 
 
 def _translation(ctx: _Context, dist: np.ndarray) -> np.ndarray:
@@ -602,14 +631,14 @@ def _plan_run(ctx: _Context, samples: _Samples, cands: list[_Candidates], closed
             traversals = [t for k, transition in enumerate(transitions)
                           for t in transition.path(chain[k], chain[k + 1])[1]]
             if previous_end is not None or first > 0:
-                run.gaps.append((previous_end if previous_end is not None else 0, first))
-            run.pieces.append(_Piece(first, last, traversals, float(final[s, c])))
+                run.steps.append((previous_end if previous_end is not None else 0, first))
+            run.steps.append(_Piece(first, last, traversals, float(final[s, c])))
             previous_end = last
         i = last + 1  # 斷在 last → last + 1：從下一點重新開始（預算用完時迴圈條件會停）
     if previous_end is None:
-        run.gaps.append((0, m - 1))
+        run.steps.append((0, m - 1))
     elif previous_end < m - 1:
-        run.gaps.append((previous_end, m - 1))
+        run.steps.append((previous_end, m - 1))
     return run
 
 
@@ -636,16 +665,17 @@ def _merge(net: _Network, traversals: list[_Traversal]) -> tuple[list[tuple[floa
 type _Range = tuple[int, int]
 
 
-def _plan_stroke(ctx: _Context, points: np.ndarray, closed: bool) -> tuple[list[PlannedPiece], list[_Range]]:
-    """一個方向的規劃。points (n, 2) 局部平面（backward 時呼叫端已經倒過來）。範圍用這個點列的索引。"""
+def _plan_stroke(ctx: _Context, points: np.ndarray, closed: bool) -> list[PlanStep]:
+    """一個方向的規劃，依畫的先後回傳步驟（見 StrokePlan）。points (n, 2) 局部平面（backward 時呼叫端已經倒過來）。
+    範圍用這個點列的索引。"""
     n = len(points)
-    whole = [(0, n if closed else n - 1)] if n else []
+    whole: list[PlanStep] = [(0, n if closed else n - 1)] if n else []
     samples = _sample(points, closed, ctx.delta, ctx.corner_rad) if n else None
     if samples is None:
-        return [], whole
+        return whole
     if ctx.out_of_budget or time.monotonic() > ctx.stop_at:
         ctx.out_of_budget = True
-        return [], whole
+        return whole
     cands = _candidates(ctx.net, samples, ctx.radius, ctx.weights)
     unwrap = np.zeros(len(samples.xy), dtype=np.int64)
     if closed:
@@ -664,25 +694,21 @@ def _plan_stroke(ctx: _Context, points: np.ndarray, closed: bool) -> tuple[list[
         cands = [cands[j] for j in order.tolist()]
     run = _plan_run(ctx, samples, cands, closed)
     before, after = samples.before + unwrap, samples.after + unwrap
-    pieces, gaps = [], list(run.gaps)
-    for piece in run.pieces:
-        piece_points, edges = _merge(ctx.net, piece.traversals)
-        if len(piece_points) < 2:  # 所有候選都在同一點：沒有可以照著走的路徑
-            gaps.append((piece.first, piece.last))
-            continue
-        pieces.append(PlannedPiece(piece_points, edges, (int(before[piece.first]), int(after[piece.last])), piece.cost))
-    return pieces, _merge_ranges([(int(before[g0]), int(after[g1])) for g0, g1 in gaps])
-
-
-def _merge_ranges(ranges: list[_Range]) -> list[_Range]:
-    """依起點排序，重疊（不只共用端點）的範圍合併。"""
-    out: list[_Range] = []
-    for start, end in sorted(ranges):
-        if out and start < out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], end))
+    steps: list[PlanStep] = []
+    for step in run.steps:
+        if isinstance(step, _Piece):
+            piece_points, edges = _merge(ctx.net, step.traversals)
+            if len(piece_points) >= 2:
+                steps.append(PlannedPiece(piece_points, edges, (int(before[step.first]), int(after[step.last])),
+                                          step.cost))
+                continue
+            step = (step.first, step.last)  # 所有候選都在同一點：沒有可以照著走的路徑，當成沒規劃
+        gap = (int(before[step[0]]), int(after[step[1]]))
+        if steps and not isinstance(steps[-1], PlannedPiece):  # 相鄰的沒規劃範圍合成一個
+            steps[-1] = (min(steps[-1][0], gap[0]), max(steps[-1][1], gap[1]))
         else:
-            out.append((start, end))
-    return out
+            steps.append(gap)
+    return steps
 
 
 @dataclass(frozen=True)
@@ -731,12 +757,17 @@ def plan_shape(region: Region, strokes: list[list[LonLat]], closed: list[bool], 
 
     region 要涵蓋目標外框往外 R（候選半徑）再加上轉移可能走到的範圍（呼叫端用 region_bounds 取外框往外擴 R + 4Δ）。
     strokes 的點是 (lon, lat)；closed[i] 為 True 時最後一點不重複起點。
-    deadline 逾時或取消時照樣丟例外；budget_s（秒，從呼叫開始算）用完時停下，剩下的範圍記成沒規劃。
+    deadline 逾時或取消時照樣丟例外；budget_s（秒，從呼叫開始算）用完時停下，剩下的範圍記成沒規劃（≤ 0 時什麼都不規劃，
+    也不建區域的網路）。
     先規劃所有筆畫的 forward 再規劃 backward：預算不夠時優先保住 forward。
     """
     if len(strokes) != len(closed):
         raise ValueError("strokes 與 closed 的長度不同")
     stop_at = time.monotonic() + budget_s
+    if budget_s <= 0:  # 沒有預算：全部記成沒規劃，連區域的網路都不建
+        return [StrokePlan([(0, len(s) if flag else len(s) - 1)] if len(s) else [],
+                           None if flag else ([(len(s) - 1, 0)] if len(s) else []))
+                for s, flag in zip(strokes, closed)]
     scale = _scale(strokes, weights)
     origin, size, delta, radius = scale.origin, scale.size, scale.delta, scale.radius
     local = [_to_local(origin, a) for a in scale.arrays]
@@ -747,16 +778,17 @@ def plan_shape(region: Region, strokes: list[list[LonLat]], closed: list[bool], 
                    max(weights.corner_window_fraction * size, 2 * delta), deadline, stop_at)
     forward = [_plan_stroke(ctx, points, flag) for points, flag in zip(local, closed)]
     plans = []
-    for (pieces, gaps), points, flag in zip(forward, local, closed):
+    for steps, points, flag in zip(forward, local, closed):
         if flag:
-            plans.append(StrokePlan(pieces, None, gaps, None))
+            plans.append(StrokePlan(steps, None))
             continue
-        back_pieces, back_gaps = _plan_stroke(ctx, points[::-1], False)
         last = len(points) - 1
 
-        def flip(r: _Range, last: int = last) -> _Range:  # 倒過來的索引換回原筆畫
-            return (last - r[0], last - r[1])
+        def flip(step: PlanStep, last: int = last) -> PlanStep:  # 倒過來的索引換回原筆畫
+            if isinstance(step, PlannedPiece):
+                start, end = step.target_range
+                return PlannedPiece(step.points, step.edges, (last - start, last - end), step.cost)
+            return (last - step[0], last - step[1])
 
-        plans.append(StrokePlan(pieces, [PlannedPiece(p.points, p.edges, flip(p.target_range), p.cost)
-                                         for p in back_pieces], gaps, [flip(g) for g in back_gaps]))
+        plans.append(StrokePlan(steps, [flip(step) for step in _plan_stroke(ctx, points[::-1], False)]))
     return plans

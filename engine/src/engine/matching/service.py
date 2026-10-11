@@ -20,7 +20,7 @@ from engine.matching.stroke import NO_ROUTE_MESSAGE, PARTIAL_MESSAGE, StrokeMatc
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, StartHint
 from engine.planner.follow import follow, start_loop_mid_side
 from engine.planner.graph import RideGraph
-from engine.planner.plan import PlannedPiece, StrokePlan, plan_shape, region_bounds
+from engine.planner.plan import PlannedPiece, PlanStep, StrokePlan, plan_shape, region_bounds
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
@@ -230,26 +230,22 @@ class _Fallback:
 type _Item = list[Segment] | _Fallback
 
 
-def _follow_pieces(
-    fine: _Fine, pieces: list[PlannedPiece], gaps: list[tuple[int, int]], index: int, closed: bool
-) -> list[_Item]:
-    """依目標順序（範圍的起點）：照著走收下的 piece 換成那段 Segment 的 list，其餘是 _Fallback。
-    相鄰的 _Fallback 合成一個（規劃器的範圍在交界共用那段輸入線段），所以兩個 _Fallback 之間一定隔著收下的段。
-    封閉筆畫整圈一段時從直路中間開始照著走（start_loop_mid_side），圈才接得回來。"""
-    entries: list[tuple[tuple[int, int], PlannedPiece | None]] = [(p.target_range, p) for p in pieces]
-    entries += [(gap, None) for gap in gaps]
-    entries.sort(key=lambda entry: entry[0])  # 穩定排序：同一個範圍時 piece 在前
+def _follow_pieces(fine: _Fine, steps: list[PlanStep], index: int, closed: bool) -> list[_Item]:
+    """依規劃的先後（StrokePlan.steps，不能拿範圍排序：不同的步驟可能有一樣的範圍）：照著走收下的 piece 換成那段
+    Segment 的 list，其餘是 _Fallback。相鄰的 _Fallback 合成一個（規劃器的範圍在交界共用那段輸入線段），
+    所以兩個 _Fallback 之間一定隔著收下的段。封閉筆畫整圈一段時從直路中間開始照著走（start_loop_mid_side）。"""
     items: list[_Item] = []
-    for (start, end), piece in entries:
+    for step in steps:
         followed = None
-        if piece is not None:
+        if isinstance(step, PlannedPiece):
             if time.monotonic() < fine.stop_at:
-                path = start_loop_mid_side(piece) if closed else piece
+                path = start_loop_mid_side(step) if closed else step
                 followed = follow(fine.router, path, fine.deadline, stroke_index=index)
             if followed is None:
                 fine.rejected += 1
             else:
                 fine.followed += 1
+        start, end = step.target_range if isinstance(step, PlannedPiece) else step
         if followed is not None:
             items.append(followed)
         elif items and isinstance(items[-1], _Fallback):
@@ -304,7 +300,7 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
         一條 chain 都沒有是 no_route；有段找不到路、或斷成多條 chain 是 partial。
         整個筆畫都沒規劃時，交給 fast 的就是整個目標，結果與 fast 相同。"""
         stroke, plan = strokes[index], fine.plans[index]
-        items = _follow_pieces(fine, plan.forward, plan.unplanned, index, stroke.closed)
+        items = _follow_pieces(fine, plan.steps, index, stroke.closed)
         blocks: list[tuple[list[list[Segment]], bool]] = []
         for k, item in enumerate(items):
             if not isinstance(item, _Fallback):
@@ -332,16 +328,18 @@ def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: in
     """開放筆畫反向（從終點畫到起點）：規劃器的 backward 照著走，沒照著走的範圍各 trace_whole 一次（同 fast 的反向：
     只 trace 一次、不對半切、不補繞路，免得反向用繞路換掉乾淨的正向）。任何一段走不通、或串不成一條 chain 回傳 None
     （部件照畫的方向走）。整個筆畫都沒規劃時就是 fast 的反向（整段倒過來 trace_whole 一次）。"""
-    if plan.backward is None:
+    if plan.backward_steps is None:
         return None
     last = len(stroke.points) - 1
     points = stroke.points[::-1]  # 依反向畫的先後；範圍換成這個點列的索引
 
-    def flip(r: tuple[int, int]) -> tuple[int, int]:
-        return (last - r[0], last - r[1])
+    def flip(step: PlanStep) -> PlanStep:
+        if isinstance(step, PlannedPiece):
+            start, end = step.target_range
+            return PlannedPiece(step.points, step.edges, (last - start, last - end), step.cost)
+        return (last - step[0], last - step[1])
 
-    pieces = [PlannedPiece(p.points, p.edges, flip(p.target_range), p.cost) for p in plan.backward]
-    items = _follow_pieces(fine, pieces, [flip(g) for g in plan.backward_unplanned or []], index, False)
+    items = _follow_pieces(fine, [flip(step) for step in plan.backward_steps], index, False)
     blocks: list[tuple[list[list[Segment]], bool]] = []
     for k, item in enumerate(items):
         if not isinstance(item, _Fallback):
