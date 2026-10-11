@@ -18,8 +18,15 @@
     3. 每個 bench 案例都拖曳一次，量時間，並確認 200 m 的拖曳範圍合不合適（spec §3.3）。
     4. 用 m1 的兩個 build 驗 `/verify`：舊 build 的路線在新 build 上的誤報率與耗時。`same_geometry` 是 O(n·m) 的純 Python，長 edge 可能超過 15 秒而回 504（`docs/backlog.md`）。
     5. `/verify` 與 `/match`（與 `/edit`）共用 `Semaphore(1)`：`/verify` 進行期間（最長 15 秒）`/match` 會排隊，要實測影響。
+- **PR D**（分支 `claude/route-editing-web`，疊在 PR C 上）：手動微調網站。IndexedDB 草稿與「我的路線」、微調模式（剪掉、重畫、拖曳、復原／重做、完成）、`/api/edit`、`/api/verify`、舊路網的草稿與「重新驗證」。**e2e 已在 Chromium 實際跑過**（`web/e2e/edit.spec.ts`，假引擎；含拖曳時 dragPan 被擋、圖形鎖住、Esc、⌘/Ctrl+Z、390×844 版面、舊路網、刪除要確認、觸控拖曳、草稿存不了）；沒有挖出需要修的 bug。**尚未部署、沒連過真的引擎**。決定見主 spec §8 第 63 列。
+  - 本機待辦：
+    1. 部署順序：先 PR C 的引擎（`/edit`、`/verify`、`route_sig` 都是只增加），再部署網站；網站的 zod 要求 `/match` 回應有 `route_sig`，網站先上的話舊引擎的吸附就會全部被當成格式錯誤。
+    2. 使用者在真實路網上實際操作一次：剪掉、重畫（最短、貼圖形）、拖曳，再決定要不要調拖曳範圍 200 m（微調 spec §3.3）與錯誤說明的文字（`nothing_to_cut`、`no_road`、`turn_not_rideable`…）。
+    3. 兩個分頁同時編輯同一份草稿：目前後存的靜默覆蓋先存的，沒有「這份草稿在另一個分頁被修改過」的提示（`docs/backlog.md`）。
+    4. 真實舊路網的 `/verify`：用 m1 保留的兩個 build，量舊 build 的路線在新 build 上的誤報率與耗時（網站只用假引擎測過；e2e 的 verify 回應是固定資料）。
+    5. 觸控（手機）只用 CDP 的觸控事件在無頭 Chromium 驗過拖曳；實機（iOS Safari）沒試過。小螢幕（375×667）最高的工具列狀態會蓋住地圖中央（`docs/backlog.md`）。
 - 下一步：
-  1. 手動微調 PR D（網站）；PR C 的本機待辦見上。spec：`docs/superpowers/specs/2026-10-11-route-editing-design.md`（主 spec §8 第 56–58、62 列）；計畫：`docs/superpowers/plans/2026-10-11-route-editing.md`。
+  1. 手動微調：PR C、D 的本機待辦見上，部署與使用者操作之後再決定要不要調整。spec：`docs/superpowers/specs/2026-10-11-route-editing-design.md`（主 spec §8 第 56–58、62 列）；計畫：`docs/superpowers/plans/2026-10-11-route-editing.md`。
   2. Q4（P2.5 spec §7）：含嘗試性的「長直線優先」（§7.4，要盲測驗收）。規劃器的問題（折回的 detour、細碎階梯、河濱變長、退回 fast 的比例沒量）先查，見 `docs/backlog.md`。
 - P3（每週重建、rate limiting、公開）排在 P2.5 之後。
 
