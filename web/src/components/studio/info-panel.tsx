@@ -16,6 +16,10 @@ type Props = {
   response: MatchResponse | null;
   error: MatchError | null;
   pending: boolean;
+  /** 放開後的精緻版（quality: "fine"）在途：顯示「精緻化中…」，路線先用快速版。 */
+  refining: boolean;
+  /** 目前擺放的精緻版失敗：路線維持快速版，顯示一行提示（下一次操作清掉）。 */
+  refineFailed: boolean;
   /** 路線是目前這個擺放的、可以下載 GPX（見 canDownloadGpx）。 */
   downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
@@ -30,6 +34,9 @@ type Props = {
   /** 有搜尋範圍且有路線時：路線起點離圓心多遠、是否在圈外（見 startDistance）；否則 null，不顯示這一列。 */
   startDistance: { distanceM: number; outside: boolean } | null;
 };
+
+/** 精緻版失敗時的提示（不是錯誤：快速版的路線照常可用、可下載）。 */
+const REFINE_FAILED_NOTICE = "精緻版失敗，顯示快速版";
 
 /** object URL 保留多久才釋放：iOS Safari 與較慢的下載處理可能在 click 之後一段時間才讀檔。 */
 const REVOKE_AFTER_MS = 60_000;
@@ -68,7 +75,7 @@ const LEGEND = [
 
 export function InfoPanel(props: Props) {
   const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion } = props;
-  const { workName, startDistance } = props;
+  const { workName, startDistance, refining, refineFailed } = props;
   const score = response?.score;
   const headingId = useId();
   return (
@@ -77,7 +84,14 @@ export function InfoPanel(props: Props) {
         <h2 id={headingId} className="text-sm font-semibold">
           路線資訊
         </h2>
-        <div role="status">{pending && <Badge variant="secondary">吸附中…</Badge>}</div>
+        {/* 「吸附中…」優先：fast 在途時 fine 一定已被取消或還沒送 */}
+        <div role="status">
+          {pending ? (
+            <Badge variant="secondary">吸附中…</Badge>
+          ) : (
+            refining && <Badge variant="secondary">精緻化中…</Badge>
+          )}
+        </div>
       </div>
       <div className="flex flex-col gap-1">
         <Row label="目標長度" value={targetLengthM === null ? "—" : formatDistance(targetLengthM)} />
@@ -93,6 +107,9 @@ export function InfoPanel(props: Props) {
           />
         )}
         <Row label="路網資料" value={formatDataVersion(response?.data_version ?? dataVersion ?? "—")} />
+      </div>
+      <div aria-live="polite">
+        {refineFailed && response && <p className="text-xs text-muted-foreground">{REFINE_FAILED_NOTICE}</p>}
       </div>
 
       {/* live region 一直留在 DOM 裡（不用 hidden）：內容出現時才念得出來 */}

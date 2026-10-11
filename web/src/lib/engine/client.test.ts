@@ -211,19 +211,30 @@ describe("toMatchError", () => {
 describe("fetchStatus", () => {
   const data = { build_id: "20261010T145928Z", osm_md5: "abc", created_at: "2026-10-10T15:00:09Z" };
 
-  it("有路網 → build id 與 search_ready", async () => {
-    expect(await fetchStatus(respond(200, { data, search_ready: true }))).toEqual({
+  it("有路網 → build id、search_ready 與 planner_ready", async () => {
+    expect(await fetchStatus(respond(200, { data, search_ready: true, planner_ready: true }))).toEqual({
       dataVersion: "20261010T145928Z",
       searchReady: true,
+      plannerReady: true,
     });
-    expect(await fetchStatus(respond(200, { data, search_ready: false }))).toEqual({
+    expect(await fetchStatus(respond(200, { data, search_ready: false, planner_ready: false }))).toEqual({
       dataVersion: "20261010T145928Z",
       searchReady: false,
+      plannerReady: false,
+    });
+    expect(await fetchStatus(respond(200, { data, search_ready: false, planner_ready: true }))).toEqual({
+      dataVersion: "20261010T145928Z",
+      searchReady: false,
+      plannerReady: true,
     });
   });
 
-  it("舊版引擎沒有 search_ready → 不能搜尋，但吸附照常", async () => {
-    expect(await fetchStatus(respond(200, { data }))).toEqual({ dataVersion: "20261010T145928Z", searchReady: false });
+  it("舊版引擎沒有 search_ready／planner_ready → 不能搜尋、只用 fast，但吸附照常", async () => {
+    expect(await fetchStatus(respond(200, { data }))).toEqual({
+      dataVersion: "20261010T145928Z",
+      searchReady: false,
+      plannerReady: false,
+    });
   });
 
   it("沒有路網、503、連不上都回傳 null", async () => {

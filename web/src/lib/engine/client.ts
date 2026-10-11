@@ -89,8 +89,8 @@ export async function fetchMatch(
   return parsed.success ? { ok: true, response: parsed.data } : { ok: false, error: toMatchError(502, null) };
 }
 
-/** 引擎可用時的狀態：路網的 build id，以及這份路網能不能自動搜尋。 */
-export type EngineInfo = { dataVersion: string; searchReady: boolean };
+/** 引擎可用時的狀態：路網的 build id，以及這份路網能不能自動搜尋、能不能用描形規劃器（quality: "fine"）。 */
+export type EngineInfo = { dataVersion: string; searchReady: boolean; plannerReady: boolean };
 
 /** GET /api/status → 目前路網的資訊；引擎連不上或沒有路網時回傳 null。 */
 export async function fetchStatus(fetchImpl: FetchLike = fetch): Promise<EngineInfo | null> {
@@ -98,7 +98,8 @@ export async function fetchStatus(fetchImpl: FetchLike = fetch): Promise<EngineI
     const res = await fetchImpl("/api/status", { cache: "no-store" });
     const parsed = statusResponseSchema.safeParse(await res.json());
     if (!res.ok || !parsed.success || !parsed.data.data) return null;
-    return { dataVersion: parsed.data.data.build_id, searchReady: parsed.data.search_ready };
+    const { build_id: dataVersion } = parsed.data.data;
+    return { dataVersion, searchReady: parsed.data.search_ready, plannerReady: parsed.data.planner_ready };
   } catch {
     return null;
   }

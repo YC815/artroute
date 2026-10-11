@@ -50,6 +50,9 @@ export const matchRequestSchema = z.object({
   search_radius_m: z.number().min(MIN_SEARCH_RADIUS_M).max(MAX_SEARCH_RADIUS_M).optional(),
   // 可省略：省略時與沒有自動搜尋時的行為完全相同
   start_circle: startCircleSchema.nullish(),
+  // 可省略：省略或 null 等於 fast（與以前完全相同）；fine 是放開後的精緻版（P2.5 spec §6.5）。
+  // 一定要列在這裡：代理用這個 schema 驗證後只轉送 schema 內的欄位，漏列會把 quality 默默丟掉。
+  quality: z.enum(["fast", "fine"]).nullish(),
 }) satisfies z.ZodType<Schemas["MatchRequest"]>;
 
 export const segmentKindSchema = z.enum(["stroke", "detour", "connector"]);
