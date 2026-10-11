@@ -30,11 +30,13 @@ def test_stroke_limits_are_inclusive() -> None:
     MatchRequest.model_validate({"strokes": [{"points": [[121.5, 25.05]] * 2000}]})
 
 
-@pytest.mark.parametrize("scores", [(-1, 0, 0), (0, 101, 0), (0, 0, 101), (0, 0, -1)])
-def test_score_is_a_percentage(scores: tuple[int, int, int]) -> None:
+@pytest.mark.parametrize(
+    "scores", [(-1, 0, 0, 0), (0, 101, 0, 0), (0, 0, 101, 0), (0, 0, -1, 0), (0, 0, 0, 101), (0, 0, 0, -1)]
+)
+def test_score_is_a_percentage(scores: tuple[int, int, int, int]) -> None:
     with pytest.raises(ValidationError):
-        ScoreOut(coverage=scores[0], cleanliness=scores[1], overall=scores[2])
-    ScoreOut(coverage=0, cleanliness=100, overall=50)
+        ScoreOut(coverage=scores[0], cleanliness=scores[1], overall=scores[2], direction=scores[3])
+    ScoreOut(coverage=0, cleanliness=100, overall=50, direction=100)
 
 
 def test_lengths_are_not_negative() -> None:

@@ -2,7 +2,7 @@
 
 地點沿用吸附 bench 的四個（棋盤、放射＋棋盤、寬路大街廓、河濱）；圖形三種：
 - default_text：網站預設文字「I ♥ TAIPEI」（15 筆、1 個封閉；由網站的 textShape 產生，web 的測試確保同步），旋轉 ±15°；
-- heart：一個封閉筆畫，旋轉不限（圖片的預設），角度最多（36 個），粗篩最重；
+- heart：一個封閉筆畫，旋轉 ±15°（P2.5：網站的圖片預設也改成 ±15°，搜尋排名扣旋轉的分，見 score.rank）；
 - hi：四個開放筆畫（串接與反向），旋轉 ±15°。
 公里數範圍取這些圖形在 2 km 大小時的實測路線長度附近（P1.5：預設文字 16 km、heart 約 10 km）。
 """
@@ -46,7 +46,7 @@ def default_text() -> list[NormStroke]:
 
 SHAPE_SETUPS: dict[str, tuple[list[NormStroke], float, float, tuple[float, float]]] = {
     "default_text": (default_text(), 12.0, 25.0, (-15.0, 15.0)),
-    "heart": (_centered("heart"), 8.0, 20.0, (-180.0, 180.0)),
+    "heart": (_centered("heart"), 8.0, 20.0, (-15.0, 15.0)),
     "hi": (_centered("hi"), 8.0, 20.0, (-15.0, 15.0)),
 }
 

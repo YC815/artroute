@@ -35,7 +35,7 @@ def test_match_returns_contract(tmp_path: Path, grid_config: Path) -> None:
     assert data["data_version"] == "20261010T000000Z"
     assert data["route"]["length_m"] == pytest.approx(1206, abs=60)
     assert {s["kind"] for s in data["segments"]} <= {"stroke", "detour", "connector"}
-    assert set(data["score"]) == {"coverage", "cleanliness", "overall"}
+    assert set(data["score"]) == {"coverage", "cleanliness", "direction", "overall"}
 
 
 def test_no_data_is_503(tmp_path: Path) -> None:

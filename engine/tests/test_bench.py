@@ -1,5 +1,6 @@
 import json
 import math
+import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from engine.bench import __main__ as bench_cli
 from engine.bench import runner
+from engine.bench.svg import KIND_COLORS
 from engine.bench.cases import CASES, LOCATIONS, SHAPES, Case, Shape, place
 from engine.bench.runner import (
     PRODUCTION_TIMEOUT_MS,
@@ -30,17 +32,18 @@ from engine.bench.runner import (
 from engine.data.build import DENIED_FILE, build_with_patch, load_denied
 from engine.data.layout import DataLayout
 from engine.matching.deadline import MatchTimeout
-from engine.matching.score import SCORE_VERSION, Score, score, score_v1
+from engine.matching.score import SCORE_VERSION, Score, score, score_v1, score_v2
 from engine.matching.deadline import Deadline
 from engine.matching.service import AllStrokesFailed, MatchResult, StrokeInput, match_shape
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
-from engine.routing.router import EdgeInfo, Router, RoutingError
+from engine.routing.router import FAST_TURN_PENALTY_FACTOR, EdgeInfo, Router, RoutingError
 from engine.routing.tiles import build_tiles
 from grid_helpers import densify
 from osm_fixture import EXPRESSWAY_MAP, EXPRESSWAY_WAY_ID, X0, X3, grid_point, write_grid_pbf
 from turn_router import TurnBlockRouter, east, north
 
+SVG_NS = "{http://www.w3.org/2000/svg}"
 UNIT_SQUARE = Shape("square", [([(0, 0), (1, 0), (1, 1), (0, 1)], True)])
 LINE = Shape("line", [([(0, 0.5), (1, 0.5)], False)])
 
@@ -95,11 +98,24 @@ def test_cases_are_every_shape_at_every_location_plus_rotated_variants_at_daan()
     assert all(c.center == LOCATIONS["taipei_daan"] and c.rotation_deg == 30 for c in rotated)
 
 
-def scored(name: str, coverage: int, cleanliness: int, overall: int, *, legacy: Score | None = None, error: str | None = None) -> CaseResult:
-    """v2 分數＋v1（legacy）分數；沒給 legacy 就和 v2 相同。"""
+def scored(
+    name: str,
+    coverage: int,
+    cleanliness: int,
+    overall: int,
+    *,
+    legacy: Score | None = None,
+    v2: Score | None = None,
+    direction: int = 0,
+    error: str | None = None,
+) -> CaseResult:
+    """主分數（score()）＋v2、v1（legacy）分數；沒給 v2、legacy 就和主分數相同。"""
     legacy = legacy or Score(coverage, cleanliness, overall)
+    v2 = v2 or Score(coverage, cleanliness, overall)
     return CaseResult(
         name, coverage, cleanliness, overall, 1000.0, 1000.0, 10, error,
+        direction=direction,
+        v2_coverage=v2.coverage, v2_cleanliness=v2.cleanliness, v2_overall=v2.overall,
         legacy_coverage=legacy.coverage, legacy_cleanliness=legacy.cleanliness, legacy_overall=legacy.overall,
     )
 
@@ -210,6 +226,7 @@ def test_failed_case_keeps_the_real_target_length(monkeypatch: pytest.MonkeyPatc
     assert res.error == type(error).__name__
     assert (res.coverage, res.cleanliness, res.overall, res.length_m) == (0, 0, 0, 0.0)
     assert (res.legacy_coverage, res.legacy_cleanliness, res.legacy_overall) == (0, 0, 0)
+    assert (res.direction, res.v2_coverage, res.v2_cleanliness, res.v2_overall) == (0, 0, 0, 0)
     assert res.target_length_m == pytest.approx(4000, rel=0.01)  # 封閉方框：四邊都算
 
 
@@ -237,11 +254,22 @@ class FakeRun:
         self.baseline = tmp_path / "baseline.json"
         self.results: list[CaseResult] = []
         self.crash = False
-        monkeypatch.setattr(bench_cli, "Router", SimpleNamespace(from_build=lambda build: object()))
+        self.router_kwargs: list[dict] = []
+        self.svg_dirs: list[Path | None] = []
+        self.match_options: list[dict | None] = []
+        monkeypatch.setattr(bench_cli, "Router", SimpleNamespace(from_build=self._from_build))
         monkeypatch.setattr(bench_cli, "run_cases", self._run_cases)
         (layout.current() / DENIED_FILE).write_text("[]")
 
-    def _run_cases(self, router, cases, timeout_s=30.0, *, denied_ids, warm_up=True, on_result=None):
+    def _from_build(self, build, **kwargs):
+        self.router_kwargs.append(kwargs)
+        return object()
+
+    def _run_cases(
+        self, router, cases, timeout_s=30.0, *, denied_ids, warm_up=True, on_result=None, svg_dir=None, match_options=None
+    ):
+        self.svg_dirs.append(svg_dir)
+        self.match_options.append(match_options)
         for r in self.results:
             on_result(r)
         if self.crash:
@@ -364,6 +392,14 @@ def test_cli_on_grid_layout(grid_config: Path, tmp_path: Path, monkeypatch: pyte
     assert saved["grid-line"]["error"] is None and saved["far"]["error"] == "AllStrokesFailed"
 
     bench_cli.main(argv)  # 與剛存的 baseline 比：沒有退步
+
+    capsys.readouterr()
+    svg_dir = tmp_path / "svg" / "new"  # 不存在的目錄要自動建立
+    bench_cli.main([*argv, "--svg-dir", str(svg_dir), "--turn-penalty-factor", "none", "--sigma-z", "5"])
+    assert sorted(p.name for p in svg_dir.iterdir()) == ["far.svg", "grid-line.svg"]
+    drawn = ET.fromstring((svg_dir / "grid-line.svg").read_text())
+    assert any(line.get("stroke") == KIND_COLORS["stroke"] for line in drawn.iter(f"{SVG_NS}polyline"))
+    assert capsys.readouterr().out.splitlines()[0].startswith("吸附參數：turn_penalty_factor none")
 
     saved["far"].update(overall=80, error=None)  # 手改成「far 原本成功」
     baseline.write_text(json.dumps(saved))
@@ -592,8 +628,8 @@ def test_case_result_row_and_summary_carry_use_meters(monkeypatch: pytest.Monkey
     (res,) = run_cases(UseRouter(), [case], denied_ids=frozenset(), warm_up=False)
     assert res.error is None
     assert res.use_m == {"footway": 12.0, "steps": 4.0, "parking_aisle": 0.0}
-    assert format_header().split()[8:11] == ["foot_m", "steps_m", "park_m"]
-    assert format_row(res).split()[8:11] == ["12", "4", "0"]
+    assert format_header().split()[10:13] == ["foot_m", "steps_m", "park_m"]
+    assert format_row(res).split()[10:13] == ["12", "4", "0"]
     assert "footway／steps／parking_aisle 合計 12／4／0 m" in summarize([res])
 
 
@@ -608,7 +644,7 @@ def test_summarize_use_totals_exclude_failed_and_unsafe_cases() -> None:
 def test_failed_case_has_no_use_meters_and_still_formats() -> None:
     failed = result("x", 0, error="AllStrokesFailed")
     assert failed.use_m == {}
-    assert format_row(failed).split()[8:11] == ["0", "0", "0"]
+    assert format_row(failed).split()[10:13] == ["0", "0", "0"]
 
 
 @pytest.mark.valhalla
@@ -679,8 +715,8 @@ def test_bad_turns_on_real_tiles(crossing_config: Path) -> None:
 V2 = {"score_version": SCORE_VERSION}
 
 
-def test_score_version_is_two() -> None:
-    assert SCORE_VERSION == 2
+def test_score_version_is_three() -> None:
+    assert SCORE_VERSION == 3  # P2.5：score() 換成 v3
     assert result("a", 1).score_version == SCORE_VERSION
 
 
@@ -736,14 +772,14 @@ def test_closed_target_includes_the_closing_edge_for_the_v1_score(monkeypatch: p
     assert (res.legacy_coverage, res.legacy_cleanliness, res.legacy_overall) == (100, 100, 100)
 
 
-def test_row_and_summary_show_the_v1_overall_next_to_v2() -> None:
-    a = scored("a", 80, 80, 80, legacy=Score(60, 60, 61))
-    b = scored("b", 60, 60, 60, legacy=Score(40, 40, 41))
-    assert format_header().split()[:5] == ["name", "overall", "v1", "cov", "clean"]
-    assert format_row(a).split()[:5] == ["a", "80", "61", "80", "80"]
-    failed = scored("c", 0, 0, 0, legacy=Score(0, 0, 0), error="AllStrokesFailed")
-    assert "平均 overall 70.0（v1 評分 51.0）" in summarize([a, b, failed])
-    assert "平均 overall -（v1 評分 -）" in summarize([failed])
+def test_row_and_summary_show_the_v2_and_v1_overall_and_direction() -> None:
+    a = scored("a", 80, 81, 82, v2=Score(70, 70, 71), legacy=Score(60, 60, 61), direction=55)
+    b = scored("b", 60, 60, 60, v2=Score(50, 50, 51), legacy=Score(40, 40, 41), direction=30)
+    assert format_header().split()[:7] == ["name", "overall", "v2", "v1", "cov", "clean", "dir"]
+    assert format_row(a).split()[:7] == ["a", "82", "71", "61", "80", "81", "55"]
+    failed = scored("c", 0, 0, 0, v2=Score(0, 0, 0), legacy=Score(0, 0, 0), error="AllStrokesFailed")
+    assert "平均 overall 71.0（v2 評分 61.0、v1 評分 51.0）" in summarize([a, b, failed])
+    assert "平均 overall -（v2 評分 -、v1 評分 -）" in summarize([failed])
 
 
 def test_cli_update_baseline_writes_v2_and_legacy_fields(fake_run: FakeRun) -> None:
@@ -769,9 +805,178 @@ def test_unknown_score_version_is_not_compared_with_another_scale() -> None:
     # 審查：以前任何不是目前版本的條目都被當成 v1；未來的 v3 條目會被拿 v1 分數比
     from engine.bench.runner import _regression
 
-    r = CaseResult(
-        "c", 80, 80, 80, 1000.0, 900.0, 1, None,
-        legacy_coverage=80, legacy_cleanliness=80, legacy_overall=80,
-    )
-    assert "score_version" in (_regression(r, {"overall": 70, "coverage": 70, "score_version": 3}, 3) or "")
+    r = scored("c", 80, 80, 80)
+    assert "score_version" in (_regression(r, {"overall": 70, "coverage": 70, "score_version": SCORE_VERSION + 1}, 3) or "")
     assert _regression(r, {"overall": 70, "coverage": 70, "score_version": 1}, 3) is None
+
+
+# ---- P2.5：主分數是 score()（v3 帶 direction），另記 v2、v1；退步比較依 baseline 的 score_version 選尺 ----
+
+
+def entry(version: object = None, overall: int = 80, coverage: int = 80) -> dict:
+    out = {"overall": overall, "coverage": coverage, "error": None}
+    if version is not None:
+        out["score_version"] = version
+    return out
+
+
+# 三把尺刻意給不同的分數：主分數 60、v2 70、v1 90；baseline 都是 80
+THREE = scored("x", 60, 60, 60, v2=Score(70, 70, 70), legacy=Score(90, 90, 90))
+
+
+def test_compare_picks_the_scale_by_the_baseline_score_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "SCORE_VERSION", 3)  # v3 上線後的情況（現在 SCORE_VERSION 還是 2 時，v2 就是目前版本）
+    assert compare([THREE], {"x": entry()}) == []  # 沒有 score_version = v1：90 沒有退步
+    assert compare([THREE], {"x": entry(1)}) == []
+    assert compare([THREE], {"x": entry(2)}) == ["x：overall（v2 評分）80 → 70"]
+    assert compare([THREE], {"x": entry(3)}) == ["x：overall 80 → 60"]
+    assert compare([THREE], {"x": entry(2, overall=60, coverage=90)}) == ["x：coverage（v2 評分）90 → 70"]
+
+
+def test_a_v2_baseline_uses_the_v2_fields_whatever_the_current_version() -> None:
+    (problem,) = compare([THREE], {"x": entry(2)})
+    assert problem.endswith("overall 80 → 70") or problem.endswith("overall（v2 評分）80 → 70")
+    assert compare([scored("x", 10, 10, 10, v2=Score(80, 80, 80))], {"x": entry(2)}) == []
+
+
+@pytest.mark.parametrize("version", [0, SCORE_VERSION + 1, "2", None])
+def test_compare_fails_loudly_on_an_unknown_score_version(version: object) -> None:
+    base = entry(version)
+    if version is None:
+        base["score_version"] = None  # 明寫 null 也不是 v1
+    (problem,) = compare([THREE], {"x": base})
+    assert problem.startswith("x：baseline 的 score_version") and "無法比較" in problem
+
+
+def test_older_entries_counts_baseline_entries_on_an_older_scale(monkeypatch: pytest.MonkeyPatch) -> None:
+    baseline = {"a": entry(), "b": entry(2), "c": entry(2), "gone": entry(1)}
+    results = [scored(n, 80, 80, 80) for n in ("a", "b", "c", "new")]
+    monkeypatch.setattr(runner, "SCORE_VERSION", 3)
+    assert runner.older_entries(results, baseline) == {1: 1, 2: 2}
+    monkeypatch.setattr(runner, "SCORE_VERSION", 2)
+    assert runner.older_entries(results, baseline) == {1: 1}
+
+
+def test_cli_says_when_it_compares_against_a_v2_baseline_after_the_upgrade(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "SCORE_VERSION", 3)
+    fake_run.baseline.write_text(json.dumps({"a": entry(2, overall=70, coverage=70)}))
+    fake_run([scored("a", 10, 10, 10, v2=Score(70, 70, 70))])  # v2 分數沒退步：exit 0，主分數低不算
+    assert "提示：baseline 有 1 個案例是 v2 評分" in capsys.readouterr().out
+
+
+def test_run_cases_records_direction_and_the_v2_score_of_the_same_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = Case("sq", UNIT_SQUARE, (121.5, 25.05), 600.0, 0.0)
+    (stroke,) = place(case.shape, case.center, case.size_m, case.rotation_deg)
+    closed = stroke.points + [stroke.points[0]]
+    route = [(lon + 0.0002, lat + 0.0001) for lon, lat in closed]
+    expected = score_v2([closed], route)
+    assert 0 < expected.coverage < 100 and expected.overall != score_v1([closed], route).overall
+    main = Score(80, 70, 75, direction=42)
+    fake = replace(fake_match_result([seg(route)]), route_points=route, score=main)
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake)
+    (res,) = run_cases(EdgesRouter(), [case], denied_ids=frozenset(), warm_up=False)
+    assert (res.coverage, res.cleanliness, res.overall, res.direction) == (80, 70, 75, 42)
+    assert (res.v2_coverage, res.v2_cleanliness, res.v2_overall) == (expected.coverage, expected.cleanliness, expected.overall)
+    assert res.score_version == SCORE_VERSION
+
+
+def test_run_cases_writes_one_svg_per_case_into_a_new_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_match(router, strokes, *, search_radius_m, deadline):
+        if strokes[0].points[0][0] > 121.55:
+            raise AllStrokesFailed([])
+        return fake_match_result([seg([A, B]), seg([B, C], "detour")])
+
+    monkeypatch.setattr(runner, "match_shape", fake_match)
+    out = tmp_path / "svg" / "nested"
+    cases = [Case("a@x 1", LINE, (121.50, 25.05), 1000.0, 0.0), Case("far", LINE, (121.60, 25.05), 1000.0, 0.0)]
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), svg_dir=out)
+    assert sorted(p.name for p in out.iterdir()) == ["a_x_1.svg", "far.svg"]  # 失敗的案例也畫（只有目標）
+    root = ET.fromstring((out / "a_x_1.svg").read_text())
+    texts = [t.text or "" for t in root.iter(f"{SVG_NS}text")]
+    assert texts[0] == "a@x 1" and any("75" in t and "dir" in t for t in texts)
+    colours = {line.get("stroke") for line in root.iter(f"{SVG_NS}polyline")}
+    assert {KIND_COLORS["stroke"], KIND_COLORS["detour"]} <= colours
+    assert any("AllStrokesFailed" in (t.text or "") for t in ET.fromstring((out / "far.svg").read_text()).iter(f"{SVG_NS}text"))
+
+
+def test_run_cases_without_svg_dir_writes_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(runner, "match_shape", lambda *args, **kwargs: fake_match_result())
+    monkeypatch.chdir(tmp_path)
+    run_cases(EdgesRouter(), [Case("a", LINE, (121.50, 25.05), 1000.0, 0.0)], denied_ids=frozenset())
+    assert not list(tmp_path.iterdir())
+
+
+def test_cli_update_baseline_writes_the_current_version_with_direction_and_v2(fake_run: FakeRun) -> None:
+    fake_run([scored("a", 80, 70, 75, v2=Score(60, 50, 55), direction=33)], "--update-baseline")
+    saved = json.loads(fake_run.baseline.read_text())["a"]
+    assert saved["score_version"] == SCORE_VERSION and saved["direction"] == 33
+    assert (saved["v2_coverage"], saved["v2_cleanliness"], saved["v2_overall"]) == (60, 50, 55)
+
+
+def test_cli_passes_router_options_to_the_router_and_prints_them_first(
+    fake_run: FakeRun, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_run.baseline.write_text("{}")  # 非正式參數不能 --update-baseline（只比對、不寫入）
+    fake_run([result("a", 80)], "--turn-penalty-factor", "none", "--sigma-z", "6")
+    assert fake_run.router_kwargs == [{"turn_penalty_factor": None, "sigma_z": 6.0}]
+    assert capsys.readouterr().out.splitlines()[0] == "吸附參數：turn_penalty_factor none（不帶，由 meili 設定決定）、sigma_z 6"
+    fake_run([result("a", 80)], "--turn-penalty-factor", "140")
+    assert fake_run.router_kwargs[-1] == {"turn_penalty_factor": 140.0, "sigma_z": None}
+
+
+def test_cli_router_options_default_to_the_router_defaults(fake_run: FakeRun, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_run([result("a", 80)], "--update-baseline")
+    assert fake_run.router_kwargs == [{"turn_penalty_factor": FAST_TURN_PENALTY_FACTOR, "sigma_z": None}]
+    assert capsys.readouterr().out.splitlines()[0] == "吸附參數：turn_penalty_factor 500、sigma_z 設定檔預設"
+    assert fake_run.svg_dirs == [None]
+
+
+@pytest.mark.parametrize("flags", [["--turn-penalty-factor", "fast"], ["--sigma-z", "-1"]])
+def test_cli_bad_router_option_is_a_usage_error(fake_run: FakeRun, flags: list[str]) -> None:
+    with pytest.raises(SystemExit) as usage:
+        fake_run([result("a", 80)], *flags)
+    assert usage.value.code == 2 and fake_run.router_kwargs == []
+
+
+def test_cli_passes_the_svg_dir(fake_run: FakeRun, tmp_path: Path) -> None:
+    fake_run([result("a", 80)], "--update-baseline", "--svg-dir", str(tmp_path / "s"))
+    assert fake_run.svg_dirs == [tmp_path / "s"]
+
+
+# ---- --no-prune：改前的路線（不剪小刺與小圈），給本機比較改前／改後 ----
+
+
+def test_run_cases_passes_match_options_to_every_match_including_warm_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+
+    def fake_match(router, strokes, *, search_radius_m, deadline, **kwargs):
+        seen.append(kwargs)
+        return fake_match_result()
+
+    monkeypatch.setattr(runner, "match_shape", fake_match)
+    cases = [Case("a1", LINE, (121.50, 25.05), 1000.0, 0.0)]
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), match_options={"prune": False})
+    assert seen == [{"prune": False}, {"prune": False}]  # 預熱一次＋正式一次
+    seen.clear()
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), warm_up=False)
+    assert seen == [{}]  # 預設與正式環境相同：不帶額外參數
+
+
+def test_cli_no_prune_reaches_run_cases(fake_run: FakeRun, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_run.baseline.write_text("{}")
+    fake_run([], "--no-prune", "--turn-penalty-factor", "none")
+    assert fake_run.match_options == [{"prune": False}]
+    assert fake_run.router_kwargs == [{"turn_penalty_factor": None, "sigma_z": None}]
+    assert "剪小刺與小圈：關" in capsys.readouterr().out
+    fake_run([])
+    assert fake_run.match_options[-1] == {}
+
+
+@pytest.mark.parametrize("flags", [["--no-prune"], ["--turn-penalty-factor", "none"], ["--sigma-z", "15"]])
+def test_cli_update_baseline_only_with_production_settings(fake_run: FakeRun, flags: list[str]) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80)], "--update-baseline", *flags)
+    assert refused.value.code == 2
+    assert not fake_run.baseline.exists()

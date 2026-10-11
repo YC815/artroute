@@ -2,10 +2,12 @@
 
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
+from engine.matching.score import Score
 from engine.matching.service import StrokeInput, match_shape
 from engine.matching.types import StartHint
 from engine.routing.geo import haversine_m, polyline_length_m
@@ -103,7 +105,11 @@ def test_start_hint_puts_route_start_inside_circle() -> None:
     )
     assert haversine_m(plain.route_points[0], CENTER) > 2500
     assert haversine_m(hinted.route_points[0], CENTER) < 1
-    assert hinted.score == plain.score  # 只換起點，畫的東西相同
+    # 只換起點，畫的東西相同。v3 的乾淨度在 1 px 格子裡留一個取樣點，代表點的位置隨取樣的相位移動
+    # （沒有提示時連接線沿著剛畫完的筆畫往回走，同一格的取樣點比較多），同一張圖 exact 會差一點點
+    assert hinted.score.overall == plain.score.overall
+    assert (hinted.score.coverage, hinted.score.direction) == (plain.score.coverage, plain.score.direction)
+    assert hinted.score.exact == pytest.approx(plain.score.exact, abs=0.5)
 
 
 def test_evaluates_every_coarse_candidate() -> None:
@@ -211,9 +217,61 @@ def test_rank_prefers_length_ok_then_score_then_start() -> None:
     assert ranked == [closer, better, good, off_near, off_far]
 
 
+def rotated(base: Candidate, rotation_deg: float, overall: int, exact: float | None = None) -> Candidate:
+    score = Score(overall, overall, overall, overall, exact)
+    result = replace(base.result, score=score)
+    return Candidate(replace(base.placement, rotation_deg=rotation_deg), result, base.start_distance_m, True)
+
+
+def test_rank_prefers_upright_placements_with_the_same_score() -> None:
+    # P2.5 spec §4.3：rank = exact − 5 × (θ / 15°)²；同分時比較正的排前面
+    p = params()
+    base = stage(p).run([placement(size=1200)])[0]
+    upright, tilted, wrapped = rotated(base, 0.0, 70), rotated(base, 10.0, 70), rotated(base, 350.0, 70)
+    assert sorted([tilted, upright], key=lambda c: rank_key(c, p)) == [upright, tilted]
+    assert rank_key(wrapped, p) == rank_key(rotated(base, -10.0, 70), p)  # 350° 就是 −10°
+
+
+def test_rank_rotation_of_15_degrees_costs_5_points() -> None:
+    p = params()
+    base = stage(p).run([placement(size=1200)])[0]
+    def best(*candidates: Candidate) -> Candidate:
+        return min(candidates, key=lambda c: rank_key(c, p))
+
+    upright_66, upright_64 = rotated(base, 0.0, 66), rotated(base, 0.0, 64)
+    for tilted in (rotated(base, 15.0, 70), rotated(base, -15.0, 70)):  # 70 − 5 = 65
+        assert best(tilted, upright_66) == upright_66
+        assert best(upright_64, tilted) == tilted
+
+
+def test_rank_uses_the_unrounded_score() -> None:
+    p = params()
+    base = stage(p).run([placement(size=1200)])[0]
+    low, high = rotated(base, 0.0, 70, exact=69.6), rotated(base, 0.0, 70, exact=70.4)
+    assert sorted([low, high], key=lambda c: rank_key(c, p)) == [high, low]
+
+
 def test_rescale_is_not_lost_when_another_router_drains_the_queue() -> None:
     # 審查：2 個 router、1 個候選；另一個 thread 看到空佇列就宣告停止，修正大小的重算被丟掉
     s = stage(params(min_km=10, max_km=20), routers=[EchoRouter(delay_s=0.01), EchoRouter(delay_s=0.01)])
     result = s.run([placement(size=1000)])  # 4 km：不合格，要依比例重算
     assert s.done == 2
     assert result[0].length_ok
+
+
+def test_match_options_reach_match_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    import engine.search.fine as fine_module
+
+    seen: list[dict] = []
+    real = fine_module.match_shape
+
+    def spy(*args, **kwargs):
+        seen.append({k: v for k, v in kwargs.items() if k == "prune"})
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fine_module, "match_shape", spy)
+    stage(params(min_km=1.0, max_km=10.0), match_options={"prune": False}).run([placement()])
+    assert seen == [{"prune": False}]
+    seen.clear()
+    stage(params(min_km=1.0, max_km=10.0)).run([placement()])
+    assert seen == [{}]  # /search 不帶：與正式環境相同

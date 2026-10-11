@@ -87,7 +87,7 @@ def test_stream_has_progress_best_and_result(tmp_path: Path) -> None:
     assert got[0][1] == {"type": "progress", "stage": "coarse", "done": 0, "total": 6}
     candidate = got[2][1]["candidates"][0]
     assert candidate["placement"] == {"center": [121.5, 25.05], "size_m": 1200.0, "rotation_deg": 350.0}
-    assert candidate["match"]["score"] == {"coverage": 80, "cleanliness": 70, "overall": 75}
+    assert candidate["match"]["score"] == {"coverage": 80, "cleanliness": 70, "direction": 0, "overall": 75}
     assert candidate["match"]["data_version"] == "20261010T000000Z"
     assert got[2][1]["coarse_candidates"] == 1234 and got[2][1]["evaluated"] == 10
 
@@ -283,3 +283,25 @@ def test_gate_failure_ends_with_an_error_event(tmp_path: Path) -> None:
     with TestClient(app) as client:
         got = events(client.post("/search", json=REQUEST).text)
     assert [(name, data["code"]) for name, data in got] == [("error", "internal")]
+
+
+def test_search_routers_come_from_router_factory(tmp_path: Path) -> None:
+    # 部署時的吸附參數（環境變數）經 router_factory 傳入：搜尋的 Router 也要用它建
+    built: list[Path] = []
+
+    def factory(build: Path) -> object:
+        built.append(build)
+        return ("router", len(built))
+
+    def search(params, routers, roads, deadline, emit):
+        assert routers == [("router", 1), ("router", 2)]
+        return SearchOutcome([], coarse_candidates=0, evaluated=0, notice=None)
+
+    app = create_app(
+        activated(tmp_path), router_factory=factory, road_loader=lambda b: "roads", search=search,
+        search_gate=SearchGate(tmp_path / "search.lock", poll_s=0.01),
+    )
+    with TestClient(app) as client:
+        got = events(client.post("/search", json=REQUEST).text)
+    assert [name for name, _ in got] == ["result"]
+    assert built == [DataLayout(tmp_path).current()] * 2

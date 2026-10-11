@@ -1,13 +1,14 @@
 """HTTP 介面。只在 hl 內網提供服務，由 web 轉發請求。"""
 
 import asyncio
+import functools
 import logging
 import math
 import os
 import tempfile
 import threading
 import time
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
@@ -48,7 +49,7 @@ from engine.matching.service import (
     match_shape,
 )
 from engine.matching.types import StartHint
-from engine.routing.router import Router, RoutingError
+from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router, RoutingError
 from engine.search.gate import SearchBusy, SearchGate
 from engine.search.roads import RoadDataMissing, RoadIndex, has_road_data
 from engine.search.service import run_search
@@ -100,7 +101,13 @@ def _response(result: MatchResult, version: str) -> MatchResponse:
         {
             "route": {"points": result.route_points, "length_m": result.route_length_m},
             "segments": [asdict(s) for s in result.segments],
-            "score": asdict(result.score),
+            # 只送契約欄位：Score.exact（沒取整數的 overall）是引擎內部排名用的
+            "score": {
+                "coverage": result.score.coverage,
+                "cleanliness": result.score.cleanliness,
+                "direction": result.score.direction,
+                "overall": result.score.overall,
+            },
             "target_length_m": result.target_length_m,
             "warnings": [asdict(w) for w in result.warnings],
             "data_version": version,
@@ -297,6 +304,48 @@ def _sse(event: Any) -> ServerSentEvent:
     return ServerSentEvent(data=event, event=event.type)
 
 
+def _env_number(name: str, raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"環境變數 {name} 必須是數字，收到 {raw!r}") from None
+    if not math.isfinite(value):
+        raise ValueError(f"環境變數 {name} 必須是有限的數字，收到 {raw!r}")
+    return value
+
+
+def trace_turn_penalty_factor(raw: str | None) -> float | None:
+    """TRACE_TURN_PENALTY_FACTOR：不設 = FAST_TURN_PENALTY_FACTOR；`none`（不分大小寫）= 不帶，由 meili 設定決定；
+    其他必須是 ≥ 0 的數字。"""
+    if raw is None:
+        return FAST_TURN_PENALTY_FACTOR
+    if raw.strip().lower() == "none":
+        return None
+    value = _env_number("TRACE_TURN_PENALTY_FACTOR", raw)
+    if value < 0:
+        raise ValueError(f"環境變數 TRACE_TURN_PENALTY_FACTOR 不能是負數，收到 {raw!r}")
+    return value
+
+
+def meili_sigma_z(raw: str | None) -> float | None:
+    """MEILI_SIGMA_Z：不設 = 建圖時的設定（Valhalla 預設 4.07 m）；設了必須是 > 0 的數字。"""
+    if raw is None:
+        return None
+    value = _env_number("MEILI_SIGMA_Z", raw)
+    if value <= 0:
+        raise ValueError(f"環境變數 MEILI_SIGMA_Z 必須大於 0，收到 {raw!r}")
+    return value
+
+
+def router_factory_from_env(environ: Mapping[str, str]) -> Callable[[Path], Router]:
+    """吸附參數（P2.5 spec §5.1）從環境變數來；壞值直接丟 ValueError，服務起不來，不悄悄退回預設。"""
+    return functools.partial(
+        Router.from_build,
+        sigma_z=meili_sigma_z(environ.get("MEILI_SIGMA_Z")),
+        turn_penalty_factor=trace_turn_penalty_factor(environ.get("TRACE_TURN_PENALTY_FACTOR")),
+    )
+
+
 def create_app(
     data_root: Path,
     *,
@@ -477,6 +526,8 @@ def create_app(
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = create_app(
     Path(os.environ.get("DATA_DIR", "/data")),
+    # /match 與搜尋的 Router 都由 router_factory 建，兩邊用同一組吸附參數
+    router_factory=router_factory_from_env(os.environ),
     # 搜尋精算用幾個 Router（各一個 Valhalla Actor、各自的 tile 快取上限 256 MiB，搜尋結束就釋放）
     search_routers=int(os.environ.get("SEARCH_ROUTERS", "2")),
 )

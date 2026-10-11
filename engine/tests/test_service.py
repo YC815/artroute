@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.matching.compose import Composition
+from engine.matching.compose import Composition, route_points
 from engine.matching.deadline import Deadline, MatchTimeout
 from engine.matching.service import (
     AllStrokesFailed,
@@ -271,6 +271,26 @@ def test_gap_between_segments_is_an_internal_error_not_a_straight_line(
     assert [r.levelno for r in caplog.records] == [logging.ERROR]
 
 
+def test_gap_before_prune_is_not_masked_when_prune_hides_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 串接留下缺口時，剪圈若剛好剪掉含缺口的那段，剪後的連續性檢查會漏掉 bug；剪前也要檢查
+    a = Segment("stroke", 0, [(121.50, LAT), (121.51, LAT)], 1000.0)
+    b = Segment("detour", 0, [(121.5101, LAT), (121.52, LAT)], 1000.0)  # 與 a 相距約 10 m
+
+    def gappy(router, parts, deadline, rematch=None, start=None) -> Composition:
+        return Composition(segments=[a, b], dropped=[])
+
+    def prune_away_gap(router, segments, targets, deadline, *, extent_m):
+        return [segments[0]]
+
+    monkeypatch.setattr("engine.matching.service.compose", gappy)
+    monkeypatch.setattr("engine.matching.service.prune_loops", prune_away_gap)
+    with caplog.at_level(logging.ERROR, logger="engine.matching.service"), pytest.raises(DiscontinuousRoute):
+        match_shape(FakeRouter(), [StrokeInput(row(121.50, 121.51), False)], search_radius_m=50, deadline=Deadline(30))
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
+
 # ---- P1.5 Task 4：封閉筆畫斷成多條 chain 時，照筆畫順序接回 ----
 
 
@@ -487,3 +507,50 @@ def test_closed_stroke_whose_seam_turn_cannot_be_ridden_is_not_rotated_through_i
     assert result.warnings == []
     assert_joins_within_tolerance(result.segments)
     assert every_junction_rideable(TurnBlockRouter(blocked=SW), result.segments)
+
+
+# ---- P2.5 A4：串接之後剪小刺與小圈；prune=False 時與沒有這一步完全相同 ----
+
+
+def looped_composition(router, parts, deadline, rematch=None, start=None) -> Composition:
+    """直線上 121.505 處往北繞一個約 30 m 的方形回到原處（假的串接結果，點都當成 Valhalla 給的）。"""
+    x = (121.505, LAT)
+    loop = [x, (121.505, LAT + 0.00027), (121.5053, LAT + 0.00027), (121.5053, LAT), x]
+    return Composition(segments=[seg([(121.50, LAT), *loop, (121.51, LAT)])], dropped=[])
+
+
+def test_prune_false_leaves_the_composition_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("prune=False 不剪")
+
+    monkeypatch.setattr("engine.matching.service.compose", looped_composition)
+    monkeypatch.setattr("engine.matching.service.prune_loops", must_not_run)
+    strokes = [StrokeInput(row(121.50, 121.51), False)]
+    result = match_shape(FakeRouter(), strokes, search_radius_m=50, deadline=Deadline(30), prune=False)
+    expected = looped_composition(None, [], None).segments
+    assert result.segments == expected
+    assert result.route_points == route_points(expected)
+    assert result.route_length_m == pytest.approx(sum(s.length_m for s in expected))
+
+
+def test_loops_are_pruned_by_default_with_the_target_extent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from engine.matching import service
+
+    seen = []
+    real = service.prune_loops
+
+    def spy(router, segments, targets, deadline, *, extent_m):
+        seen.append(extent_m)
+        return real(router, segments, targets, deadline, extent_m=extent_m)
+
+    monkeypatch.setattr("engine.matching.service.compose", looped_composition)
+    monkeypatch.setattr("engine.matching.service.prune_loops", spy)
+    strokes = [StrokeInput(row(121.50, 121.51), False)]
+    result = match_shape(FakeRouter(), strokes, search_radius_m=50, deadline=Deadline(30))
+    assert seen == [pytest.approx(polyline_length_m(row(121.50, 121.51)), rel=0.01)]  # 目標外框長邊
+    assert [s.points for s in result.segments] == [[(121.50, LAT), (121.505, LAT)], [(121.505, LAT), (121.51, LAT)]]
+    assert result.route_length_m == pytest.approx(sum(s.length_m for s in result.segments))
+    assert result.route_length_m == pytest.approx(polyline_length_m(row(121.50, 121.51)), rel=0.001)
+    assert result.score.exact >= match_shape(
+        FakeRouter(), strokes, search_radius_m=50, deadline=Deadline(30), prune=False
+    ).score.exact

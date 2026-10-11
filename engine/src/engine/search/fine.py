@@ -12,11 +12,13 @@ import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
+from engine.matching.score import rank
 from engine.matching.service import AllStrokesFailed, MatchResult, OutsideTaiwan, TargetTooSmall, match_shape
 from engine.matching.types import MatchRouter, StartHint
 from engine.routing.geo import haversine_m
@@ -40,10 +42,14 @@ class _Job:
 
 
 def rank_key(candidate: Candidate, params: SearchParams) -> tuple:
-    """排序：公里數合格的在前，依整體貼合度；不合格的依離範圍多遠，再看貼合度；最後看起點離圓心多近。"""
+    """排序：公里數合格的在前，依排名分數；不合格的依離範圍多遠，再看排名分數；最後看起點離圓心多近。
+
+    排名分數是 score.rank（P2.5 spec §4.3）：沒取整數的貼合度扣掉旋轉（±15° 扣 5 分），同分時比較正的排前面。
+    """
     length_km = candidate.result.route_length_m / 1000
     miss = max(0.0, params.min_km - length_km, length_km - params.max_km)
-    return (not candidate.length_ok, miss, -candidate.result.score.overall, candidate.start_distance_m)
+    likeness = rank(candidate.result.score, candidate.placement.rotation_deg)
+    return (not candidate.length_ok, miss, -likeness, candidate.start_distance_m)
 
 
 def _desired_km(params: SearchParams, length_km: float) -> float:
@@ -60,8 +66,10 @@ class FineStage:
         on_progress: Callable[[int, int], None],
         on_best: Callable[[Candidate], None],
         clock: Callable[[], float] = time.monotonic,
+        match_options: Mapping[str, Any] | None = None,
     ) -> None:
         self.params = params
+        self.match_options = dict(match_options or {})  # 傳給 match_shape 的額外參數（bench 用，例如 prune=False）
         self.routers = routers
         self.deadline = deadline
         self.on_progress = on_progress
@@ -84,7 +92,9 @@ class FineStage:
         strokes = place(self.params.strokes, placement)
         start = StartHint(self.params.center, self.params.radius_m)
         try:
-            return match_shape(router, strokes, search_radius_m=None, deadline=deadline, start=start)
+            return match_shape(
+                router, strokes, search_radius_m=None, deadline=deadline, start=start, **self.match_options
+            )
         except (AllStrokesFailed, OutsideTaiwan, TargetTooSmall, RoutingError):
             return None
         except MatchTimeout:

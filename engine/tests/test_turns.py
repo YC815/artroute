@@ -3,7 +3,15 @@
 import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
-from engine.matching.turns import TURN_PROBE_M, head_points, rideable, tail_points, turn_deg
+from engine.matching.turns import (
+    TURN_PROBE_M,
+    head_points,
+    rideable,
+    rideable_strict,
+    strict_needs_no_route_to_reject,
+    tail_points,
+    turn_deg,
+)
 from engine.matching.types import Segment
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import RouteResult, RoutingError
@@ -139,3 +147,110 @@ def test_outgoing_that_folds_onto_its_own_start_is_not_rideable() -> None:
     router = TurnBlockRouter(blocked=J)
     assert not rideable(router, Deadline(10), INCOMING, [start, east(start, -4), start, east(start, 100)])
     assert router.route_calls == []
+
+
+# ---- P2.5 A4：嚴格版（剪小刺與小圈的新接點）：量不出來的不放行，其餘與 rideable 相同 ----
+
+
+def test_strict_rejects_a_u_turn_that_rideable_lets_through() -> None:
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), INCOMING, BACK)
+    assert not rideable_strict(router, Deadline(10), INCOMING, BACK)
+    assert strict_needs_no_route_to_reject(INCOMING, BACK)
+    assert router.route_calls == []  # 原地迴轉 route 量不出來：不靠 route 決定
+
+
+def test_strict_rejects_an_arm_too_short_to_measure() -> None:
+    router = TurnBlockRouter(blocked=None)
+    short_in = [east(J, -0.5), J]
+    assert rideable(router, Deadline(10), short_in, STRAIGHT)
+    assert not rideable_strict(router, Deadline(10), short_in, STRAIGHT)
+    assert not rideable_strict(router, Deadline(10), INCOMING, [J, east(J, 0.5)])
+    assert router.route_calls == []
+
+
+def test_strict_measures_a_straight_continuation_with_route_too() -> None:
+    # 轉角 ≤ TURN_CHECK_DEG：rideable 直接放行；嚴格版不走捷徑，交給 route 量（能騎就放行）
+    router = TurnBlockRouter(blocked=None)
+    assert rideable_strict(router, Deadline(10), INCOMING, STRAIGHT)
+    assert not strict_needs_no_route_to_reject(INCOMING, STRAIGHT)  # 不用 route 不會拒絕：要量了才知道
+    ((p, q),) = router.route_calls
+    assert haversine_m(p, J) == pytest.approx(TURN_PROBE_M, abs=0.1)
+    assert haversine_m(q, J) == pytest.approx(TURN_PROBE_M, abs=0.1)
+
+
+def test_strict_rejects_a_straight_continuation_valhalla_would_not_ride() -> None:
+    # 剪圈接出來的接點：下層道路在 J 往東，正上方（平面上相距 0.5 m）同向的高架從 J' 往東。轉角 0°，
+    # 但 Valhalla 不會從下層直接接上高架（route 要繞一大圈）。rideable 照舊直行放行，嚴格版要拒絕
+    lower, deck = [east(J, -200), east(J, -100), J], [north(J, 0.5), east(north(J, 0.5), 100), east(north(J, 0.5), 200)]
+    router = TurnBlockRouter(blocked=J)
+    assert turn_deg(east(J, -8), J, east(north(J, 0.5), 8)) < 5  # 前提：轉角遠小於 TURN_CHECK_DEG
+    assert rideable(router, Deadline(10), lower, deck)  # 非嚴格版完全不變：不量、放行
+    assert router.route_calls == []
+    assert not strict_needs_no_route_to_reject(lower, deck)  # 不是便宜判斷就能拒絕的
+    assert not rideable_strict(router, Deadline(10), lower, deck)
+    assert len(router.route_calls) == 1
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), lower, deck)  # 對照：接得上就放行
+
+
+def test_strict_checks_a_sharp_turn_with_route_like_rideable() -> None:
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), INCOMING, LEFT)
+    assert not rideable_strict(TurnBlockRouter(blocked=J), Deadline(10), INCOMING, LEFT)
+    assert not strict_needs_no_route_to_reject(INCOMING, LEFT)  # 要 route 才知道
+
+
+def test_strict_rejects_a_fold_back_like_rideable() -> None:
+    spur_in = [east(J, -200), J, east(J, 4), J]
+    assert not rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), spur_in, LEFT)
+    assert strict_needs_no_route_to_reject(spur_in, LEFT)
+
+
+def test_strict_rejects_a_short_dead_end_u_turn_the_probes_wrap_around() -> None:
+    # 往北 6 m 的死巷尖端原地迴轉：兩個探針繞過尖端，落在 J 的西邊、東邊各 2 m（不是同一處），轉角約 143°，
+    # rideable 交給 route（直線 4 m）就放行了；嚴格版看得出接點前後的頂點是同一個（沿原路折回），不放行
+    tip = north(J, 6)
+    incoming, outgoing = [east(J, -200), J, tip], [tip, J, east(J, 200)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    router.route_calls.clear()
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+    assert strict_needs_no_route_to_reject(incoming, outgoing)
+    assert router.route_calls == []
+
+
+def test_strict_rejects_a_u_turn_whose_two_sides_have_different_vertices() -> None:
+    # 審查 B1：J 西邊 5 m 是路口 N、3 m 是段落邊界 M（只有往回那一側有這個頂點）。出了 J 沿原路往西折回，
+    # 再在 N 往北：兩側第一個超過 1 m 的頂點（N、M）相距 2 m，探針繞過 J、落在 N 西 3 m 與 N 北 3 m，
+    # route 量到 N 的合法轉彎就放行了。嚴格版在 1 m、2 m 的尺度看得出兩條臂重疊：原地迴轉
+    n, m = east(J, -5), east(J, -3)
+    incoming, outgoing = [east(J, -200), n, J], [J, m, n, north(n, 400)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)  # 非嚴格版照舊
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+    assert strict_needs_no_route_to_reject(incoming, outgoing)
+
+
+def test_strict_still_measures_sharp_turns_that_are_not_u_turns() -> None:
+    # 對照：120° 的急轉（不是沿原路折回）照樣交給 route 量，不當成原地迴轉
+    sharp = [J, (J[0] - 100 * 0.5 / 100_900, J[1] + 100 * 0.866 / 110_574)]
+    assert not strict_needs_no_route_to_reject(INCOMING, sharp)
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), INCOMING, sharp)
+    assert not rideable_strict(TurnBlockRouter(blocked=J), Deadline(10), INCOMING, sharp)
+
+
+def test_strict_catches_a_retrace_seen_only_from_the_incoming_side() -> None:
+    # 複審 nit 2：迴轉後只走 1.5 m 路線就結束（outgoing 不到 2 m，只能從 incoming 那側量）：
+    # incoming 往回 2 m 的點落在 outgoing 上，是原路折回；rideable 交給 route（直線 6.5 m）就放行了
+    incoming, outgoing = [east(J, -200), J], [J, east(J, -1.5)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+
+
+def test_strict_catches_a_retrace_offset_just_under_the_join_tolerance() -> None:
+    # 複審 nit 3：折回的路與來的路平行、相距 0.9 m（例如同一條路的對向車道畫成兩條線）：仍是原地迴轉
+    incoming = [east(J, -200), J]
+    outgoing = [J, north(J, 0.9), north(east(J, -100), 0.9)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)

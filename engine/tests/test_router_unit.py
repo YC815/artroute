@@ -1,9 +1,22 @@
 """不需要 Valhalla 的 Router 純函式測試：回應合併與吸附結果驗證。"""
 
+import json
+from pathlib import Path
+
 import pytest
 
+from engine.routing import router as router_module
 from engine.routing.polyline import encode
-from engine.routing.router import EdgeInfo, RouteResult, Router, RoutingError, _ensure_matched, _route_result
+from engine.routing.router import (
+    FAST_TURN_PENALTY_FACTOR,
+    EdgeInfo,
+    RouteResult,
+    Router,
+    RoutingError,
+    _ensure_matched,
+    _route_result,
+)
+from engine.routing.tiles import config_path
 
 A, B, C = (121.5, 25.05), (121.502, 25.05), (121.504, 25.05)
 FAR = (121.52, 25.05)  # 離 C 約 1.8 km
@@ -51,18 +64,37 @@ def test_ensure_matched_rejects_far_endpoints() -> None:
         _ensure_matched(RouteResult([A, FAR], 0.402), [A, B, C], search_radius_m=50.0)
 
 
-def _captured_request(monkeypatch: pytest.MonkeyPatch, call) -> tuple[str, dict]:
-    """不載入 Valhalla：攔下 Router 送給 Actor 的 (方法, 請求)。"""
-    router = Router.__new__(Router)
-    seen: list[tuple[str, dict]] = []
+class FakeActor:
+    """取代 valhalla.Actor：記下載入的設定與每個 (方法, 請求)，回應固定是 A→B→C。"""
 
-    def fake_call(method: str, request: dict) -> dict:
-        seen.append((method, request))
+    def __init__(self, config: dict | str) -> None:
+        self.config = config
+        self.seen: list[tuple[str, dict]] = []
+
+    def _answer(self, method: str, request: dict) -> dict:
+        self.seen.append((method, request))
         return _response([A, B, C])
 
-    monkeypatch.setattr(router, "_call", fake_call)
+    def trace_route(self, request: dict) -> dict:
+        return self._answer("trace_route", request)
+
+    def route(self, request: dict) -> dict:
+        return self._answer("route", request)
+
+
+def _fake_router(monkeypatch: pytest.MonkeyPatch, config: dict | Path | None = None, **kwargs) -> tuple[Router, FakeActor]:
+    monkeypatch.setattr(router_module, "Actor", FakeActor)
+    router = Router({} if config is None else config, **kwargs)
+    actor = router._actor
+    assert isinstance(actor, FakeActor)
+    return router, actor
+
+
+def _captured_request(monkeypatch: pytest.MonkeyPatch, call, **router_kwargs) -> tuple[str, dict]:
+    """不載入 Valhalla：攔下 Router 送給 Actor 的 (方法, 請求)。"""
+    router, actor = _fake_router(monkeypatch, **router_kwargs)
     call(router)
-    return seen[0]
+    return actor.seen[0]
 
 
 def test_route_request_disables_node_snap_on_every_location(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,3 +169,76 @@ def test_route_asks_for_the_shortest_path_only_when_told(monkeypatch: pytest.Mon
     assert shortest["costing"] == "bicycle"
     assert shortest["costing_options"] == {"bicycle": {"shortest": True}}
     assert [loc["node_snap_tolerance"] for loc in shortest["locations"]] == [0, 0]
+
+
+def test_trace_request_without_turn_penalty_factor_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 明確傳 None：trace_options 只有搜尋半徑，由 Valhalla 的 meili 設定決定轉彎懲罰
+    _, request = _captured_request(
+        monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=50.0), turn_penalty_factor=None
+    )
+    assert request == {
+        "shape": [{"lon": lon, "lat": lat} for lon, lat in (A, B, C)],
+        "costing": "bicycle",
+        "shape_match": "map_snap",
+        "trace_options": {"search_radius": 50.0},
+    }
+
+
+def test_trace_request_carries_turn_penalty_factor_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, request = _captured_request(
+        monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=60.0), turn_penalty_factor=500.0
+    )
+    assert request["trace_options"] == {"search_radius": 60.0, "turn_penalty_factor": 500.0}
+    assert request["shape_match"] == "map_snap"
+
+
+def test_turn_penalty_factor_leaves_route_request_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 只影響吸附；route 是連接線與轉彎檢查用的，請求要和沒設時完全相同
+    _, plain = _captured_request(monkeypatch, lambda router: router.route(A, C), turn_penalty_factor=None)
+    _, penalized = _captured_request(monkeypatch, lambda router: router.route(A, C), turn_penalty_factor=500.0)
+    assert penalized == plain
+
+
+def _write_config(build_dir: Path) -> None:
+    config_path(build_dir).write_text(
+        json.dumps({"mjolnir": {"tile_dir": "/old"}, "meili": {"default": {"sigma_z": 4.07, "search_radius": 50}}})
+    )
+
+
+def test_from_build_passes_sigma_z_and_turn_penalty_factor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_config(tmp_path)
+    monkeypatch.setattr(router_module, "Actor", FakeActor)
+    router = Router.from_build(tmp_path, sigma_z=15.0, turn_penalty_factor=140.0)  # 都不是預設值
+    actor = router._actor
+    assert isinstance(actor, FakeActor) and isinstance(actor.config, dict)
+    assert actor.config["meili"]["default"]["sigma_z"] == 15.0
+    router.trace([A, B, C])
+    assert actor.seen[0][1]["trace_options"]["turn_penalty_factor"] == 140.0
+
+
+def test_from_build_can_leave_turn_penalty_factor_out(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_config(tmp_path)
+    monkeypatch.setattr(router_module, "Actor", FakeActor)
+    router = Router.from_build(tmp_path, turn_penalty_factor=None)
+    router.trace([A, B, C])
+    actor = router._actor
+    assert isinstance(actor, FakeActor)
+    assert actor.seen[0][1]["trace_options"] == {"search_radius": 50.0}
+
+
+def test_fast_turn_penalty_factor_is_500() -> None:
+    # 使用者盲測：V2（turn_penalty_factor 500）對現行 2 勝 0 負 10 平（P2.5 spec §5.1）
+    assert FAST_TURN_PENALTY_FACTOR == 500.0
+
+
+def test_trace_uses_fast_turn_penalty_factor_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _, request = _captured_request(monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=50.0))
+    assert request["trace_options"] == {"search_radius": 50.0, "turn_penalty_factor": FAST_TURN_PENALTY_FACTOR}
+
+    _write_config(tmp_path)
+    router = Router.from_build(tmp_path)
+    actor = router._actor
+    assert isinstance(actor, FakeActor) and isinstance(actor.config, dict)
+    assert actor.config["meili"]["default"]["sigma_z"] == 4.07  # sigma_z 維持建圖時的設定
+    router.trace([A, B, C])
+    assert actor.seen[0][1]["trace_options"]["turn_penalty_factor"] == FAST_TURN_PENALTY_FACTOR

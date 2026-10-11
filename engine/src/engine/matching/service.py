@@ -1,12 +1,13 @@
-"""整個圖形的吸附流程：驗證 → 逐部件分治吸附 → 串接 → 評分。"""
+"""整個圖形的吸附流程：驗證 → 逐部件分治吸附 → 串接 → 剪小刺與小圈 → 評分。"""
 
 import logging
 from dataclasses import dataclass
 
-from engine.matching.compose import Part, Rematch, compose
+from engine.matching.compose import Part, Rematch, compose, route_points
 from engine.matching.deadline import Deadline
 from engine.matching.join import adjacent, connect
-from engine.matching.score import Score, score
+from engine.matching.prune import prune_loops
+from engine.matching.score import Score, score, target_extent_m
 from engine.matching.stroke import match_stroke, trace_whole
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, StartHint
 from engine.routing.geo import haversine_m, polyline_length_m
@@ -116,15 +117,6 @@ def _check_continuous(segments: list[Segment]) -> None:
             raise DiscontinuousRoute(f"路線第 {i}、{i + 1} 段之間有 {gap_m:.1f} m 的缺口")
 
 
-def _route_points(segments: list[Segment]) -> list[LonLat]:
-    """攤平成一條折線。後一段的第一點會被丟掉，所以呼叫前必須先確認相鄰段落相接（_check_continuous）。"""
-    points: list[LonLat] = []
-    for segment in segments:
-        points.extend(segment.points if not points else segment.points[1:])
-    # connector 可能有 3 個點卻只有 2 個不同：不留零長度的一步
-    return [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
-
-
 def _match_parts(
     router: MatchRouter,
     strokes: list[StrokeInput],
@@ -200,7 +192,9 @@ def match_shape(
     search_radius_m: float | None,
     deadline: Deadline,
     start: StartHint | None = None,
+    prune: bool = True,
 ) -> MatchResult:
+    """prune：串接之後剪小刺與小圈（prune_loops）。False 時與沒有這一步的版本完全相同（bench 與標註工具產生「改前」用）。"""
     _check_inside_taiwan(strokes)
     targets = [_target(s) for s in strokes]
     target_length = sum(polyline_length_m(t) for t in targets)
@@ -216,12 +210,16 @@ def match_shape(
         router, parts, deadline, rematch=_rematcher(router, targets, owners, radius, deadline), start=start
     )
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
-    _check_continuous(composition.segments)
-    route = _route_points(composition.segments)
+    segments = composition.segments
+    if prune:
+        _check_continuous(segments)
+        segments = prune_loops(router, segments, targets, deadline, extent_m=target_extent_m(targets))
+    _check_continuous(segments)
+    route = route_points(segments)
     return MatchResult(
         route_points=route,
-        route_length_m=sum(s.length_m for s in composition.segments),
-        segments=composition.segments,
+        route_length_m=sum(s.length_m for s in segments),
+        segments=segments,
         score=score(targets, route),
         target_length_m=target_length,
         warnings=warnings,

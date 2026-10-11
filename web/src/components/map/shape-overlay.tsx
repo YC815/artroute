@@ -21,6 +21,9 @@ type Props = {
   transform: Transform;
   /** 吸附失敗（warnings）的筆畫索引：目標線畫成紅色。 */
   warned: ReadonlySet<number>;
+  /** 隱藏原圖：目標線（含標紅的失敗筆畫）不畫，只看路線；外框與把手照常，仍可拖曳、縮放、旋轉。 */
+  targetHidden: boolean;
+  onToggleTarget: () => void;
   /** dragging 為 true 代表還在拖曳（即時吸附會節流），false 代表放開（立刻吸附）。 */
   onChange: (transform: Transform, dragging: boolean) => void;
 };
@@ -39,8 +42,9 @@ const CORNER_CURSORS = ["cursor-nesw-resize", "cursor-nwse-resize", "cursor-nesw
 /**
  * 地圖上的編輯器（SVG 疊在地圖上）：目標圖形（虛線）、拖曳本體移動、角落把手等比縮放、旋轉把手旋轉。
  * Pointer Events 讓滑鼠與觸控共用；圖形取得焦點後可以用方向鍵微調。
+ * 「隱藏原圖」只拿掉目標線：路線、起終點、方向箭頭在 MapLibre 圖層上，不受影響。
  */
-export function ShapeOverlay({ map, shape, transform, warned, onChange }: Props) {
+export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onToggleTarget, onChange }: Props) {
   const [, setFrame] = useState(0);
   const dragRef = useRef<Drag | null>(null);
   const nudgingRef = useRef(false);
@@ -168,19 +172,20 @@ export function ShapeOverlay({ map, shape, transform, warned, onChange }: Props)
             style={INTERACTIVE}
             onPointerDown={(e) => begin("move", e)}
           />
-          {shape.strokes.map((stroke, i) => (
-            <polyline
-              key={i}
-              data-testid="target-stroke"
-              points={(stroke.closed ? [...stroke.points, stroke.points[0]] : stroke.points)
-                .map((p) => toScreen(transformPoint(p, transform)))
-                .join(" ")}
-              fill="none"
-              stroke={warned.has(i) ? WARNED : ACCENT}
-              strokeWidth={warned.has(i) ? 3 : 2}
-              strokeDasharray="6 4"
-            />
-          ))}
+          {!targetHidden &&
+            shape.strokes.map((stroke, i) => (
+              <polyline
+                key={i}
+                data-testid="target-stroke"
+                points={(stroke.closed ? [...stroke.points, stroke.points[0]] : stroke.points)
+                  .map((p) => toScreen(transformPoint(p, transform)))
+                  .join(" ")}
+                fill="none"
+                stroke={warned.has(i) ? WARNED : ACCENT}
+                strokeWidth={warned.has(i) ? 3 : 2}
+                strokeDasharray="6 4"
+              />
+            ))}
           <polyline
             points={[topCenter, handles.rotate].map(toScreen).join(" ")}
             fill="none"
@@ -220,9 +225,23 @@ export function ShapeOverlay({ map, shape, transform, warned, onChange }: Props)
           })}
         </g>
       </svg>
-      <Button size="sm" variant="secondary" className="absolute top-3 left-3 shadow" onClick={recenter}>
-        圖形移到畫面中央
-      </Button>
+      <div className="absolute top-3 left-3 flex flex-wrap gap-2">
+        <Button size="sm" variant="secondary" className="shadow" onClick={recenter}>
+          圖形移到畫面中央
+        </Button>
+        {/* 快捷鍵 H 在 studio 處理（焦點不在圖形上也能用）。切換按鈕的名稱固定、狀態由 aria-pressed 表達（WAI-ARIA toggle button） */}
+        <Button
+          size="sm"
+          variant="secondary"
+          className="shadow"
+          aria-pressed={targetHidden}
+          aria-keyshortcuts="H"
+          title="快捷鍵：H"
+          onClick={onToggleTarget}
+        >
+          隱藏原圖
+        </Button>
+      </div>
     </>
   );
 }

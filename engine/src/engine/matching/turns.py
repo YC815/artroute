@@ -4,9 +4,15 @@
 route(p, q)（shortest）的起訖要落在 p、q 的 JOIN_TOLERANCE_M 內，長度不能比沿原路線經過接點多 TURN_SLACK_M 以上；
 繞一大圈代表這個轉彎不能直接騎（轉向限制、立體交叉在平面上剛好是同一點……），接點視同沒接上。
 兩個探針落在同一處（原地迴轉）沒辦法用 route 量，不檢查；可量的路線不到 JOIN_TOLERANCE_M 也不檢查。
+rideable_strict（剪小刺與小圈用，主 spec §8 第 37 列）把這兩種「量不出來」改成不放行，探針看不出來的原地迴轉也不放行：
+沿一條臂走 RETRACE_PROBE_M 的點落在另一條臂的折線 JOIN_TOLERANCE_M 內（沿原路折回；來回不到 TURN_PROBE_M 時
+探針會繞過尖端、落在不同處）。其餘與 rideable 相同。
 探針折回接點（走了 TURN_PROBE_M 以內的路，終點卻落回接點 JOIN_TOLERANCE_M 內，走的路比直線距離多出超過
 JOIN_TOLERANCE_M）時量不出通過接點的方向，但這不是迴轉，所以不放行：視同不能騎；兩邊都折回更是。
 彎曲但很短的臂（走的路只比直線多一點）不算折回，照一般轉角量。
+轉角 ≤ TURN_CHECK_DEG 時 rideable 直接放行（直行不必量）；rideable_strict 不走這個捷徑，一律交給 route 量：
+剪圈專門找路線自己重疊的點，最容易碰到立體交叉（下層道路與正上方同向的高架在平面上相距不到 1 m），
+剪完轉角是 0° 也不代表 Valhalla 能從下層直接接上高架。
 """
 
 import math
@@ -70,22 +76,78 @@ def _folds_back(walked_m: float, chord_m: float) -> bool:
     return chord_m <= JOIN_TOLERANCE_M and walked_m - chord_m > JOIN_TOLERANCE_M
 
 
-def rideable(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
-    """incoming 的終點接 outgoing 的起點（相距 ≤ JOIN_TOLERANCE_M）時，Valhalla 會不會直接騎過這個接點。"""
+RETRACE_PROBE_M = 2 * JOIN_TOLERANCE_M  # rideable_strict 的原地迴轉判斷：從接點沿兩條臂各走這麼遠
+
+
+def _distance_to_polyline_m(point: LonLat, line: list[LonLat]) -> float:
+    """point 到折線 line 的最短距離（以 point 為中心的局部平面）。"""
+    kx, ky = 111_320.0 * math.cos(math.radians(point[1])), 110_574.0
+    xy = [((lon - point[0]) * kx, (lat - point[1]) * ky) for lon, lat in line]
+    best = math.hypot(*xy[0])
+    for (ax, ay), (bx, by) in zip(xy, xy[1:]):
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
+        best = min(best, math.hypot(ax + t * dx, ay + t * dy))
+    return best
+
+
+def _retraces(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
+    """出了接點沿原路折回：沿 outgoing 走 RETRACE_PROBE_M 的點落在 incoming 折線 JOIN_TOLERANCE_M 內，或反過來。
+    來回不到 TURN_PROBE_M 時 p、q 兩個探針會繞過尖端、落在不同處，只看探針看不出來；量的是點到折線，
+    所以兩側的頂點不必相同（段落邊界、內插點只在一側也一樣）。一般轉彎要超過約 150° 才會被當成折回。"""
+    p, back_m = _walk(incoming[::-1], RETRACE_PROBE_M)
+    q, ahead_m = _walk(outgoing, RETRACE_PROBE_M)
+    return (ahead_m >= RETRACE_PROBE_M and _distance_to_polyline_m(q, incoming) <= JOIN_TOLERANCE_M) or (
+        back_m >= RETRACE_PROBE_M and _distance_to_polyline_m(p, outgoing) <= JOIN_TOLERANCE_M
+    )
+
+
+def _probe_verdict(incoming: list[LonLat], outgoing: list[LonLat], *, strict: bool) -> bool | tuple[LonLat, LonLat, float]:
+    """不用 route 就能決定時回傳 True／False；否則回傳 (p, q, 沿原路線經過接點的長度)，交給 route 量。
+    strict=False：量不出來（一側可量的路線不到 JOIN_TOLERANCE_M、原地迴轉）放行，轉角 ≤ TURN_CHECK_DEG 也放行；
+    strict=True：量不出來不放行，轉角 ≤ TURN_CHECK_DEG 也要 route 量（立體交叉在平面上同一點、同向，轉角 0° 也可能騎不過去）。"""
     p, back_m = _walk(incoming[::-1], TURN_PROBE_M)
     q, ahead_m = _walk(outgoing, TURN_PROBE_M)
     if min(back_m, ahead_m) < JOIN_TOLERANCE_M:
-        return True
+        return not strict
     at = incoming[-1]
     folded_p, folded_q = _folds_back(back_m, haversine_m(p, at)), _folds_back(ahead_m, haversine_m(q, at))
     if folded_p and folded_q:
         return False  # 兩邊都折回：p≈q 看起來像迴轉，其實兩條臂都量不出方向
-    if haversine_m(p, q) <= JOIN_TOLERANCE_M:
-        return True
+    if haversine_m(p, q) <= JOIN_TOLERANCE_M or (strict and _retraces(incoming, outgoing)):
+        return not strict  # 原地迴轉：route 量不出來
     if folded_p or folded_q:
         return False  # 臂長 0：探針折回接點，量不出方向（不是迴轉），不放行
-    if turn_deg(p, at, q) <= TURN_CHECK_DEG:
+    if not strict and turn_deg(p, at, q) <= TURN_CHECK_DEG:
         return True
+    return p, q, back_m + haversine_m(at, outgoing[0]) + ahead_m
+
+
+def strict_needs_no_route_to_reject(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
+    """rideable_strict 不用呼叫 route 就會回 False：剪小刺先用這個便宜的判斷篩掉候選（原地迴轉、量不出來、探針折回）。
+    回 False 不代表能騎：其餘的（含直行）還要 route 量。"""
+    return _probe_verdict(incoming, outgoing, strict=True) is False
+
+
+def _rideable(
+    router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat], *, strict: bool
+) -> bool:
+    verdict = _probe_verdict(incoming, outgoing, strict=strict)
+    if isinstance(verdict, bool):
+        return verdict
+    p, q, direct_m = verdict
     result = legal_route(router, deadline, p, q, JOIN_TOLERANCE_M)
-    direct_m = back_m + haversine_m(at, outgoing[0]) + ahead_m
     return result is not None and result.length_km * 1000 <= direct_m + TURN_SLACK_M
+
+
+def rideable(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
+    """incoming 的終點接 outgoing 的起點（相距 ≤ JOIN_TOLERANCE_M）時，Valhalla 會不會直接騎過這個接點。"""
+    return _rideable(router, deadline, incoming, outgoing, strict=False)
+
+
+def rideable_strict(router: MatchRouter, deadline: Deadline, incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
+    """同 rideable，但量不出來的接點（一側可量的路線不到 JOIN_TOLERANCE_M、原地迴轉，含探針繞過尖端的 _retraces）一律不放行：
+    剪小刺與小圈拿掉的可能正是讓路線能迴轉的那一圈，剪完量不出來就不能當成能騎。
+    轉角 ≤ TURN_CHECK_DEG 也不走直行的捷徑、交給 route 量：剪圈的接點常是立體交叉（下層道路接到正上方同向的高架）。"""
+    return _rideable(router, deadline, incoming, outgoing, strict=True)
