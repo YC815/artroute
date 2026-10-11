@@ -20,6 +20,11 @@ from osm_fixture import (
     PRUNE_MOTORWAY_WAY_ID,
     PRUNE_RING_ROW,
     PRUNE_SPUR_ROW,
+    PRUNE_UTURN_ROW,
+    UTURN_E1_COL,
+    UTURN_J_COL,
+    UTURN_LOOP_ROWS,
+    UTURN_N_COL,
     X5,
     grid_point,
 )
@@ -159,3 +164,24 @@ def test_loop_longer_than_the_cap_is_kept(router: Router, block_route: list[Segm
     short_target = [[p(1.5, PRUNE_BLOCK_ROW), p(4.5, PRUNE_BLOCK_ROW)]]  # 外框長邊約 605 m：上限約 91 m，街廓圈約 154 m
     assert 0.15 * target_extent_m(short_target) < 100
     assert prune(router, block_route, short_target) == block_route
+
+
+# ---- 審查 B1：剪了會在路口 N 東邊 5 m 的路中間迴轉（回程多一個段落邊界 M，兩側的頂點不同）→ 改剪 N 的那一圈 ----
+
+UT_W, UT_N, UT_J = p(UTURN_N_COL - 3, PRUNE_UTURN_ROW), p(UTURN_N_COL, PRUNE_UTURN_ROW), p(UTURN_J_COL, PRUNE_UTURN_ROW)
+UT_E1, UT_SE = p(UTURN_E1_COL, PRUNE_UTURN_ROW), p(UTURN_E1_COL, PRUNE_UTURN_ROW - UTURN_LOOP_ROWS)
+UT_S, UT_M = p(UTURN_J_COL, PRUNE_UTURN_ROW - UTURN_LOOP_ROWS), p(UTURN_J_COL - 3 / 201.7, PRUNE_UTURN_ROW)
+UT_NORTH = p(UTURN_N_COL, PRUNE_UTURN_ROW + 2)
+
+
+def test_cut_that_leaves_a_mid_road_u_turn_is_not_made(router: Router) -> None:
+    # W → N | N → J → E1 | E1 → SE | SE → S | S → J → M（J 西 3 m，route 的終點、內插點）| M → N → 北
+    segments = chain_of(router, UT_W, UT_N, UT_E1, UT_SE, UT_S, UT_M, UT_NORTH)
+    assert_valid(router, segments)
+    assert any(near(q, UT_M, 0.5) for q in segments[-1].points[:1])  # 前提：段落邊界真的在 M
+    result = prune(router, segments, [[UT_W, UT_N, UT_NORTH]])
+    points = route_points(result)
+    assert not any(near(q, UT_J, 2.5) for q in points)  # 不留 N → J → N 的來回
+    assert near(points[0], UT_W) and near(points[-1], UT_NORTH)
+    assert_points_from(result, segments)
+    assert_valid(router, result)

@@ -4,10 +4,11 @@ import pytest
 
 from engine.matching import prune
 from engine.matching.compose import flat
-from engine.matching.deadline import Deadline, MatchCancelled
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.prune import (
     MAX_PRUNE_ATTEMPTS,
     MIN_LOOP_M,
+    PRUNE_BUDGET_S,
     PRUNE_RESERVE_S,
     _candidates,
     _cut_loop,
@@ -16,6 +17,7 @@ from engine.matching.prune import (
 from engine.matching.score import Score, target_extent_m
 from engine.matching.types import JOIN_TOLERANCE_M, Segment
 from engine.routing.geo import haversine_m, polyline_length_m
+from engine.routing.router import RouteResult
 from turn_router import TurnBlockRouter, east, every_junction_rideable, north
 
 LAT = 25.05
@@ -147,8 +149,10 @@ def test_cut_that_would_need_a_u_turn_is_not_made_and_costs_no_route() -> None:
     # 直線走到 X、繞一圈回到 X、原路回 W：剪掉圈就是在 X 原地迴轉，嚴格版不放行（不呼叫 route）
     x = east(W, 400)
     segments = [seg([W, *square(x, 30), W])]
+    (loop,) = _candidates(all_points(segments), 0.15 * 1000)  # 前提：周長 120 m 的圈是候選（上限 150 m）
+    assert round(loop.length_m) == 120
     router = TurnBlockRouter()
-    assert run(segments, router=router, targets=[[W, x]], extent_m=400) == segments
+    assert run(segments, router=router, targets=[[W, x]], extent_m=1000) == segments
     assert router.route_calls == []
 
 
@@ -239,10 +243,87 @@ def test_loop_at_the_very_start_is_cut_without_a_new_junction() -> None:
     assert [s.points for s in result] == [[x, C]]
 
 
-def test_whole_route_being_the_loop_is_not_cut_to_nothing() -> None:
+def test_whole_route_being_the_loop_is_not_cut_to_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = square(W, 30)
     segments = [seg(loop)]
+    positions = flat(segments)
+    assert _cut_loop(segments, positions[0], positions[-1]) is None
+    # 就算評分說剪了比較好，也不會剪成空的路線
+    monkeypatch.setattr(prune, "score", lambda targets, route: Score(0, 0, 0, 0, -float(len(route))))
     assert run(segments, targets=[[W, east(W, 200)]], extent_m=1000) == segments
+
+
+def test_cut_that_removes_a_whole_stroke_is_not_made() -> None:
+    # 審查 S2：筆畫 1 是直線旁 40 m 外一個 4 m 的小方形，用 connector 來回接上（約 96 m < 上限 150 m）。
+    # 剪掉就整個筆畫都不見了，但 warnings 在剪之前就決定了（不會有 no_route、前端不會標紅）：不剪
+    x = east(W, 500)
+    d = north(x, 40)
+    dot = [d, east(d, 4), east(north(d, 4), 4), north(d, 4), d]
+    segments = [seg([W, x]), seg([x, d], "connector", None), seg(dot, "stroke", 1), seg([d, x], "connector", None), seg([x, C])]
+    targets = [[W, C], dot]
+    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))  # 前提：是候選
+    result = run(segments, targets=targets, extent_m=target_extent_m(targets))
+    assert any(s.stroke_index == 1 and s.kind == "stroke" for s in result)
+
+
+def test_u_turn_hidden_by_a_vertex_on_only_one_side_is_not_cut() -> None:
+    # 審查 B1：N 是 J 西邊 5 m 的路口、M 是 J 西邊 3 m 的段落邊界。剪掉 J 的圈會變成 W→N→J→M→N→北：
+    # 在 N 東邊 5 m 的路中間迴轉。兩側的頂點不同（M 只在回程），探針繞過 J、route 量到 N 的合法轉彎
+    j = east(W, 500)
+    n, m = east(j, -5), east(j, -3)
+    loop = [j, east(j, 15), east(north(j, -15), 15), north(j, -15), j]
+    segments = [seg([W, n, *loop, m]), seg([m, n, north(n, 400)], "stroke", 1)]
+    targets = [[W, n, north(n, 400)]]
+    assert every_junction_rideable(TurnBlockRouter(), segments)  # 前提：原本的接點都能騎
+    result = run(segments, targets=targets, extent_m=target_extent_m(targets))
+    assert east(j, 15) not in all_points(result) or result == segments
+    assert not any(q == j for q in all_points(result))  # 不留在 J 迴轉的小刺
+    assert [s.points for s in result] == [[W, n], [n, north(n, 400)]]  # 改剪 N 的那一圈（含 J 的來回）
+
+
+class NoLeftAtK:
+    """K 不能從東西向的街左轉上往北的街：route 的起點在 K 西邊的街上（10 m 內）、終點在 K 北邊的街上時繞一大圈；其餘走直線。"""
+
+    def __init__(self, k) -> None:
+        self.k = k
+
+    def trace(self, points, *, search_radius_m):
+        raise AssertionError("剪圈不呼叫 trace")
+
+    def route(self, start, end, *, shortest=False):
+        on_west_street = abs(start[1] - self.k[1]) < 1e-7 and start[0] < self.k[0] and haversine_m(start, self.k) <= 10
+        on_north_street = abs(end[0] - self.k[0]) < 1e-7 and end[1] > self.k[1]
+        points = [start, north(start, 440), north(end, 440), end] if on_west_street and on_north_street else [start, end]
+        return RouteResult(points=points, length_km=polyline_length_m(points) / 1000)
+
+
+def test_existing_junction_near_a_trimmed_start_is_rechecked() -> None:
+    # 審查 S4：路線開頭在 W 繞一圈（從西南方回到 W），往東 2 m 到 K 再往北。原本 K 的往回探針伸進圈裡，看起來像直行；
+    # 剪掉開頭的圈後沒有新接點，但 K 的往回探針只剩 W→K：變成從東西向的街左轉，K 不能左轉 → 不剪
+    k = east(W, 2)
+    u = (1 / 3, -0.943)  # 圈最後一邊從 W 往回的方向（東南南）
+    v = (W[0] + 20 * u[0] / 100_900, W[1] + 20 * u[1] / 110_574)
+    loop = [W, east(W, -20), north(east(W, -20), -18.86), v, W]
+    segments = [seg(loop, "connector", None), seg([W, k]), seg([k, north(k, 1000)])]
+    targets = [[W, k, north(k, 1000)]]
+    router = NoLeftAtK(k)
+    assert every_junction_rideable(router, segments)  # 前提：原本的接點都能騎
+    assert _candidates(all_points(segments), 0.15 * target_extent_m(targets))
+    assert run(segments, router=router, targets=targets, extent_m=target_extent_m(targets)) == segments
+    # 對照：K 能左轉就剪
+    free = run(segments, targets=targets, extent_m=target_extent_m(targets))
+    assert [s.points for s in free] == [[W, k], [k, north(k, 1000)]]
+
+
+def test_a_junction_made_by_an_earlier_cut_is_rechecked_strictly() -> None:
+    # 審查 nit 2：先剪 X 的圈（80 m）造出新接點 X；路線最後在 X 東邊 0.5 m 的 Z 繞一圈結束（100 m）。
+    # 剪 Z 的圈會讓路線停在 Z，X 的往前探針只剩 0.5 m：非嚴格版當成量不出來而放行，
+    # 但 X 是剪出來的接點，要用嚴格版重量 → 不剪這一刀，改剪 X 到最後的 Z（路線停在 X，沒有 0.5 m 的尾巴接點）
+    x = east(W, 500)
+    z = east(x, 0.5)
+    segments = [seg([W, *square(x, 20), *square(z, 25)])]
+    result = run(segments)
+    assert [s.points for s in result] == [[W, x]]
 
 
 def test_nothing_is_tried_when_the_deadline_is_too_close() -> None:
@@ -252,22 +333,70 @@ def test_nothing_is_tried_when_the_deadline_is_too_close() -> None:
     assert run(segments, router=router, deadline=Deadline(PRUNE_RESERVE_S - 0.05)) == segments
 
 
-def test_pruning_stops_once_the_reserve_is_reached(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 兩個可以剪的圈；剪完第一個之後時間只剩不到保留量：停下，回傳剪了一個的結果
-    now = [0.0]
-    deadline = Deadline(1.0, clock=lambda: now[0])
+def slow_scores(monkeypatch: pytest.MonkeyPatch, now: list[float], seconds: float, then=None) -> None:
+    """每次評分讓假時鐘前進 seconds 秒（then：評分後要做的事，例如取消）。"""
     real_score = prune.score
 
-    def slow_score(targets, route):
-        now[0] += 0.4  # 每次評分 0.4 s
+    def slow(targets, route):
+        now[0] += seconds
+        if then is not None:
+            then()
         return real_score(targets, route)
 
-    monkeypatch.setattr(prune, "score", slow_score)
-    segments = [seg([W, *square(east(W, 200), 20), *square(east(W, 600), 30)[1:], C])]
-    result = run(segments, deadline=deadline)
+    monkeypatch.setattr(prune, "score", slow)
+
+
+TWO_LOOPS = [seg([W, *square(east(W, 200), 20), *square(east(W, 600), 30), C])]  # 周長 80 m 與 120 m
+
+
+def test_two_loops_are_both_cut_with_enough_time() -> None:
+    points = all_points(run(TWO_LOOPS))
+    assert north(east(W, 200), 20) not in points and north(east(W, 600), 30) not in points
+
+
+def test_budget_running_out_mid_attempt_returns_what_was_cut_so_far(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 剪圈的子期限是 PRUNE_BUDGET_S（外層還很寬）。每次評分 0.4 s：剪前 0.4、第一刀 0.8 s 剪完；
+    # 第二刀評分完已經 1.2 s，超過預算：接住、回傳剪了一刀的結果，不往外丟
+    now = [0.0]
+    slow_scores(monkeypatch, now, 0.4)
+    result = run(TWO_LOOPS, deadline=Deadline(10, clock=lambda: now[0]))
     points = all_points(result)
     assert north(east(W, 200), 20) not in points  # 短的先剪
     assert north(east(W, 600), 30) in points  # 長的沒時間了
+    assert 0.8 < PRUNE_BUDGET_S < 1.2
+
+
+def test_budget_running_out_in_the_first_attempt_returns_the_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    slow_scores(monkeypatch, now, 0.6)
+    assert run(TWO_LOOPS, deadline=Deadline(10, clock=lambda: now[0])) == TWO_LOOPS
+
+
+def test_the_budget_never_eats_into_the_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 外層只剩 0.8 s：子期限 = 0.8 − 0.3 = 0.5 s。每次評分 0.3 s，第一刀評分完 0.6 s 就停
+    now = [0.0]
+    slow_scores(monkeypatch, now, 0.3)
+    assert run(TWO_LOOPS, deadline=Deadline(0.8, clock=lambda: now[0])) == TWO_LOOPS
+
+
+def test_already_expired_deadline_skips_pruning_without_raising() -> None:
+    # 串接最後一次 Valhalla 呼叫跨過期限：剪圈不丟例外，到期與否交給呼叫端
+    assert run(TWO_LOOPS, deadline=Deadline(-1)) == TWO_LOOPS
+
+
+def test_outer_deadline_expiring_mid_attempt_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    slow_scores(monkeypatch, now, 2.0)
+    with pytest.raises(MatchTimeout):
+        run(TWO_LOOPS, deadline=Deadline(1.5, clock=lambda: now[0]))
+
+
+def test_cancel_mid_attempt_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    deadline = Deadline(10, clock=lambda: now[0])
+    slow_scores(monkeypatch, now, 0.0, then=deadline.cancel)
+    with pytest.raises(MatchCancelled):
+        run(TWO_LOOPS, deadline=deadline)
 
 
 def test_cancel_is_not_swallowed() -> None:
