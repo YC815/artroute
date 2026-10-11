@@ -124,7 +124,7 @@ def _stitch_closed(
     return runs, False
 
 
-def _check_continuous(segments: list[Segment]) -> None:
+def check_continuous(segments: list[Segment]) -> None:
     for i, (a, b) in enumerate(zip(segments, segments[1:])):
         gap_m = haversine_m(a.points[-1], b.points[0])
         if gap_m > JOIN_TOLERANCE_M:
@@ -480,9 +480,9 @@ def match_shape(
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
     segments = composition.segments
     if prune:
-        _check_continuous(segments)
+        check_continuous(segments)
         segments = prune_loops(router, segments, targets, deadline, extent_m=target_extent_m(targets))
-    _check_continuous(segments)
+    check_continuous(segments)
     route = route_points(segments)
     return MatchResult(
         route_points=route,

@@ -91,6 +91,11 @@ def _key(segments: Sequence[Segment], c: Cut) -> tuple[int, int, float]:
     return c.segment, c.index, haversine_m(segments[c.segment].points[c.index], c.point)
 
 
+def precedes(segments: Sequence[Segment], a: Cut, b: Cut) -> bool:
+    """a 沿路線嚴格在 b 之前（段尾與下一段的開頭是同一點，但段尾在前）。"""
+    return _key(segments, a) < _key(segments, b)
+
+
 def _head(points: list[LonLat], c: Cut) -> list[LonLat]:
     """points 從頭到切點。"""
     out = points[: c.index + 1]
