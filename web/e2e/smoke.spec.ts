@@ -519,13 +519,13 @@ test("隱藏原圖：按鈕與 H 切換目標線，路線與把手照常", async
   await expect(targets).toHaveCount(0);
 });
 
-// ---- 放開後的精緻版（P2.5 spec §2、§6.5）----
+// ---- 放開後的描形版與版本切換 ----
 
 const PLANNER_STATUS = { ...STATUS, planner_ready: true };
-const REFINE_FAILED_NOTICE = "精緻版失敗，顯示快速版";
+const REFINE_FAILED_NOTICE = "描形版失敗，顯示快速版";
 
 /**
- * 精緻版的模擬路線：和 matchResponseFor 不同的一條（往北平移更多），每一筆之間再加一段連接線，
+ * 描形版的模擬路線：和 matchResponseFor 不同的一條（往北平移更多），每一筆之間再加一段連接線，
  * 所以 N 筆的 fast 是 N 段、fine 是 2N − 1 段，看 data-route-segments 就分得出畫面上是哪一條。
  */
 function fineResponseFor(request: MatchRequest): MatchResponse {
@@ -541,7 +541,8 @@ function fineResponseFor(request: MatchRequest): MatchResponse {
   });
   return {
     ...SAMPLE_MATCH_RESPONSE,
-    route: { points: segments.flatMap((s) => s.points), length_m: SAMPLE_MATCH_RESPONSE.route.length_m },
+    score: { ...SAMPLE_MATCH_RESPONSE.score, overall: 91 },
+    route: { points: segments.flatMap((s) => s.points), length_m: 3100 },
     segments,
   };
 }
@@ -585,15 +586,19 @@ function holdFine(gate: { current: Promise<void> | null }): () => void {
 const isFineRequest = (r: { url(): string; postDataJSON(): unknown }) =>
   r.url().endsWith("/api/match") && (r.postDataJSON() as { quality?: string } | null)?.quality === "fine";
 
-test("放開後換精緻版：fast 先顯示、「精緻化中…」，fine 回來就換上；拖曳中不送 fine；GPX 是精緻版", async ({ page }) => {
+test("快速版與描形版切換：預設 fast，切換後路線、分數、GPX 都用 fine，重新載入保留偏好", async ({ page }) => {
   const { seen, gate } = await mockRefineEngine(page, PLANNER_STATUS);
   const map = page.getByTestId("map");
   await page.goto("/");
   const textbox = page.getByRole("textbox", { name: "文字" });
   await textbox.fill("HI");
   await textbox.blur();
-  // 改文字也是立刻送出：fast（4 段）之後換成 fine（7 段）
-  await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES * 2 - 1));
+  // 改文字會先後算出兩版，但預設仍顯示 fast（4 段）；切換選項同時顯示各自分數。
+  const variants = page.getByRole("group", { name: "路線版本" });
+  await expect(variants.getByRole("button", { name: "快速版 78%" })).toHaveAttribute("aria-pressed", "true");
+  await expect(variants.getByRole("button", { name: "描形版 91%" })).toBeVisible();
+  await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES));
+  await expect(page.getByText("2.40 km")).toBeVisible();
   const hiStrokes = seen.filter((s) => !s.fine).at(-1)?.strokes;
 
   // 拖曳縮放把手後放開；這次的 fine 先停在途中
@@ -608,14 +613,18 @@ test("放開後換精緻版：fast 先顯示、「精緻化中…」，fine 回�
   await page.mouse.up();
   const finalFine = matchRequestSchema.parse((await fineRequest).postDataJSON());
 
-  // fine 在途：畫面是新擺放的 fast（4 段），顯示「精緻化中…」，已經可以下載（fast 也屬於目前的擺放）
-  await expect(page.getByText("精緻化中…")).toBeVisible();
+  // fine 在途：即使偏好稍後改成描形版，畫面仍暫用新擺放的 fast，且 fast 已可下載。
+  await expect(page.getByText("描形版計算中…")).toBeVisible();
+  await expect(variants.getByRole("button", { name: "描形版 計算中…" })).toBeVisible();
+  await variants.getByRole("button", { name: "描形版 計算中…" }).click();
   await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES));
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
 
   open();
   await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES * 2 - 1));
-  await expect(page.getByText("精緻化中…")).toHaveCount(0);
+  await expect(page.getByText("描形版計算中…")).toHaveCount(0);
+  await expect(page.getByText("3.10 km")).toBeVisible();
+  await expect(variants.getByRole("button", { name: "描形版 91%" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText(REFINE_FAILED_NOTICE)).toHaveCount(0);
 
   // 拖曳開始之後只送了一筆 fine：放開後、內容和最後一筆 fast 完全相同（加上 quality），而且是最後一筆請求
@@ -629,7 +638,7 @@ test("放開後換精緻版：fast 先顯示、「精緻化中…」，fine 回�
   // fast 的請求不帶 quality（與以前逐位元相同）
   expect(seen.filter((s) => !s.fine).every((s) => !s.hasQuality)).toBe(true);
 
-  // GPX 下載的是目前顯示的精緻版
+  // GPX 下載的是目前顯示的描形版。
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "下載 GPX" }).click();
   const gpx = await readFile(await (await downloadPromise).path(), "utf8");
@@ -637,9 +646,18 @@ test("放開後換精緻版：fast 先顯示、「精緻化中…」，fine 回�
     ([x, y]) => `<trkpt lat="${y.toFixed(6)}" lon="${x.toFixed(6)}"/>`,
   );
   expect(gpx.match(/<trkpt [^>]*\/>/g)).toEqual(expected);
+
+  // 重新載入後偏好仍是描形版；fast 先回來時暫顯示 fast，fine 回來便自動切回描形版。
+  await page.reload();
+  await expect(page.getByRole("group", { name: "路線版本" }).getByRole("button", { name: "描形版 91%" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES * 2 - 1));
+  await expect(page.getByText("3.10 km")).toBeVisible();
 });
 
-test("精緻版失敗（504）：保留快速版並提示，不自動重送；下一次操作（鍵盤微調）清掉提示", async ({ page, allowedErrors }) => {
+test("描形版失敗（504）：預設不提示，選描形版才說明並顯示 fast，不自動重送", async ({ page, allowedErrors }) => {
   allowedErrors.push(/status of 504.*\/api\/match/);
   const timeout = { status: 504, json: { detail: { code: "timeout", message: "吸附超過時間上限，請縮小圖形或減少筆畫" } } };
   const { seen, gate } = await mockRefineEngine(page, PLANNER_STATUS, async () => timeout);
@@ -649,27 +667,33 @@ test("精緻版失敗（504）：保留快速版並提示，不自動重送；�
   await textbox.fill("HI");
   await textbox.blur();
 
+  // 預設偏好 fast：選項顯示失敗，但不另顯示提示。選描形版後偏好保留，路線仍退回 fast。
+  const variants = page.getByRole("group", { name: "路線版本" });
+  await expect(variants.getByRole("button", { name: "描形版 失敗" })).toBeVisible();
+  await expect(page.getByText(REFINE_FAILED_NOTICE)).toHaveCount(0);
+  await variants.getByRole("button", { name: "描形版 失敗" }).click();
   await expect(page.getByText(REFINE_FAILED_NOTICE)).toBeVisible();
-  // 路線是快速版、可以下載；fine 的錯誤不當成吸附失敗（沒有錯誤訊息、沒有「重新吸附」）
+  // 描形版錯誤不當成吸附失敗（沒有錯誤訊息、沒有「重新吸附」）。
   await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES));
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
   await expect(page.getByText("吸附超過時間上限，請縮小圖形或減少筆畫")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "重新吸附" })).toHaveCount(0);
-  await expect(page.getByText("精緻化中…")).toHaveCount(0);
+  await expect(page.getByText("描形版計算中…")).toHaveCount(0);
 
   // 不自動重送：等一下，同一個擺放的 fine 仍然只有一筆
   const hiStrokes = seen.filter((s) => !s.fine).at(-1)?.strokes;
   await page.waitForTimeout(1500);
   expect(seen.filter((s) => s.fine && s.strokes === hiStrokes)).toHaveLength(1);
 
-  // 下一次操作：鍵盤微調（放開方向鍵＝立刻送出）。新的 fine 在途時提示消失、顯示「精緻化中…」
+  // 下一次操作：新的 fine 在途時提示消失；偏好仍是描形版，但先顯示新 fast。
   const open = holdFine(gate);
   const fineRequest = page.waitForRequest((r) => isFineRequest(r) && JSON.stringify(r.postDataJSON().strokes) !== hiStrokes);
   await page.getByRole("group", { name: "目標圖形，方向鍵微調位置" }).focus();
   await page.keyboard.press("ArrowRight");
   await fineRequest;
   await expect(page.getByText(REFINE_FAILED_NOTICE)).toHaveCount(0);
-  await expect(page.getByText("精緻化中…")).toBeVisible();
+  await expect(page.getByText("描形版計算中…")).toBeVisible();
+  await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES));
   // 失敗之後回來：提示再出現，路線仍是新擺放的快速版
   open();
   await expect(page.getByText(REFINE_FAILED_NOTICE)).toBeVisible();
@@ -701,5 +725,6 @@ test("planner_ready 為 false：只送 fast（不帶 quality），改文字、�
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
   expect(seen.length).toBeGreaterThan(3);
   expect(seen.filter((s) => s.hasQuality)).toEqual([]);
-  await expect(page.getByText("精緻化中…")).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "路線版本" })).toHaveCount(0);
+  await expect(page.getByText("描形版計算中…")).toHaveCount(0);
 });

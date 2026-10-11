@@ -5,11 +5,11 @@ import { requestKey } from "@/lib/match/request";
 /** 拖曳中兩次送出之間的最小間隔（spec §4.2），從上一筆送出的時間起算。 */
 export const THROTTLE_MS = 300;
 
-/** 精緻版的狀態：idle（沒有在途、也沒有要提示的失敗）、refining（fine 在途）、failed（目前擺放的 fine 失敗，顯示快速版）。 */
+/** 描形版的狀態：idle（沒有在途、也沒有要提示的失敗）、refining（fine 在途）、failed（目前擺放的 fine 失敗，顯示快速版）。 */
 export type RefineStatus = "idle" | "refining" | "failed";
 
 /**
- * 放開後的精緻版（P2.5 spec §2、§6.5）。fast 成功、而且它就是目前擺放的請求、最後一次排程不是拖曳中時，
+ * 放開後的描形版（P2.5 spec §2、§6.5）。fast 成功、而且它就是目前擺放的請求、最後一次排程不是拖曳中時，
  * 接著送同一個請求加 quality: "fine"。fine 不影響 pending（「吸附中…」只代表 fast），也不佔拖曳中「最多一筆在途」的名額：
  * 排程到不同的擺放時（拖曳開始、放開、改文字…）一律 abort 在途的 fine，所以同時在途的請求仍最多一筆。
  */
@@ -41,7 +41,7 @@ export type SchedulerOptions = {
   intervalMs?: number;
   /** 單調遞增的毫秒時鐘；預設 performance.now()，不受系統時間調整影響。 */
   now?: () => number;
-  /** 放開後接著送精緻版；省略時只送 fast，行為與以前完全相同。 */
+  /** 放開後接著送描形版；省略時只送 fast，行為與以前完全相同。 */
   refine?: RefineOptions;
 };
 
@@ -59,7 +59,7 @@ export type MatchScheduler = {
    */
   schedule: (request: MatchRequest, dragging: boolean, tag?: string | null) => void;
   /**
-   * 暫停：取消排定的節流計時器與進行中的請求（含 fine，結果丟棄），pending 回到 false，精緻版狀態回到 idle。
+   * 暫停：取消排定的節流計時器與進行中的請求（含 fine，結果丟棄），pending 回到 false，描形版狀態回到 idle。
    * 排程器之後仍可繼續使用；已成功套用的請求不會因此被當成沒送過。
    */
   cancel: () => void;
@@ -95,7 +95,7 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
   let settled = false; // 最後一次 schedule 不是拖曳中：只有這時候才送 fine
   let fastOkKey: string | null = null; // 最後套用的成功 fast 的 key
   let fine: FineAttempt | null = null; // 目前擺放的 fine（在途、成功或失敗）；擺放變了就丟掉
-  let refineStatus: RefineStatus = "idle"; // 最後通知的精緻版狀態
+  let refineStatus: RefineStatus = "idle"; // 最後通知的描形版狀態
   let disposed = false;
 
   function clearTimer() {

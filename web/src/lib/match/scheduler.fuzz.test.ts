@@ -8,7 +8,7 @@ import { createMatchScheduler, THROTTLE_MS, type RefineStatus } from "@/lib/matc
 /**
  * 排程器的不變式檢查：固定種子的隨機操作序列（拖曳、放開、在途請求以隨機順序成功或失敗地回來、推進時間、cancel），
  * 每一步之後檢查「最多一筆在途」「只有放開和 cancel 會 abort」「間隔」「pending」「結果套用順序」等保證。
- * 放開後的精緻版（fine）也在裡面：planner_ready 隨機切換；fine 只在放開後、目前擺放的 fast 成功時送，
+ * 放開後的描形版（fine）也在裡面：planner_ready 隨機切換；fine 只在放開後、目前擺放的 fast 成功時送，
  * 失敗不自動重送，被新的操作取消，舊的 fine 永遠不覆蓋新的結果（含 fast），fine 也不能覆蓋之後送出的 fast。
  * 單元測試釘住的是具名情境；這裡抓的是沒人想到的交錯。失敗時錯誤訊息帶種子與操作紀錄，可直接重現。
  */
@@ -84,7 +84,7 @@ async function runSequence(seed: number) {
   let plannerReady = random() < 0.7;
   let lastScheduleDragging = true; // 還沒排程過：當成拖曳中（不可送 fine）
   let lastAppliedFast: { call: Call; ok: boolean } | null = null;
-  // fine 失敗的擺放：擺放改變（或 cancel）之前，同一個擺放不能再送 fine，「精緻版失敗」的提示也要留著
+  // fine 失敗的擺放：擺放改變（或 cancel）之前，同一個擺放不能再送 fine，「描形版失敗」的提示也要留著
   let fineFailedKey: string | null = null;
   let refineStatus: RefineStatus = "idle";
   // 決定要不要送 fine 的時機（fast 套用、放開）當下的 planner_ready：之後才翻成 true 不會補送，要等下一次操作
@@ -159,7 +159,7 @@ async function runSequence(seed: number) {
         applied.push(call);
       },
       onStatusChange: (status) => {
-        if (status === refineStatus) note("精緻版狀態沒變卻通知");
+        if (status === refineStatus) note("描形版狀態沒變卻通知");
         refineStatus = status;
       },
     },
@@ -182,9 +182,9 @@ async function runSequence(seed: number) {
     const expected = vi.getTimerCount() > 0 || live().some((c) => !c.fine);
     if (notifiedPending !== expected) fail(`pending 為 ${notifiedPending}，應為 ${expected}（${where}）`);
     const liveFine = live().some((c) => c.fine);
-    if ((refineStatus === "refining") !== liveFine) fail(`精緻版狀態為 ${refineStatus}，fine 在途為 ${liveFine}（${where}）`);
+    if ((refineStatus === "refining") !== liveFine) fail(`描形版狀態為 ${refineStatus}，fine 在途為 ${liveFine}（${where}）`);
     const expectFailed = !liveFine && fineFailedKey !== null;
-    if ((refineStatus === "failed") !== expectFailed) fail(`精緻版狀態為 ${refineStatus}，應${expectFailed ? "" : "不"}是 failed（${where}）`);
+    if ((refineStatus === "failed") !== expectFailed) fail(`描形版狀態為 ${refineStatus}，應${expectFailed ? "" : "不"}是 failed（${where}）`);
   };
   /** 排程到不同的擺放或 cancel：fine 失敗的紀錄（與提示）清掉。 */
   const placementChanged = (key: string | null) => {
@@ -270,7 +270,7 @@ async function runSequence(seed: number) {
   checkInvariants("收尾");
   if (notifiedPending) fail("收尾後 pending 卡在 true");
   // 這兩個變數只在回呼裡被改：TS 的流程分析看不到，照宣告時的值收窄，這裡明確標回原本的型別
-  if ((refineStatus as RefineStatus) === "refining") fail("收尾後精緻版狀態卡在 refining");
+  if ((refineStatus as RefineStatus) === "refining") fail("收尾後描形版狀態卡在 refining");
   if (lastKey !== null) {
     const lastFast = calls.filter((c) => !c.fine).at(-1);
     if (!lastFast || lastFast.key !== lastKey) throw fail("最後一個位置從沒送出");

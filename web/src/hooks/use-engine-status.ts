@@ -10,7 +10,7 @@ export type EngineStatus = {
   dataVersion: string | null;
   /** 目前路網有沒有自動搜尋需要的資料（舊版引擎或舊 build 為 false）。查詢中或離線時沿用上一次的值，要搭配 status 判斷。 */
   searchReady: boolean;
-  /** 目前路網能不能用描形規劃器（放開後的精緻版 quality: "fine"）；舊版引擎或舊 build 為 false，只用 fast。沿用規則同 searchReady。 */
+  /** 目前路網能不能用描形規劃器（放開後的描形版 quality: "fine"）；舊版引擎或舊 build 為 false，只用 fast。沿用規則同 searchReady。 */
   plannerReady: boolean;
 };
 

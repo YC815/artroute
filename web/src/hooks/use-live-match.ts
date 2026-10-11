@@ -1,13 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchMatch, type MatchError } from "@/lib/engine/client";
+import { fetchMatch, type MatchError, type MatchOutcome } from "@/lib/engine/client";
 import type { MatchRequest, MatchResponse } from "@/lib/engine/contract";
 import { requestKey } from "@/lib/match/request";
 import { createMatchScheduler, type MatchScheduler, type RefineStatus } from "@/lib/match/scheduler";
 
 export type LiveMatch = {
+  /** 目前擺放的快速版；描形版另存於 fineResponse，不會覆蓋它。 */
   response: MatchResponse | null;
+  /** 與 appliedKey 相同擺放的描形版；尚未完成、失敗或新 fast 已套用時為 null。 */
+  fineResponse: MatchResponse | null;
   error: MatchError | null;
   pending: boolean;
   /** 產生目前 response／error 的請求在送出時帶的 tag（見 useLiveMatch 的 tag 參數）；還沒有結果時是 null。 */
@@ -18,13 +21,30 @@ export type LiveMatch = {
 
 /**
  * useLiveMatch 的回傳值：多一個「目前請求的 key」，和 appliedKey 相等才代表結果是目前這個擺放的；
- * retry 重送目前的請求；refine 是放開後精緻版的狀態（見 useLiveMatch）。
+ * retry 重送目前的請求；refine 是放開後描形版的狀態（見 useLiveMatch）。
  */
 export type LiveMatchResult = LiveMatch & { currentKey: string | null; retry: () => void; refine: RefineStatus };
 
 /** request 為 null（輸入被清空、圖形不合法）時不能再顯示上一次的路線或錯誤。 */
 export function matchForRequest(state: LiveMatch, request: MatchRequest | null): LiveMatch {
-  return request ? state : { ...state, response: null, error: null };
+  return request ? state : { ...state, response: null, fineResponse: null, error: null };
+}
+
+/** 套用新的 fast（成功或失敗）時，一律清掉上一個擺放的描形版。 */
+export function applyFastOutcome(
+  state: LiveMatch,
+  outcome: MatchOutcome,
+  appliedTag: string | null,
+  appliedKey: string,
+): LiveMatch {
+  return outcome.ok
+    ? { ...state, response: outcome.response, fineResponse: null, error: null, appliedTag, appliedKey }
+    : { ...state, response: null, fineResponse: null, error: outcome.error, appliedTag, appliedKey };
+}
+
+/** 只保留與目前 fast 同一個擺放的描形版，避免晚到的結果混到別的擺放。 */
+export function applyFineResponse(state: LiveMatch, response: MatchResponse, appliedKey: string): LiveMatch {
+  return state.appliedKey === appliedKey ? { ...state, fineResponse: response } : state;
 }
 
 /**
@@ -42,8 +62,8 @@ export function matchForRequest(state: LiveMatch, request: MatchRequest | null):
  * - appliedKey 是結果所屬請求的 key，currentKey 是目前請求的 key：兩者相等才代表結果是目前這個擺放的路線。
  *   同一個圖形換了擺放位置，tag 不變、key 會變，所以「能不能下載 GPX」要比 key，不能只看 pending（取消會把 pending 清掉）。
  * - plannerReady（引擎的 planner_ready）為 true 時，放開、鍵盤微調、套用候選、改文字等「立刻送出」的請求在 fast 成功後
- *   接著送 quality: "fine"（拖曳中只送 fast）。fine 成功就換上它的路線（appliedTag／appliedKey 與 fast 相同：同一個擺放），
- *   失敗則保留 fast 的路線、refine 為 failed，不自動重送；下一次操作清掉。refine 為 refining 時 fine 在途。
+ *   接著送 quality: "fine"（拖曳中只送 fast）。fine 成功後與 fast 同時保留，由呼叫端決定顯示哪一版；
+ *   失敗則 fast 照常可用、refine 為 failed，不自動重送；下一次操作清掉。refine 為 refining 時 fine 在途。
  */
 export function useLiveMatch(
   request: MatchRequest | null,
@@ -55,6 +75,7 @@ export function useLiveMatch(
 ): LiveMatchResult {
   const [state, setState] = useState<LiveMatch>({
     response: null,
+    fineResponse: null,
     error: null,
     pending: false,
     appliedTag: null,
@@ -75,19 +96,15 @@ export function useLiveMatch(
     const scheduler = createMatchScheduler({
       send: (req, signal) => fetchMatch(req, signal),
       onOutcome: (outcome, appliedTag, appliedKey) => {
-        if (outcome.ok) {
-          setState((s) => ({ ...s, response: outcome.response, error: null, appliedTag, appliedKey }));
-          return;
-        }
-        setState((s) => ({ ...s, response: null, error: outcome.error, appliedTag, appliedKey }));
-        if (outcome.error.engineDown) onEngineDownRef.current();
+        setState((s) => applyFastOutcome(s, outcome, appliedTag, appliedKey));
+        if (!outcome.ok && outcome.error.engineDown) onEngineDownRef.current();
       },
       onPendingChange: (pending) => setState((s) => (s.pending === pending ? s : { ...s, pending })),
       refine: {
         // 要送 fine 的當下才讀（排程器在 fast 回來或放開時呼叫）
         enabled: () => plannerReadyRef.current,
-        onRefined: (response, appliedTag, appliedKey) =>
-          setState((s) => ({ ...s, response, error: null, appliedTag, appliedKey })),
+        onRefined: (response, _appliedTag, appliedKey) =>
+          setState((s) => applyFineResponse(s, response, appliedKey)),
         // fine 失敗不呼叫 onEngineDown：fast 的路線還在，下一次操作的 fast 會照常偵測引擎離線
         onStatusChange: setRefine,
       },
