@@ -212,6 +212,7 @@ def match_shape(
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
     segments = composition.segments
     if prune:
+        _check_continuous(segments)
         segments = prune_loops(router, segments, targets, deadline, extent_m=target_extent_m(targets))
     _check_continuous(segments)
     route = route_points(segments)
