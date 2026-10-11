@@ -48,9 +48,9 @@ describe("defaultKmRange", () => {
 });
 
 describe("defaultRotationSpan", () => {
-  it("文字 ±15°（保持可讀）、圖片不限（±180°）", () => {
+  it("文字與圖片都 ±15°（Strava 北朝上，轉太多認不出來）", () => {
     expect(defaultRotationSpan("text")).toBe(15);
-    expect(defaultRotationSpan("image")).toBe(180);
+    expect(defaultRotationSpan("image")).toBe(15);
   });
 });
 

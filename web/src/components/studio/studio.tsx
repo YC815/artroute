@@ -28,6 +28,7 @@ import {
 import { shapeLengthM, type Transform } from "@/lib/shape/transform";
 import type { Shape, Stroke } from "@/lib/shape/types";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
+import { isToggleTargetKey } from "@/lib/studio/hotkeys";
 import { canDownloadGpx, gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
 import type { HersheyFontId } from "@/lib/text/hershey";
 import { textShape, validateText } from "@/lib/text/layout";
@@ -54,6 +55,8 @@ export function Studio() {
   const [transform, setTransform] = useState<Transform>(saved?.transform ?? DEFAULT_TRANSFORM);
   const [dragging, setDragging] = useState(false);
   const [mapNotice, setMapNotice] = useState(false);
+  // 隱藏原圖（P2.5 spec §5.4）：只看路線像不像。預設顯示、不存檔，重新載入就恢復
+  const [targetHidden, setTargetHidden] = useState(false);
   // 自動搜尋的範圍：設定後，即時吸附的每個請求都帶 start_circle（手動微調時起點仍盡量在圈內）
   const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -111,6 +114,17 @@ export function Studio() {
     if (dragging || !isSavable(source)) return;
     saveWork(browserStore, { source, transform });
   }, [source, transform, dragging]);
+
+  // 快捷鍵 H 切換隱藏原圖；掛在 window 上，焦點在哪裡都能用（打字的地方與帶修飾鍵的除外，見 isToggleTargetKey）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !isToggleTargetKey(e)) return;
+      e.preventDefault();
+      setTargetHidden((hidden) => !hidden);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const onTransform = (next: Transform, isDragging: boolean) => {
     setTransform(next);
@@ -194,7 +208,15 @@ export function Studio() {
         >
           {(map) =>
             shape && (
-              <ShapeOverlay map={map} shape={shape} transform={transform} warned={warned} onChange={onTransform} />
+              <ShapeOverlay
+                map={map}
+                shape={shape}
+                transform={transform}
+                warned={warned}
+                targetHidden={targetHidden}
+                onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
+                onChange={onTransform}
+              />
             )
           }
         </MapView>

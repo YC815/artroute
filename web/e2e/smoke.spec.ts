@@ -441,3 +441,82 @@ test("引擎沒有回報 search_ready（舊版引擎）：自動搜尋停用並�
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
   expect(searches).toEqual([]);
 });
+
+test("隱藏原圖：按鈕與 H 切換目標線，路線與把手照常", async ({ page }) => {
+  await mockEngine(page);
+  await page.goto("/");
+  const targets = page.getByTestId("target-stroke");
+  const map = page.getByTestId("map");
+  const frame = page.getByRole("group", { name: "目標圖形，方向鍵微調位置" }).locator("polygon");
+  const textbox = page.getByRole("textbox", { name: "文字" });
+  // 用「HI」（4 筆）：後面要在輸入框多打一個 h，預設文字已經 10 個字，再打就超過上限、圖形消失
+  await textbox.fill("HI");
+  await textbox.blur();
+  // 預設顯示：目標線都在；等「HI」的吸附結果套用、路線畫出來。
+  // 隱藏是不畫目標線，所以數 DOM 裡的數量（「I」這種直線的外框寬度是 0，toBeVisible 會判成看不見）
+  const strokeCount = HI_STROKES;
+  await expect(targets).toHaveCount(strokeCount);
+  await expect(map).toHaveAttribute("data-route-segments", String(HI_STROKES));
+  await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveAttribute("aria-pressed", "false");
+
+  const decoder = await page.context().newPage();
+  const expectHidden = async () => {
+    await expect(targets).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "顯示原圖" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveCount(0);
+    // 路線（MapLibre 圖層）照常畫：截圖數路線藍色的像素；外框與把手照常在
+    await expect(map).not.toHaveAttribute("data-route-segments", "0");
+    await expect
+      .poll(async () => countRoutePixels(decoder, await map.screenshot()), {
+        message: "隱藏原圖時地圖上沒有畫出路線（路線藍色像素太少）",
+      })
+      .toBeGreaterThan(MIN_ROUTE_PIXELS);
+    await expect(frame).toBeVisible();
+    await expect(page.getByTestId("handle-rotate")).toBeVisible();
+    await expect(page.getByTestId("handle-scale")).toHaveCount(4);
+  };
+  const expectShown = async () => {
+    await expect(targets).toHaveCount(strokeCount);
+    await expect(targets.first()).toBeAttached();
+    await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { name: "顯示原圖" })).toHaveCount(0);
+  };
+
+  // 按鈕：隱藏 → 再按恢復
+  await page.getByRole("button", { name: "隱藏原圖" }).click();
+  await expectHidden();
+  await page.getByRole("button", { name: "顯示原圖" }).click();
+  await expectShown();
+
+  // 鍵盤 H（大小寫都可）：焦點在按鈕上（不是輸入框）時切換
+  await page.keyboard.press("h");
+  await expectHidden();
+  await page.keyboard.press("Shift+H");
+  await expectShown();
+  // 帶修飾鍵不攔
+  await page.keyboard.press("Alt+h");
+  await expectShown();
+
+  // 焦點在文字輸入框時不攔：h 打進文字裡，目標線照常顯示；刪掉後恢復原本的文字
+  await textbox.press("End");
+  await textbox.press("h");
+  await expect(textbox).toHaveValue("HIh");
+  await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveAttribute("aria-pressed", "false");
+  await expect(targets.first()).toBeAttached();
+  await textbox.press("Backspace");
+  await textbox.blur();
+  await expectShown();
+
+  // 隱藏時把手照常可用：拖曳角落把手放大，外框跟著變
+  await page.keyboard.press("h");
+  await expectHidden();
+  const before = await frame.getAttribute("points");
+  const box = await page.getByTestId("handle-scale").first().boundingBox();
+  if (!box) throw new Error("找不到縮放把手");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 - 40, { steps: 5 });
+  await page.mouse.up();
+  await expect(frame).not.toHaveAttribute("points", before ?? "");
+  await expect(targets).toHaveCount(0);
+});
