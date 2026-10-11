@@ -4,8 +4,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
+import numpy as np
+
 from engine.data.bike_patch import STEPS, DeniedWay
 from engine.data.build import load_denied
+from engine.planner.graph import BACKWARD, FLAGS, FORWARD, FROM, OFFSET, TO, GraphDataMissing, RideGraph
 from engine.routing.geo import haversine_m
 from engine.routing.router import EdgeInfo, LonLat, RouteResult, Router, RoutingError
 from engine.search.roads import RoadDataMissing, RoadIndex
@@ -170,7 +173,39 @@ def rideable_checks(build_dir: Path) -> list[str]:
     return []
 
 
+def _graph_inconsistencies(graph: RideGraph) -> list[str]:
+    nodes, edges, coords = len(graph.nodes), graph.edges, len(graph.coords)
+    ends = np.asarray(edges[:, [FROM, TO]])
+    offsets = np.asarray(edges[:, OFFSET])
+    flags = np.asarray(edges[:, FLAGS])
+    problems = []
+    if ends.min() < 0 or ends.max() >= nodes:
+        problems.append(f"邊的 from／to 超出節點數 {nodes}")
+    # 每條邊至少 2 個形狀點：幾何起點從 0 開始、嚴格遞增（差 ≥ 2），最後一條邊到 K 也至少 2 點
+    if offsets[0] != 0 or np.any(np.diff(offsets) < 2) or offsets[-1] > coords - 2:
+        problems.append(f"邊的幾何起點不是從 0 開始、每條邊至少 2 點、不超過形狀點數 {coords}")
+    if np.any((flags & (FORWARD | BACKWARD)) == 0) or np.any((flags & ~(FORWARD | BACKWARD)) != 0):
+        problems.append("有邊的方向旗標兩個方向都不能騎或有不認得的位元")
+    if not np.all(np.isfinite(graph.lengths)) or np.any(np.asarray(graph.lengths) < 0):
+        problems.append("有邊長不是有限的非負數")
+    if not np.all(np.isfinite(graph.nodes)) or not np.all(np.isfinite(graph.coords)):
+        problems.append("有節點或形狀點的座標不是有限值")
+    return problems
+
+
+def graph_checks(build_dir: Path) -> list[str]:
+    """描形規劃器要用可騎路網圖：讀得進來、至少有一條邊、索引彼此一致。"""
+    try:
+        graph = RideGraph.load(build_dir)
+    except GraphDataMissing as error:
+        return [f"可騎路網圖讀不到或不完整：{error}"]
+    if not len(graph) or not len(graph.nodes):
+        return ["可騎路網圖沒有任何邊：資料或萃取規則可能壞了"]
+    problems = _graph_inconsistencies(graph)
+    return [f"可騎路網圖的索引不一致：{'；'.join(problems)}"] if problems else []
+
+
 def validate_build(build_dir: Path) -> list[str]:
     router, denied = Router.from_build(build_dir), load_denied(build_dir)
     shortest = [f"（shortest）{failure}" for failure in _build_checks(ShortestRoutes(router), denied)]
-    return _build_checks(router, denied) + shortest + rideable_checks(build_dir)
+    return _build_checks(router, denied) + shortest + rideable_checks(build_dir) + graph_checks(build_dir)
