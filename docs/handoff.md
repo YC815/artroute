@@ -2,12 +2,14 @@
 
 ## 目前狀態
 
-- P0、P1、P1.5 已合進 `main` 並部署在 m1。
-- **P2（自動搜尋＋評分 v2）在雲端 session 完成實作與合成地圖測試，還沒有在真實路網上量測、還沒部署。** 分支 `claude/artroute-p2-development-d8henn`，PR 到 `main`。
-- 部署中（P1.5）：
-  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。
-  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。
-  - 路網 build `20261010T235143Z`（沒有可騎道路索引，搜尋要重建後才能用）；回滾用 `20261010T183449Z`。
+- P0、P1、P1.5、P2 都已完成並部署在 m1。P2 的真實路網量測已在 2026-10-11 做完，下面「本機待辦」1–7 都完成了，數字見 `docs/p2-search-findings.md`。
+- 完成條件（R = 5 km 時 30 秒內前 5 名）達成：搜尋 bench 12 個案例都有 5 個候選，最慢 13.5 s、中位數 4.7 s。粗篩最多 1.3 s。記憶體峰值 1.345 GiB。60 個候選全部通過安全斷言。`SEARCH_ROUTERS` 維持預設 2。
+- 部署中：
+  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access），含自動搜尋面板。
+  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker，`/status` 的 `search_ready: true`。
+  - 路網 build `20261011T040535Z`：有可騎道路索引，654,328 條 way、5,777,571 個路段、93.9 MB。pbf 與 `20261010T235143Z` 相同，回滾用 `20261010T235143Z`。
+- 吸附 bench 的 baseline 已換成評分 v2：路線與 P1.5 完全相同，v2 overall 中位數 61、平均 53.6；不安全 0、不能直騎的接點 0、樓梯 0 m。
+- 待觀察（不阻擋）：粗篩與精算排名的 Spearman 中位數只有 +0.04，時間預算還很寬，可以考慮調大 K。建圖記憶體這次是每 30 秒取樣一次，峰值 1.996 GiB，可能偏低。
 
 ## P2 做了什麼（細節見 spec §4.2、§4.4–§4.7、§6.1、§6.3、§8 第 21–28 列）
 

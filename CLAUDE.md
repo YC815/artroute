@@ -25,7 +25,7 @@ Strava GPS 藝術：文字／圖片 → 地圖上移動旋轉縮放 → 吸附�
 ## 文件
 - 設計：`docs/superpowers/specs/2026-10-10-strava-art-design.md`（§8 是每個設計決策與理由；新決策要加一列）。
 - 交接與下一步：`docs/handoff.md`。待辦：`docs/backlog.md`。
-- 實測紀錄：`docs/p0-findings.md`、`docs/p1-engine-findings.md`、`docs/p1-quality-investigation.md`、`docs/p1-5-quality-findings.md`。
+- 實測紀錄：`docs/p0-findings.md`、`docs/p1-engine-findings.md`、`docs/p1-quality-investigation.md`、`docs/p1-5-quality-findings.md`、`docs/p2-search-findings.md`。
 
 ## 工作方式
 - 最佳實踐是鐵則；設計抉擇自己依最佳實踐決定、寫進 spec §8 並附理由，使用者可推翻。
