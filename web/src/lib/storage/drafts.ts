@@ -29,6 +29,9 @@ export type Draft = {
 
 export type DraftInput = Pick<Draft, "source" | "transform" | "route">;
 
+/** 草稿記的圖形來源與擺放：微調進入（enter）當下綁定，之後排隊中的存檔也用它。 */
+export type DraftPlacement = Pick<Draft, "source" | "transform">;
+
 const draftSchema = z.object({
   v: z.literal(1),
   id: z.string(),

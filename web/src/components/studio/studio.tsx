@@ -25,7 +25,7 @@ import { useSearch } from "@/hooks/use-search";
 import { isOutdatedRoute, outdatedLabel } from "@/lib/drafts/draft-info";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
 import type { DraftNotice } from "@/lib/edit/edit-hint";
-import { createEditSession, sessionFromDraft } from "@/lib/edit/edit-session";
+import { createEditSession, placementOf, sessionFromDraft } from "@/lib/edit/edit-session";
 import type { MatchWarning, SearchCandidate } from "@/lib/engine/contract";
 import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
 import {
@@ -227,9 +227,10 @@ export function Studio() {
   });
   const enterEdit = () => {
     if (!canEnter || !request || !display.response) return;
-    editSession.begin({ source, transform, strokes: request.strokes, base: { shapeKey: currentShapeKey, transform } });
+    const session = { source, transform, strokes: request.strokes, base: { shapeKey: currentShapeKey, transform } };
+    editSession.begin(session);
     setDraftNotice(null);
-    edit.enter(routeFromResponse(display.response), null);
+    edit.enter(routeFromResponse(display.response), null, placementOf(session));
   };
 
   const startReverify = () => {
@@ -260,12 +261,14 @@ export function Studio() {
     setDragging(false);
     editSession.begin(session);
     setDraftNotice(null);
-    edit.enter(draft.route, draft.id);
+    edit.enter(draft.route, draft.id, placementOf(session));
     void drafts.markOpened(draft.id);
   };
 
   // 刪掉正在編輯的那一份：結束微調，否則下一次存檔會把它重新建立回來
   const removeDraft = (draft: Draft) => {
+    // 先讓排隊中的存檔失效，再刪：否則它們會發現草稿不在了而重新建立
+    editSession.discardDraft(draft.id);
     if (edit.state?.draftId === draft.id) backToAuto();
     void drafts.remove(draft.id);
   };

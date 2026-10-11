@@ -1,7 +1,8 @@
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
-import { createEditSession, sessionFromDraft, type EditSession } from "@/lib/edit/edit-session";
+import { createRouteEditController } from "@/hooks/use-route-edit";
+import { createEditSession, placementOf, sessionFromDraft, type EditSession } from "@/lib/edit/edit-session";
 import type { EditOp } from "@/lib/edit/edit-state";
 import type { EditOutcome } from "@/lib/engine/client";
 import type { EditRequest } from "@/lib/engine/contract";
@@ -61,8 +62,8 @@ describe("createEditSession", () => {
   it("saveDraft：建立的草稿記 begin 當時的來源與擺放；之後 update 同一份", async () => {
     const { session, factory } = setup();
     session.begin(SESSION);
-    const id = await session.saveDraft(R0, null);
-    expect(await session.saveDraft({ ...R0, routeSig: "next" }, id)).toBe(id);
+    const id = await session.saveDraft(R0, null, placementOf(SESSION));
+    expect(await session.saveDraft({ ...R0, routeSig: "next" }, id, placementOf(SESSION))).toBe(id);
     const drafts = await (await openDraftDb(factory)).list();
     expect(drafts).toHaveLength(1);
     expect(drafts[0]).toMatchObject({ source: SESSION.source, transform: SESSION.transform, route: { routeSig: "next" } });
@@ -93,5 +94,50 @@ describe("sessionFromDraft", () => {
 
   it("來源不能成圖形：null", () => {
     expect(sessionFromDraft({ ...draft, source: { kind: "image", strokes: [] } })).toBeNull();
+  });
+});
+
+describe("排隊中的草稿存檔不會用到下一次微調的圖形與擺放", () => {
+  const SESSION_B: EditSession = {
+    ...SESSION,
+    source: { kind: "text", text: "B", font: "futural" },
+    transform: { center: [121.6, 25.1], sizeM: 3000, rotationDeg: 10 },
+  };
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  it("編輯成功後建立還在排隊（資料庫還沒開好），打開另一份草稿：建出來的是 A 的路線與 A 的圖形、擺放", async () => {
+    const factory = new IDBFactory();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const session = createEditSession({
+      openDb: async () => {
+        await gate;
+        return openDraftDb(factory);
+      },
+      requestPersist: async () => {},
+      notifyChanged: () => {},
+      onStatus: () => {},
+      post: async () => ({ ok: true, response: SAMPLE_EDIT_RESPONSE }),
+    });
+    const controller = createRouteEditController({
+      postEdit: session.postEdit,
+      saveDraft: session.saveDraft,
+      onChange: () => {},
+    });
+    session.begin(SESSION);
+    controller.enter(R0, null, placementOf(SESSION));
+    controller.selectTool("cut");
+    controller.pick({ segment: 0, offsetM: 10, point: [121.5, 25.03] });
+    await flush(); // 編輯成功，create 排隊中（卡在 openDb）
+    // 使用者在「我的路線」打開 B：begin 同步執行
+    session.begin(SESSION_B);
+    controller.enter(R0, "other", placementOf(SESSION_B));
+    release();
+    await flush();
+    const drafts = await (await openDraftDb(factory)).list();
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].route.routeSig).toBe(SAMPLE_EDIT_RESPONSE.route_sig);
+    expect(drafts[0].source).toEqual(SESSION.source);
+    expect(drafts[0].transform).toEqual(SESSION.transform);
   });
 });

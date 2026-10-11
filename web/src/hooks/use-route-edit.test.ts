@@ -9,6 +9,7 @@ import { STALE_DATA_MESSAGE, toEditOutcome } from "@/lib/edit/edit-bridge";
 import type { EditedRoute, EditOp, EditState, RoutePos } from "@/lib/edit/edit-state";
 import { postEdit as postEditRequest, type FetchLike } from "@/lib/engine/client";
 import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import type { DraftPlacement } from "@/lib/storage/drafts";
 
 function route(sig: string): EditedRoute {
   return {
@@ -20,6 +21,14 @@ function route(sig: string): EditedRoute {
   };
 }
 
+const PLACEMENT_A: DraftPlacement = {
+  source: { kind: "text", text: "A", font: "futural" },
+  transform: { center: [121.5, 25.03], sizeM: 2000, rotationDeg: 0 },
+};
+const PLACEMENT_B: DraftPlacement = {
+  source: { kind: "text", text: "B", font: "futural" },
+  transform: { center: [121.6, 25.1], sizeM: 3000, rotationDeg: 10 },
+};
 const R0 = route("sig-0");
 const R1 = route("sig-1");
 const R2 = route("sig-2");
@@ -40,16 +49,16 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function setup() {
   const edits: { op: EditOp; route: EditedRoute; signal: AbortSignal; reply: ReturnType<typeof deferred<EditOutcome>> }[] = [];
-  const saves: { route: EditedRoute; draftId: string | null; reply: ReturnType<typeof deferred<string | null>> }[] = [];
+  const saves: { route: EditedRoute; draftId: string | null; placement: DraftPlacement; reply: ReturnType<typeof deferred<string | null>> }[] = [];
   const changes: (EditState | null)[] = [];
   const postEdit: PostEdit = (op, r, signal) => {
     const reply = deferred<EditOutcome>();
     edits.push({ op, route: r, signal, reply });
     return reply.promise;
   };
-  const saveDraft: SaveDraft = (r, draftId) => {
+  const saveDraft: SaveDraft = (r, draftId, placement) => {
     const reply = deferred<string | null>();
-    saves.push({ route: r, draftId, reply });
+    saves.push({ route: r, draftId, placement, reply });
     return reply.promise;
   };
   const controller = createRouteEditController({ postEdit, saveDraft, onChange: (s) => changes.push(s) });
@@ -65,7 +74,7 @@ function cutOnce(t: ReturnType<typeof setup>, pos: RoutePos = P) {
 describe("createRouteEditController", () => {
   it("剪掉：點一下就送出目前的路線與 op；成功後換上新路線並建立草稿", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     expect(t.edits).toHaveLength(1);
     expect(t.edits[0].op).toEqual({ type: "cut", at: { segment: 0, offset_m: 12.5 } });
@@ -85,7 +94,7 @@ describe("createRouteEditController", () => {
 
   it("之後的編輯更新同一份草稿；前一次存檔還沒回來時等它（不會建出兩份）", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
@@ -102,9 +111,35 @@ describe("createRouteEditController", () => {
     ]);
   });
 
+  it("存檔排隊時打開了別的草稿：排隊的存檔仍用它自己那次微調的圖形與擺放，不是下一次的", async () => {
+    const t = setup();
+    t.controller.enter(R0, null, PLACEMENT_A);
+    cutOnce(t);
+    t.edits[0].reply.resolve({ ok: true, route: R1 });
+    await flush();
+    // 第一次存檔（建立）還沒回來，第二次編輯的存檔排在後面
+    cutOnce(t, Q);
+    t.edits[1].reply.resolve({ ok: true, route: R2 });
+    await flush();
+    t.controller.enter(R0, "d9", PLACEMENT_B);
+    t.saves[0].reply.resolve("d1");
+    await flush();
+    expect(t.saves.map((s) => [s.route, s.draftId, s.placement])).toEqual([
+      [R1, null, PLACEMENT_A],
+      [R2, "d1", PLACEMENT_A],
+    ]);
+    // 新的這次微調照樣用它自己的
+    cutOnce(t);
+    t.edits[2].reply.resolve({ ok: true, route: R1 });
+    await flush();
+    t.saves[1].reply.resolve("d1");
+    await flush();
+    expect(t.saves[2]).toMatchObject({ draftId: "d9", placement: PLACEMENT_B });
+  });
+
   it("打開的草稿：第一次編輯就更新它", async () => {
     const t = setup();
-    t.controller.enter(R0, "d9");
+    t.controller.enter(R0, "d9", PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
@@ -113,7 +148,7 @@ describe("createRouteEditController", () => {
 
   it("存檔失敗（丟例外或回 null）不影響路線，下一次照樣存", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
@@ -128,7 +163,7 @@ describe("createRouteEditController", () => {
 
   it("復原、重做後也存（草稿跟畫面上的路線一致）", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
@@ -149,7 +184,7 @@ describe("createRouteEditController", () => {
 
   it("引擎拒絕：保留原路線、顯示訊息、不存草稿", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: false, code: "nothing_to_cut", message: "這裡沒有圈可以剪" });
     await flush();
@@ -160,7 +195,7 @@ describe("createRouteEditController", () => {
 
   it("409 stale_data：保留原路線、顯示「路網已更新」、帶著錯誤碼讓介面提供重新驗證；不存草稿", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: false, code: "stale_data", message: STALE_DATA_MESSAGE });
     await flush();
@@ -196,7 +231,7 @@ describe("createRouteEditController", () => {
       saveDraft: async () => "d1",
       onChange: () => {},
     });
-    controller.enter(R0, null);
+    controller.enter(R0, null, PLACEMENT_A);
     for (const expected of [
       { errorCode: "stale_data", message: STALE_DATA_MESSAGE },
       { errorCode: "turn_not_rideable", message: "這個接點不能直騎" },
@@ -216,7 +251,7 @@ describe("createRouteEditController", () => {
 
   it("replaceRoute：換成新路線、abort 在途的請求、更新打開的草稿", async () => {
     const t = setup();
-    t.controller.enter(R0, "d9");
+    t.controller.enter(R0, "d9", PLACEMENT_A);
     cutOnce(t);
     t.controller.replaceRoute(R2, "sig-0");
     expect(t.edits[0].signal.aborted).toBe(true);
@@ -231,7 +266,7 @@ describe("createRouteEditController", () => {
 
   it("replaceRoute：還沒存過草稿的微調不會因為驗證而建立草稿；存過了（id 還沒回來）就接著存", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     t.controller.replaceRoute(R1, "sig-0");
     await flush();
     expect(t.saves).toHaveLength(0);
@@ -247,8 +282,8 @@ describe("createRouteEditController", () => {
 
   it("replaceRoute：目前的路線已經不是送去驗證的那條（打開了別的草稿）：不套用", async () => {
     const t = setup();
-    t.controller.enter(R0, "d9");
-    t.controller.enter(R1, "d8");
+    t.controller.enter(R0, "d9", PLACEMENT_A);
+    t.controller.enter(R1, "d8", PLACEMENT_A);
     t.controller.replaceRoute(R2, "sig-0");
     await flush();
     expect(t.state().history.present).toBe(R1);
@@ -257,7 +292,7 @@ describe("createRouteEditController", () => {
 
   it("replaceRoute：按了「完成」之後不做事", async () => {
     const t = setup();
-    t.controller.enter(R0, "d9");
+    t.controller.enter(R0, "d9", PLACEMENT_A);
     t.controller.finish();
     t.controller.replaceRoute(R2, "sig-0");
     await flush();
@@ -267,7 +302,7 @@ describe("createRouteEditController", () => {
 
   it("postEdit 丟例外時不會一直卡在等待中", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.reject(new TypeError("Failed to fetch"));
     await flush();
@@ -278,7 +313,7 @@ describe("createRouteEditController", () => {
 
   it("等待中不送新的操作、不能復原", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
@@ -291,7 +326,7 @@ describe("createRouteEditController", () => {
 
   it("重畫：兩個點之後選了模式才送出", () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     t.controller.selectTool("reroute");
     t.controller.pick(Q);
     t.controller.pick(P);
@@ -304,7 +339,7 @@ describe("createRouteEditController", () => {
 
   it("拖曳：放開就送出", () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     t.controller.selectTool("drag");
     t.controller.drag(P, [121.6, 25.1]);
     expect(t.edits.map((e) => e.op)).toEqual([{ type: "drag", grab: { segment: 0, offset_m: 12.5 }, to: [121.6, 25.1] }]);
@@ -312,7 +347,7 @@ describe("createRouteEditController", () => {
 
   it("完成（離開微調）時 abort 在途的請求，晚到的結果不套用；路線留著，回到微調可以接著做", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.controller.finish();
     expect(t.edits[0].signal.aborted).toBe(true);
@@ -330,7 +365,7 @@ describe("createRouteEditController", () => {
 
   it("等待中按 Esc：abort 請求，晚到的結果不套用", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.controller.cancel();
     expect(t.edits[0].signal.aborted).toBe(true);
@@ -342,7 +377,7 @@ describe("createRouteEditController", () => {
 
   it("Esc 後馬上送新的操作：舊請求在新請求等待中才回來，也不會被當成新請求的結果", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.controller.cancel();
     t.controller.pick(Q);
@@ -359,7 +394,7 @@ describe("createRouteEditController", () => {
 
   it("reset（圖形移動、回到自動吸附）：abort 在途的請求、清掉狀態", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.controller.reset();
     expect(t.edits[0].signal.aborted).toBe(true);
@@ -371,11 +406,11 @@ describe("createRouteEditController", () => {
 
   it("重新進入別的路線：上一次的草稿 id 晚到也不會套到這一次", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();
-    t.controller.enter(R2, null);
+    t.controller.enter(R2, null, PLACEMENT_A);
     t.saves[0].reply.resolve("d1");
     await flush();
     expect(t.state().draftId).toBeNull();
@@ -384,7 +419,7 @@ describe("createRouteEditController", () => {
 
   it("卸載（dispose）：abort 在途的請求，之後的結果與存檔都不再通知", async () => {
     const t = setup();
-    t.controller.enter(R0, null);
+    t.controller.enter(R0, null, PLACEMENT_A);
     cutOnce(t);
     t.edits[0].reply.resolve({ ok: true, route: R1 });
     await flush();

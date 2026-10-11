@@ -4,7 +4,7 @@ import { toEditOutcome, toEditRequest } from "@/lib/edit/edit-bridge";
 import { postEdit as postEditRequest, type EditOutcome as ClientEditOutcome } from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
 import { buildMatchRequest } from "@/lib/match/request";
-import type { Draft, DraftDb } from "@/lib/storage/drafts";
+import type { Draft, DraftDb, DraftPlacement } from "@/lib/storage/drafts";
 import type { SavedSource } from "@/lib/storage/work";
 import type { Transform } from "@/lib/shape/transform";
 import type { EditBase } from "@/lib/studio/edit-view";
@@ -17,8 +17,9 @@ const NOT_STARTED_MESSAGE = "微調失敗，請再試一次";
 
 /**
  * 目前這次微調要用的東西，包成 useRouteEdit 要的 postEdit 與 saveDraft：
- * /edit 帶的原圖與草稿記的來源、擺放都取自 begin 當時（微調中圖形鎖住，所以就是畫面上的）。
- * begin 之後不清掉：圖形被移動而結束微調時，還沒寫完的存檔仍要用它的來源與擺放；下一次 begin 才換掉。
+ * /edit 帶的原圖取自 begin 當時（postEdit 在操作送出的當下同步讀，那時一定是這次微調的）。
+ * 草稿記的來源與擺放不在這裡讀：排隊中的存檔會晚於下一次 begin（使用者打開了別的草稿），
+ * 所以由 controller 在 enter 時綁定（placementOf(session)），隨每次存檔帶進來。
  */
 export function createEditSession(deps: {
   openDb: () => Promise<DraftDb>;
@@ -33,23 +34,21 @@ export function createEditSession(deps: {
   strokes: () => MatchRequest["strokes"] | null;
   postEdit: PostEdit;
   saveDraft: SaveDraft;
+  /** 使用者刪掉了這份草稿：排隊中與之後的存檔都不做（見 DraftSaver.discard）。 */
+  discardDraft: (id: string) => void;
 } {
   const { post = postEditRequest } = deps;
   let current: EditSession | null = null;
   // 資料庫只開一次；打不開就下一次再試
   let db: Promise<DraftDb> | null = null;
 
-  const saveDraft = createDraftSaver({
+  const saver = createDraftSaver({
     openDb: () => {
       db ??= deps.openDb().catch((error: unknown) => {
         db = null;
         throw error;
       });
       return db;
-    },
-    placement: () => {
-      if (!current) throw new Error("沒有進行中的微調");
-      return { source: current.source, transform: current.transform };
     },
     requestPersist: deps.requestPersist,
     notifyChanged: deps.notifyChanged,
@@ -68,8 +67,14 @@ export function createEditSession(deps: {
     base: () => current?.base ?? null,
     strokes: () => current?.strokes ?? null,
     postEdit,
-    saveDraft,
+    saveDraft: saver.save,
+    discardDraft: saver.discard,
   };
+}
+
+/** 這次微調要記進草稿的圖形來源與擺放（給 enter）。 */
+export function placementOf(session: Pick<EditSession, "source" | "transform">): DraftPlacement {
+  return { source: session.source, transform: session.transform };
 }
 
 /**

@@ -15,19 +15,23 @@ import {
   type RerouteMode,
   type RoutePos,
 } from "@/lib/edit/edit-state";
+import type { DraftPlacement } from "@/lib/storage/drafts";
 import type { LonLat } from "@/lib/shape/types";
 
 export type EditOutcome = { ok: true; route: EditedRoute } | { ok: false; code: string; message: string };
 /** 送一個操作給引擎 /edit；signal 被 abort 時結果一律不套用。 */
 export type PostEdit = (op: EditOp, route: EditedRoute, signal: AbortSignal) => Promise<EditOutcome>;
-/** draftId 為 null 時建立草稿，否則更新它；回傳草稿 id，存不了時回 null。 */
-export type SaveDraft = (route: EditedRoute, draftId: string | null) => Promise<string | null>;
+/**
+ * draftId 為 null 時建立草稿（記 placement），否則更新它；回傳草稿 id，存不了時回 null。
+ * placement 是進入這次微調時綁定的：存檔排隊的時候使用者可能已經打開了別的草稿，不能讀「現在」的。
+ */
+export type SaveDraft = (route: EditedRoute, draftId: string | null, placement: DraftPlacement) => Promise<string | null>;
 
 const UNEXPECTED_MESSAGE = "微調失敗，請再試一次";
 
 export type RouteEditActions = {
-  /** 開始新的微調（自動吸附的路線：draftId 為 null；打開的草稿：帶它的 id）。 */
-  enter(route: EditedRoute, draftId: string | null): void;
+  /** 開始新的微調（自動吸附的路線：draftId 為 null；打開的草稿：帶它的 id）；placement 是這條路線對應的圖形來源與擺放。 */
+  enter(route: EditedRoute, draftId: string | null, placement: DraftPlacement): void;
   /** 「完成」之後回到同一個微調，復原的紀錄還在。 */
   resume(): void;
   /** 「完成」：取消在途的請求，路線留著但不收操作。 */
@@ -71,7 +75,7 @@ export function createRouteEditController(deps: {
   let state: EditState | null = null;
   let inflight: AbortController | null = null;
   // 每次 enter 一個新的草稿紀錄：上一次微調的存檔晚到時，id 只記回它自己那一次
-  let draft: { id: string | null; saved: boolean } | null = null;
+  let draft: { id: string | null; saved: boolean; placement: DraftPlacement } | null = null;
   let saving: Promise<void> = Promise.resolve();
   let disposed = false;
 
@@ -96,7 +100,7 @@ export function createRouteEditController(deps: {
     target.saved = true;
     saving = saving.then(async () => {
       try {
-        const id = await deps.saveDraft(route, target.id);
+        const id = await deps.saveDraft(route, target.id, target.placement);
         if (id === null) return;
         target.id = id;
         if (target === draft) dispatch({ type: "setDraftId", draftId: id });
@@ -141,10 +145,10 @@ export function createRouteEditController(deps: {
 
   return {
     getState: () => state,
-    enter(route, draftId) {
+    enter(route, draftId, placement) {
       if (disposed) return;
       abortInflight();
-      draft = { id: draftId, saved: false };
+      draft = { id: draftId, saved: false, placement };
       set(startEdit(route, draftId));
     },
     resume: () => dispatch({ type: "resume" }),
@@ -211,7 +215,7 @@ export function useRouteEdit(deps: { postEdit: PostEdit; saveDraft: SaveDraft })
   useEffect(() => {
     const controller = createRouteEditController({
       postEdit: (op, route, signal) => depsRef.current.postEdit(op, route, signal),
-      saveDraft: (route, draftId) => depsRef.current.saveDraft(route, draftId),
+      saveDraft: (route, draftId, placement) => depsRef.current.saveDraft(route, draftId, placement),
       onChange: setState,
     });
     controllerRef.current = controller;
@@ -223,7 +227,7 @@ export function useRouteEdit(deps: { postEdit: PostEdit; saveDraft: SaveDraft })
 
   const actions = useMemo<RouteEditActions>(
     () => ({
-      enter: (route, draftId) => controllerRef.current?.enter(route, draftId),
+      enter: (route, draftId, placement) => controllerRef.current?.enter(route, draftId, placement),
       resume: () => controllerRef.current?.resume(),
       finish: () => controllerRef.current?.finish(),
       reset: () => controllerRef.current?.reset(),

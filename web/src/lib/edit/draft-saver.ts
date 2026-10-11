@@ -1,14 +1,12 @@
 import type { SaveDraft } from "@/hooks/use-route-edit";
 import type { EditedRoute } from "@/lib/edit/edit-state";
-import type { DraftDb, DraftInput } from "@/lib/storage/drafts";
+import type { DraftDb, DraftPlacement } from "@/lib/storage/drafts";
 
 /** saved：存好了；over_limit：存好了但草稿超過上限（請使用者刪幾份）；failed：存不了（草稿沒跟上畫面）。 */
 export type DraftSaveStatus = "saved" | "over_limit" | "failed";
 
 export type DraftSaverDeps = {
   openDb: () => Promise<DraftDb>;
-  /** 建立草稿時要記的圖形來源與擺放（微調中圖形鎖住，所以建立當下讀就是進入微調時的）。 */
-  placement: () => Pick<DraftInput, "source" | "transform">;
   now?: () => number;
   requestPersist: () => Promise<void>;
   /** 每次存完（不論結果）通知其他分頁。 */
@@ -16,32 +14,46 @@ export type DraftSaverDeps = {
   onStatus: (status: DraftSaveStatus) => void;
 };
 
+export type DraftSaver = {
+  save: SaveDraft;
+  /**
+   * 使用者刪掉了這份草稿：之後（含已經排隊的）對它的存檔一律不做。
+   * 沒有這個，排隊中的 update 會發現草稿不在了而重新建立，把剛刪的救回來。
+   */
+  discard: (id: string) => void;
+};
+
 /**
- * 微調的草稿存檔（給 useRouteEdit 的 saveDraft）：沒有 id 就 create，有就 update；update 找不到（在別的分頁被刪了）
- * 就重新建立，使用者剛做的修改不能消失。第一次存時請瀏覽器保留資料（不等它：Firefox 會跳詢問）。
+ * 微調的草稿存檔（給 useRouteEdit 的 saveDraft）：沒有 id 就 create（記呼叫端給的 placement），有就 update；
+ * update 找不到——草稿在別的分頁被刪了——就重新建立，使用者剛做的修改不能消失；
+ * 但被使用者自己刪掉的（discard）不重建、不復活。第一次存時請瀏覽器保留資料（不等它：Firefox 會跳詢問）。
  * 存不了時回報 failed 並回 null，不丟例外：微調本身不受影響，下一次路線變了會再存。
  */
-export function createDraftSaver(deps: DraftSaverDeps): SaveDraft {
-  const { openDb, placement, requestPersist, notifyChanged, onStatus, now = Date.now } = deps;
+export function createDraftSaver(deps: DraftSaverDeps): DraftSaver {
+  const { openDb, requestPersist, notifyChanged, onStatus, now = Date.now } = deps;
   let persistRequested = false;
+  const discarded = new Set<string>();
 
-  const create = async (route: EditedRoute) => {
+  const create = async (route: EditedRoute, placement: DraftPlacement) => {
     const db = await openDb();
-    const { draft, overLimit } = await db.create({ ...placement(), route }, now());
+    const { draft, overLimit } = await db.create({ ...placement, route }, now());
     onStatus(overLimit ? "over_limit" : "saved");
     return draft.id;
   };
 
-  return async (route, draftId) => {
+  const save: SaveDraft = async (route, draftId, placement) => {
     try {
       if (!persistRequested) {
         persistRequested = true;
         void requestPersist();
       }
-      if (draftId === null) return await create(route);
+      if (draftId === null) return await create(route, placement);
+      if (discarded.has(draftId)) return null;
       const db = await openDb();
+      // openDb 等待的時候使用者可能剛好刪了它
+      if (discarded.has(draftId)) return null;
       const updated = await db.update(draftId, route, now());
-      if (updated === null) return await create(route);
+      if (updated === null) return discarded.has(draftId) ? null : await create(route, placement);
       onStatus("saved");
       return draftId;
     } catch {
@@ -51,4 +63,6 @@ export function createDraftSaver(deps: DraftSaverDeps): SaveDraft {
       notifyChanged();
     }
   };
+
+  return { save, discard: (id) => void discarded.add(id) };
 }

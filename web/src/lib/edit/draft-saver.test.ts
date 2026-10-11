@@ -27,33 +27,33 @@ beforeEach(async () => {
   clock = 1000;
 });
 
-const saver = (openDb: () => Promise<DraftDb> = async () => db) =>
+const saverOf = (openDb: () => Promise<DraftDb> = async () => db) =>
   createDraftSaver({
     openDb,
-    placement: () => PLACEMENT,
     now: () => clock++,
     requestPersist: persist,
     notifyChanged: notify,
     onStatus: (s) => statuses.push(s),
   });
+const saver = (openDb?: () => Promise<DraftDb>) => saverOf(openDb).save;
 
 describe("createDraftSaver", () => {
   it("第一次存建立草稿（帶圖形來源與擺放），之後同一個 id 更新", async () => {
     const save = saver();
-    const id = await save(R1, null);
+    const id = await save(R1, null, PLACEMENT);
     expect(id).not.toBeNull();
     expect((await db.get(id!))?.route).toEqual(R1);
     expect((await db.get(id!))?.source).toEqual(PLACEMENT.source);
     expect((await db.get(id!))?.transform).toEqual(PLACEMENT.transform);
-    expect(await save(R2, id)).toBe(id);
+    expect(await save(R2, id, PLACEMENT)).toBe(id);
     expect((await db.list()).map((d) => d.route.routeSig)).toEqual(["sig-2"]);
     expect(statuses).toEqual(["saved", "saved"]);
   });
 
   it("requestPersist 只在第一次存時呼叫；每次存完都通知其他分頁", async () => {
     const save = saver();
-    const id = await save(R1, null);
-    await save(R2, id);
+    const id = await save(R1, null, PLACEMENT);
+    await save(R2, id, PLACEMENT);
     expect(persist).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledTimes(2);
   });
@@ -63,7 +63,7 @@ describe("createDraftSaver", () => {
       const { draft } = await db.create({ ...PLACEMENT, route: R0 }, i);
       await db.markOpened(draft.id, i);
     }
-    const id = await saver()(R1, null);
+    const id = await saver()(R1, null, PLACEMENT);
     expect(id).not.toBeNull();
     expect(await db.list()).toHaveLength(DRAFT_LIMIT + 1);
     expect(statuses).toEqual(["over_limit"]);
@@ -71,9 +71,9 @@ describe("createDraftSaver", () => {
 
   it("update 時草稿已經被刪了（另一個分頁）：重新建立，回新的 id", async () => {
     const save = saver();
-    const id = await save(R1, null);
+    const id = await save(R1, null, PLACEMENT);
     await db.remove(id!);
-    const next = await save(R2, id);
+    const next = await save(R2, id, PLACEMENT);
     expect(next).not.toBeNull();
     expect(next).not.toBe(id);
     expect((await db.get(next!))?.route.routeSig).toBe("sig-2");
@@ -83,8 +83,80 @@ describe("createDraftSaver", () => {
     const save = saver(async () => {
       throw new Error("indexedDB 不可用");
     });
-    await expect(save(R1, null)).resolves.toBeNull();
+    await expect(save(R1, null, PLACEMENT)).resolves.toBeNull();
     expect(statuses).toEqual(["failed"]);
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("建立時記的是呼叫端給的 placement（不是別的地方「現在」的）", async () => {
+    const other: DraftInput["source"] = { kind: "text", text: "B", font: "futural" };
+    const id = await saver()(R1, null, { ...PLACEMENT, source: other });
+    expect((await db.get(id!))?.source).toEqual(other);
+  });
+
+  it("被別的分頁刪除：update 找不到就重建（修改不消失）", async () => {
+    const s = saverOf();
+    const id = await s.save(R1, null, PLACEMENT);
+    await db.remove(id!);
+    const next = await s.save(R2, id, PLACEMENT);
+    expect(next).not.toBeNull();
+    expect((await db.list()).map((d) => d.route.routeSig)).toEqual(["sig-2"]);
+  });
+
+  it("被使用者刪除（discard）：之後的存檔不做，不重建、不復活", async () => {
+    const s = saverOf();
+    const id = await s.save(R1, null, PLACEMENT);
+    s.discard(id!);
+    await db.remove(id!);
+    expect(await s.save(R2, id, PLACEMENT)).toBeNull();
+    expect(await db.list()).toEqual([]);
+  });
+
+  it("使用者刪除時 update 已經排在等資料庫打開：醒來後不寫（草稿維持刪除前的內容）", async () => {
+    const s = saverOf();
+    const id = await s.save(R1, null, PLACEMENT);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow = createDraftSaver({
+      openDb: async () => {
+        await gate;
+        return db;
+      },
+      requestPersist: persist,
+      notifyChanged: notify,
+      onStatus: (x) => statuses.push(x),
+    });
+    const pending = slow.save(R2, id, PLACEMENT);
+    slow.discard(id!);
+    release();
+    expect(await pending).toBeNull();
+    expect((await db.get(id!))?.route.routeSig).toBe("sig-1");
+  });
+
+  it("使用者在 update 進行中刪除，update 找不到草稿：不重建", async () => {
+    const real = saverOf();
+    const id = await real.save(R1, null, PLACEMENT);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const racing: DraftDb = {
+      ...db,
+      update: async () => {
+        await gate;
+        return null; // 這時草稿已經被刪了
+      },
+    };
+    const s = createDraftSaver({
+      openDb: async () => racing,
+      requestPersist: persist,
+      notifyChanged: notify,
+      onStatus: (x) => statuses.push(x),
+    });
+    const pending = s.save(R2, id, PLACEMENT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    s.discard(id!);
+    await db.remove(id!);
+    release();
+    expect(await pending).toBeNull();
+    expect(await db.list()).toEqual([]);
   });
 });
