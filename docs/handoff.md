@@ -11,8 +11,15 @@
   - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。
   - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。`/status` 的 `search_ready`、`planner_ready` 都是 true。
   - 路網 build `20261011T095232Z`（有可騎路網圖），回滾用 `20261011T040535Z`。
+- **PR C**（分支 `claude/route-editing-engine`）：手動微調引擎。`POST /edit`（剪掉、重畫、拖曳）、`POST /verify`（舊路網草稿重新檢查）、`route_sig`（整條路線一個 HMAC 簽章，金鑰 `/data/edit-key`）、`matching/safety.py` 與 `matching/replay.py`（bench 與 `/verify` 共用）。**尚未部署、未在真實路網上驗證**（雲端連不到 m1）；決定見主 spec §8 第 62 列。PR D（網站）要先 merge 此分支才能做 D3 以後。
+  - 本機待辦：
+    1. 部署：引擎先、網站後（新欄位與新端點都是只增加）。
+    2. `heart@taipei_daan` 剪右側繞路要多久（剪掉不套用圈長上限、不限次數，只受 5 秒期限）。
+    3. 每個 bench 案例都拖曳一次，量時間，並確認 200 m 的拖曳範圍合不合適（spec §3.3）。
+    4. 用 m1 的兩個 build 驗 `/verify`：舊 build 的路線在新 build 上的誤報率與耗時。`same_geometry` 是 O(n·m) 的純 Python，長 edge 可能超過 15 秒而回 504（`docs/backlog.md`）。
+    5. `/verify` 與 `/match`（與 `/edit`）共用 `Semaphore(1)`：`/verify` 進行期間（最長 15 秒）`/match` 會排隊，要實測影響。
 - 下一步：
-  1. 使用者審手動微調的 spec（`docs/superpowers/specs/2026-10-11-route-editing-design.md`，主 spec §8 第 56–58 列），同意後寫實作計畫（PR C 引擎 `/edit`、`/verify`，PR D 網站）。
+  1. 手動微調 PR D（網站）；PR C 的本機待辦見上。spec：`docs/superpowers/specs/2026-10-11-route-editing-design.md`（主 spec §8 第 56–58、62 列）；計畫：`docs/superpowers/plans/2026-10-11-route-editing.md`。
   2. Q4（P2.5 spec §7）：含嘗試性的「長直線優先」（§7.4，要盲測驗收）。規劃器的問題（折回的 detour、細碎階梯、河濱變長、退回 fast 的比例沒量）先查，見 `docs/backlog.md`。
 - P3（每週重建、rate limiting、公開）排在 P2.5 之後。
 

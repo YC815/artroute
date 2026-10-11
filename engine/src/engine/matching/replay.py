@@ -1,7 +1,7 @@
 """合法重現：edge_walk 把折線配到禁行／逆向的 way 時，確認同一段幾何是不是可以合法地騎。
 
 edge_walk 在兩條 way 共用同一段幾何時可能配錯 way（例如 footway 與 cycleway 完全重疊，配到 traversability: none 的
-footway），safety_problem 因此誤報。不能用 map_snap 複查：它遵守通行權，永遠不會判出逆向，複查等於空洞。
+footway），bench 的 safety_problem 與 /verify 因此誤報。不能用 map_snap 複查：它遵守通行權，永遠不會判出逆向，複查等於空洞。
 這裡的做法是把被判違規的那條 edge 在折線上的範圍取出來，用 router.route（bicycle，遵守單行與禁行）規劃一次：
 合法的路線若與該段折線在幾何上完全重合，這段幾何就能合法騎，違規是 edge_walk 配錯 way。真的逆向時，
 合法路線必須繞路（或失敗），對不上折線。重現不了一律算不安全。

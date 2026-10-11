@@ -1,4 +1,4 @@
-"""bench 安全斷言的「合法重現」（bench.replay）：edge_walk 在兩條 way 共用同一段幾何時可能配錯 way，
+"""bench 安全斷言的「合法重現」（matching.replay）：edge_walk 在兩條 way 共用同一段幾何時可能配錯 way，
 被判禁行或逆向的 edge 用遵守通行權的 router.route 重現同一段幾何，重現得出來才豁免，其餘一律算不安全。
 
 單元測試用假 router（座標是東西向的公尺，meter_point）；真實 Valhalla 測試用合成地圖：
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.bench.replay import legal_replay, same_geometry
+from engine.matching.replay import legal_replay, same_geometry
 from engine.bench.runner import UNDETERMINED, UNSAFE, safety_problem
 from engine.matching.types import Segment
 from engine.routing.router import EdgeInfo, RouteResult, Router, RoutingError, _align_shape, _edge_span

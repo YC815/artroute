@@ -234,6 +234,17 @@ type Shape = { strokes: Stroke[]; kind: "text" | "image" }
 - 排序：公里數合格的在前，依 overall；不合格的依離範圍多遠、再依 overall；最後看起點離圓心多近。沒有合格的就回最接近的並附 `notice`。
 - 引擎的 OpenAPI 把各事件的 schema 放在 components（`SearchQueued`…`SearchFailed`），web 自己組成 union 並用 zod 驗證；未知的事件類型略過（向前相容）。
 
+#### 手動微調新增
+
+設計見 `docs/superpowers/specs/2026-10-11-route-editing-design.md` §3。
+
+
+- `/match` 回應與 `/search` 每個候選的 `match` 多 `route_sig`：伺服器金鑰（`/data/edit-key`，32 bytes，啟動時建立）對「`data_version` ＋依序的每段（種類、筆畫序號、長度、點）」算的 HMAC-SHA256（hex）。`segments[].kind` 多 `"edit"`（只有微調的回應會有）。只增加欄位，舊網站不受影響。
+- `POST /edit`：請求 `{ segments, data_version, route_sig, strokes, op }`，`segments`、`data_version`、`route_sig` 是上一次回應原封不動帶回來，`strokes` 同 `/match`；`op` 是 `{type:"cut", at}`、`{type:"reroute", from, to, mode:"shortest"|"shape"}`、`{type:"drag", grab, to:[lon,lat]}`，位置 `{segment, offset_m}`（第幾段、從該段起點沿折線量的公尺數）。回應與 `/match` 200 同形（`warnings` 一律空、`route_sig` 是新路線的簽章）。
+- 錯誤（都只有 `detail`，不回半成品）：`409 stale_data`（`data_version` 不是目前的路網）、`422 invalid_route`（簽章不對）、`422` 操作做不到（`not_on_route`、`nothing_to_cut`、`no_route`、`turn_not_rideable`、`no_road`，附繁中說明）、`422 too_small`（`strokes` 太小量不出分數）、請求格式錯誤（陣列）、`503 no_data`、`504 timeout`（`match_timeout_s`，預設 5 秒，與 `/match` 共用名額與斷線取消）。順序固定：版本 → 簽章 → 操作。
+- `POST /verify`：請求 `{ segments, data_version, route_sig, strokes }`（`data_version` 可以是舊的，簽章仍用同一把金鑰驗）。簽章不對 → `422 invalid_route`；`data_version` 就是目前的路網 → 直接回 200（分數重算、簽章不變）；不同 → 在目前的路網上逐段檢查（缺口、禁行的 way、逆向、判斷不了都算有問題，與 bench 的安全斷言同一套，`engine/src/engine/matching/safety.py`），再查每個接點的轉彎，全部通過才以目前的版本重新簽章回 200；沒過 → `422 verify_failed`，`detail.segments` 是有問題的段落序號（接點有問題時兩側都列），不回半成品。期限 `verify_timeout_s`（預設 15 秒，`504 timeout`），與 `/match` 共用名額與斷線取消。
+- `ErrorDetail` 多 `segments: int[] | null`（只有 `/verify` 的 `verify_failed` 會帶）。
+
 ### 4.6 自動搜尋（engine）
 
 **輸入**：正規化圖形、中心點、半徑 R（300 m–10 km）、最小／最大公里數、旋轉範圍（網站預設：文字 ±15°、圖片不限，使用者可以調整）。契約見 §4.7。程式：`engine/src/engine/search/`。
@@ -470,4 +481,5 @@ m1、同一份 pbf（build `20261010T183449Z`）上建 scratch build（不啟用
 | # | 修訂 | 理由 | 被否決的替代方案 |
 |---|---|---|---|
 | 60 | 取代第 52 列的「fine 回來就換上」：`planner_ready` 時兩版都算（fine 照舊在放開後背景送），資訊面板「快速版／描形版」切換、各自標整體貼合度；預設快速版，使用者的選擇存 localStorage；描形版計算中或失敗時顯示快速版（偏好不變）；地圖、分數、警告、GPX 都用目前顯示的那一版（使用者決定兩版都留、可切換；預設與記住偏好是依最佳實踐） | 第二輪盲測 F 沒過門檻（有表態 8 組裡選 F 3 組），v3 也是 fine 19 差 3 好；但使用者看並排圖後指出有的案例 fine 好很多（`letter_l@taipei_daan`），有的 fast 好（`hi@kaohsiung_lingya`）。v3 與使用者只有 6/10 一致，不能拿它自動挑。預設跟著盲測多數；記住偏好讓偏好描形版的人不必每次切 | 照第 52 列 fine 一律取代 fast：盲測是輸的。只留 fast、不部署網站：丟掉使用者覺得好很多的案例。用 v3 自動挑高分的那一版：v3 與使用者的一致率不夠 |
-| 61 | bench 安全斷言的「合法重現」（`bench/replay.py`）：edge_walk 判成禁行或逆向的 edge，取它在折線上的範圍（`edge.begin/end_shape_index`，回應形狀與輸入逐點 ≤ 5 m 才換算，否則不給範圍），用 `route` 規劃，與那段折線雙向 ≤ 1 m（兩條都 0.5 m 密採樣、量點到線段）、長度差 ≤ 1 m、重現路線不經過禁行的 way 才豁免；重現不出來時範圍前後各擴一點再試，最多 3 次；範圍缺漏、`route` 失敗、擴到上限都照舊算不安全；判斷不了方向仍是 UNDETERMINED | 真實路網兩處誤報都是 edge_walk 在共用幾何的 way 之間配錯（重疊的 footway、與自行車道共用節點的單行道，findings §4.5）；安全斷言誤報會讓合法的路線不進盲測、搜尋 bench 判不合格。`route` 遵守單行與禁行，真的逆向時一定要繞路、重現不了；擴大後整段都被合法路線重合，被判違規的那一小段也在合法的幾何上。重現路線不查方向：它本身遵守單行，對它的逆向判定只可能是 edge_walk 又配錯；只查禁行是因為未修補的路網上 `route` 會走快速道路 | 用 map_snap 複查：它遵守通行權，永遠判不出逆向，複查是空洞的。放寬成「同一處有任何可以騎的 way 就算過」：要自己判斷方向，等於重寫 Valhalla 的規則。不修、人工排除：每次 bench 都要人看 |
+| 61 | bench 安全斷言的「合法重現」（`matching/replay.py`，原在 `bench/`，第 62 列搬到 `matching/` 讓 `/verify` 共用）：edge_walk 判成禁行或逆向的 edge，取它在折線上的範圍（`edge.begin/end_shape_index`，回應形狀與輸入逐點 ≤ 5 m 才換算，否則不給範圍），用 `route` 規劃，與那段折線雙向 ≤ 1 m（兩條都 0.5 m 密採樣、量點到線段）、長度差 ≤ 1 m、重現路線不經過禁行的 way 才豁免；重現不出來時範圍前後各擴一點再試，最多 3 次；範圍缺漏、`route` 失敗、擴到上限都照舊算不安全；判斷不了方向仍是 UNDETERMINED | 真實路網兩處誤報都是 edge_walk 在共用幾何的 way 之間配錯（重疊的 footway、與自行車道共用節點的單行道，findings §4.5）；安全斷言誤報會讓合法的路線不進盲測、搜尋 bench 判不合格。`route` 遵守單行與禁行，真的逆向時一定要繞路、重現不了；擴大後整段都被合法路線重合，被判違規的那一小段也在合法的幾何上。重現路線不查方向：它本身遵守單行，對它的逆向判定只可能是 edge_walk 又配錯；只查禁行是因為未修補的路網上 `route` 會走快速道路 | 用 map_snap 複查：它遵守通行權，永遠判不出逆向，複查是空洞的。放寬成「同一處有任何可以騎的 way 就算過」：要自己判斷方向，等於重寫 Valhalla 的規則。不修、人工排除：每次 bench 都要人看 |
+| 62 | 手動微調引擎（route editing spec §3）的實作決定：① 剪掉找不到圈就回 `nothing_to_cut`，不做「`detour` 段兩端接最短路」的退路；② 金鑰在 lifespan 啟動時建立，建法是「暫存檔寫完整＋`os.link`」；③ 簽章也涵蓋 `length_m`（量化到 mm）；④ 拖曳的 Valhalla 失敗一律 `no_road`；⑤ `/verify` 期限 15 秒（`/edit` 5 秒）；⑥ `/edit` 的 responses 不列 400；⑦ `/edit`、`/verify` 在 `strokes` 太小時回 `422 too_small`；⑧ `/verify` 讀不到禁行清單回 `503 no_data`；⑨ 合法重現與安全檢查搬到 `matching/`（`replay.py`、`safety.py`），bench 的 `safety_problem` 與 `/verify` 共用 | ① `detour` 段本來就是兩端之間的最短 route（`try_route` 一律 `shortest=True`），換成最短路結果相同。② 模組層 `app = create_app(...)` 在沒有 `/data` 的機器 import 會炸，所以不在 `create_app` 內建；只用 `O_EXCL` 時別的 worker 可能在內容寫完前讀到空檔，先寫完暫存檔再 `os.link`（目標已存在就失敗、改讀）一定讀到完整的 32 bytes。③ 不簽的話客戶端能改 `length_m`。④ Valhalla 的錯誤分不出是放開位置附近沒有路，還是接不回原路線。⑤ `/verify` 要對每段做 `trace_attributes`，長路線 5 秒不夠。⑥ `/edit` 不檢查台灣範圍，不可能回 400，列了是假文件。⑦ `strokes` 不簽，不擋的話客戶端能送退化的圖讓 `score()` 噴 500。⑧ 判斷不了就不放行。⑨ 禁行與逆向的判定只有一套，兩邊不會各改各的 | ① 退路：結果相同、徒增程式。② 在 `create_app` 內建：import 即炸。只用 `O_EXCL`：讀到空檔。每次重新驗證不用簽章：慢，且 `edge_walk` 在共用幾何的 way 之間會配錯、誤判逆向。④ 分成兩種錯誤碼：Valhalla 分不出來，只能猜。⑨ `/verify` 另寫一份檢查：兩份規則遲早分歧 |

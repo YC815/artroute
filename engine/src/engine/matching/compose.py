@@ -64,7 +64,7 @@ def flat(segments: list[Segment]) -> list[Pos]:
 
 def route_points(segments: list[Segment]) -> list[LonLat]:
     """攤平成一條折線（flat 的點），不留零長度的一步（connector 可能有 3 個點卻只有 2 個不同）。
-    後一段的第一點會被丟掉，所以輸出前必須先確認相鄰段落相接（service._check_continuous）。"""
+    後一段的第一點會被丟掉，所以輸出前必須先確認相鄰段落相接（service.check_continuous）。"""
     points = [p.point for p in flat(segments)]
     return [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
 
