@@ -685,11 +685,51 @@ def _merge_ranges(ranges: list[_Range]) -> list[_Range]:
     return out
 
 
+@dataclass(frozen=True)
+class _Scale:
+    arrays: list[np.ndarray]  # 每個筆畫的 (n, 2) 經緯度
+    low: np.ndarray  # 外框的 (min_lon, min_lat)
+    high: np.ndarray  # 外框的 (max_lon, max_lat)
+    origin: tuple[float, float]  # 外框中心（局部平面的原點）
+    size: float  # L：外框長邊（公尺）
+    delta: float  # Δ：取樣間距
+    radius: float  # R：候選半徑
+
+
+def _scale(strokes: list[list[LonLat]], weights: PlannerWeights) -> _Scale:
+    """所有筆畫的外框與由它決定的尺寸（L、Δ、R）：plan_shape 與 region_bounds 共用，兩邊的算法只有這一份。"""
+    arrays = [np.asarray(s, dtype=np.float64).reshape(-1, 2) for s in strokes]
+    every = np.vstack(arrays) if any(len(a) for a in arrays) else np.zeros((1, 2))
+    low, high = every.min(axis=0), every.max(axis=0)
+    origin = (float(low[0] + high[0]) / 2, float(low[1] + high[1]) / 2)
+    extent = _to_local(origin, np.vstack([low, high]))
+    size = float(max(extent[1] - extent[0]))
+    delta = min(max(weights.sample_fraction * size, weights.min_sample_m), weights.max_sample_m)
+    radius = max(min(weights.candidate_fraction * size, weights.max_candidate_m), 1.0)
+    return _Scale(arrays, low, high, origin, size, delta, radius)
+
+
+def region_bounds(strokes: list[list[LonLat]],
+                  weights: PlannerWeights = PlannerWeights()) -> tuple[float, float, float, float]:
+    """plan_shape 需要的 region 範圍 (min_lon, min_lat, max_lon, max_lat)：目標外框往外擴 R + 4Δ
+    （候選最遠在 R 外，轉移的 Dijkstra 從候選所在的邊再走最多 transition_limit × Δ）。
+
+    經度方向用外框裡離赤道最遠的緯度換算（那裡一度經度最短），保守。
+    """
+    s = _scale(strokes, weights)
+    margin = s.radius + weights.transition_limit * s.delta
+    margin_lat = math.degrees(margin / EARTH_RADIUS_M)
+    far_lat = min(max(abs(float(s.low[1])), abs(float(s.high[1]))) + margin_lat, 89.0)
+    margin_lon = margin_lat / math.cos(math.radians(far_lat))
+    return (float(s.low[0]) - margin_lon, float(s.low[1]) - margin_lat,
+            float(s.high[0]) + margin_lon, float(s.high[1]) + margin_lat)
+
+
 def plan_shape(region: Region, strokes: list[list[LonLat]], closed: list[bool], *, deadline: Deadline,
                budget_s: float, weights: PlannerWeights = PlannerWeights()) -> list[StrokePlan]:
     """規劃每個筆畫在 region 上「像」的路徑（演算法、範圍的寫法見模組說明）。回傳與 strokes 同序。
 
-    region 要涵蓋目標外框往外 R（候選半徑）再加上轉移可能走到的範圍（呼叫端通常取外框往外擴 R + 4Δ）。
+    region 要涵蓋目標外框往外 R（候選半徑）再加上轉移可能走到的範圍（呼叫端用 region_bounds 取外框往外擴 R + 4Δ）。
     strokes 的點是 (lon, lat)；closed[i] 為 True 時最後一點不重複起點。
     deadline 逾時或取消時照樣丟例外；budget_s（秒，從呼叫開始算）用完時停下，剩下的範圍記成沒規劃。
     先規劃所有筆畫的 forward 再規劃 backward：預算不夠時優先保住 forward。
@@ -697,15 +737,9 @@ def plan_shape(region: Region, strokes: list[list[LonLat]], closed: list[bool], 
     if len(strokes) != len(closed):
         raise ValueError("strokes 與 closed 的長度不同")
     stop_at = time.monotonic() + budget_s
-    arrays = [np.asarray(s, dtype=np.float64).reshape(-1, 2) for s in strokes]
-    every = np.vstack(arrays) if any(len(a) for a in arrays) else np.zeros((1, 2))
-    low, high = every.min(axis=0), every.max(axis=0)
-    origin = (float(low[0] + high[0]) / 2, float(low[1] + high[1]) / 2)
-    local = [_to_local(origin, a) for a in arrays]
-    extent = _to_local(origin, np.vstack([low, high]))
-    size = float(max(extent[1] - extent[0]))
-    delta = min(max(weights.sample_fraction * size, weights.min_sample_m), weights.max_sample_m)
-    radius = max(min(weights.candidate_fraction * size, weights.max_candidate_m), 1.0)
+    scale = _scale(strokes, weights)
+    origin, size, delta, radius = scale.origin, scale.size, scale.delta, scale.radius
+    local = [_to_local(origin, a) for a in scale.arrays]
     free = min(weights.free_fraction * size, radius / 2)
     corner_rad, uturn_rad = math.radians(weights.corner_deg), math.radians(weights.uturn_deg)
     net = _Network(region, origin, radius, corner_rad)

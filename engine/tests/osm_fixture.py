@@ -339,6 +339,34 @@ GAP_MAP: list[MeterWay] = [
     MeterWay(7003, _shift([(1060.0, 0.0), (1250.0, 0.0), (1400.0, 0.0)], GAP_X), RESIDENTIAL),
 ]
 
+# 部分退回 fast：目標是向東 1400 m 的直線，每 100 m 一個輸入點（L = 1400、候選半徑 70 m、fast 的搜尋半徑 49 m）。
+# 500–900 m 之間的路往北繞 120 m：中間那段目標 70 m 內沒有路（規劃器斷開、交給 fast），fast 的 trace 也吸不到，
+# 要靠合法繞路；兩側照著走。
+DETOUR_X = 70_000.0
+DETOUR_TARGET = _shift([(float(x), 0.0) for x in range(0, 1401, 100)], DETOUR_X)
+DETOUR_MAP: list[MeterWay] = [
+    MeterWay(8001, _shift([(0.0, 0.0), (250.0, 0.0), (500.0, 0.0)], DETOUR_X), RESIDENTIAL),
+    MeterWay(8002, _shift([(500.0, 0.0), (500.0, 120.0), (700.0, 120.0), (900.0, 120.0), (900.0, 0.0)], DETOUR_X),
+             RESIDENTIAL),
+    MeterWay(8003, _shift([(900.0, 0.0), (1150.0, 0.0), (1400.0, 0.0)], DETOUR_X), RESIDENTIAL),
+]
+
+# 照著走的結果也會被剪：向東 1200 m 的直路，600 m 處往北一條 9 m 的死巷（短到 Valhalla 繞進去再出來的結果與規劃路徑的
+# Hausdorff 仍 ≤ 10 m，會被收下；又長過剪小刺的最短長度 MIN_LOOP_M = 16 m 的一半）。目標就是這條直路。
+SHORT_SPUR_X = 80_000.0
+SHORT_SPUR_TIP = (600.0 + SHORT_SPUR_X, 9.0)
+SHORT_SPUR_TARGET = _shift([(0.0, 0.0), (1200.0, 0.0)], SHORT_SPUR_X)
+SHORT_SPUR_MAP: list[MeterWay] = [
+    MeterWay(9001, _shift([(float(x), 0.0) for x in range(-100, 1301, 100)], SHORT_SPUR_X), RESIDENTIAL),
+    MeterWay(9002, [(600.0 + SHORT_SPUR_X, 0.0), SHORT_SPUR_TIP], RESIDENTIAL),
+]
+
+# 所有規劃器場景放進同一個 pbf（各自相距 10 km，互不干擾）：tests/conftest.py 的 planner_build 用它建 tiles 與路網圖
+PLANNER_MAPS: list[MeterWay] = [
+    *PARALLEL_MAP, *CORNER_MAP, *DIAGONAL_MAP, *ONEWAY_MAP, *SPIKE_MAP, *SQUARE_MAP, *GAP_MAP, *DETOUR_MAP,
+    *SHORT_SPUR_MAP,
+]
+
 
 # ---- 剪小刺與小圈（P2.5 A4）：每個場景在不同的列、彼此不相連 ----
 X5 = 140  # 與其他地圖分開（search_city.py 從 200 開始）

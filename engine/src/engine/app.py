@@ -49,8 +49,8 @@ from engine.matching.service import (
     match_shape,
 )
 from engine.matching.types import StartHint
+from engine.planner.graph import GraphDataMissing, RideGraph, has_graph_data
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router, RoutingError
-from engine.planner.graph import has_graph_data
 from engine.search.gate import SearchBusy, SearchGate
 from engine.search.roads import RoadDataMissing, RoadIndex, has_road_data
 from engine.search.service import run_search
@@ -136,12 +136,23 @@ def _get_router(current: CurrentRouter) -> tuple[Any, str]:
         raise _error(503, "no_data", NO_DATA_MESSAGE) from error
 
 
-def _match(current: CurrentRouter, payload: MatchRequest, deadline: Deadline) -> MatchResponse:
+def _match(
+    current: CurrentRouter, payload: MatchRequest, deadline: Deadline, graph: Callable[[str], Any] | None = None
+) -> MatchResponse:
+    """graph：build 名稱 → 那個 build 的可騎路網圖（沒有就 None）。只有 quality="fine" 才讀，fast 不碰。"""
     router, version = _get_router(current)
     strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
     start = None if payload.start_circle is None else StartHint(payload.start_circle.center, payload.start_circle.radius_m)
+    fine = payload.quality == "fine"
+    ride_graph = graph(version) if fine and graph is not None else None
     try:
-        result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start)
+        if fine:
+            result = match_shape(
+                router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start,
+                quality="fine", graph=ride_graph,
+            )
+        else:
+            result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start)
     except OutsideTaiwan as error:
         raise _error(400, "outside_taiwan", str(error)) from error
     except TargetTooSmall as error:
@@ -211,13 +222,18 @@ class _MatchLog:
 
 
 async def _admitted_match(
-    admission: asyncio.Semaphore, current: CurrentRouter, payload: MatchRequest, deadline: Deadline, log: _MatchLog
+    admission: asyncio.Semaphore,
+    current: CurrentRouter,
+    payload: MatchRequest,
+    deadline: Deadline,
+    log: _MatchLog,
+    graph: Callable[[str], Any] | None = None,
 ) -> Any:
     if not await _admit(admission, deadline):
         return Response(status_code=CLIENT_CLOSED)
     log.admitted = time.monotonic()
     try:
-        response = await run_in_threadpool(_match, current, payload, deadline)
+        response = await run_in_threadpool(_match, current, payload, deadline, graph)
         log.segments = len(response.segments)
         return response
     except MatchCancelled:
@@ -244,6 +260,37 @@ class _CurrentRoads:
                 self._roads = self._loader(build)  # 沒有資料丟 RoadDataMissing
                 self._build = build
             return self._roads
+
+
+class _CurrentGraph:
+    """每個 worker 一份：目前 build 的可騎路網圖（mmap），換版時重新載入；沒有圖（舊 build）就是 None，不報錯。
+
+    一個 build 只試載入一次（build 內容不會再變）：沒有圖的 build 也記住 None，fine 請求不會每次都去碰檔案系統。
+    """
+
+    def __init__(self, layout: DataLayout, loader: Callable[[Path], Any]) -> None:
+        self._layout = layout
+        self._loader = loader
+        self._lock = threading.Lock()
+        self._build: Path | None = None
+        self._graph: Any = None
+
+    def get(self, version: str) -> Any:
+        """version 是 Router 所屬 build 的名稱（CurrentRouter.get 回傳的）。current 已經換成別的 build 時回 None：
+        圖與 Router 必須來自同一個 build，對不上就這一次用 fast，不拿新版的圖配舊版的路網。"""
+        with self._lock:
+            build = self._layout.current()
+            if build is None or build.name != version:
+                return None
+            if build != self._build:
+                try:
+                    self._graph = self._loader(build)
+                except GraphDataMissing as error:
+                    if has_graph_data(build):  # 檔案都在卻讀不了：建圖驗證漏掉的壞檔，要讓維運看到
+                        logger.error("可騎路網圖載入失敗，fine 退回 fast：%s", error)
+                    self._graph = None
+                self._build = build
+            return self._graph
 
 
 @dataclass(frozen=True)
@@ -353,6 +400,7 @@ def create_app(
     router_factory: Callable[[Path], Any] = Router.from_build,
     match_timeout_s: float = 5.0,
     road_loader: Callable[[Path], Any] = RoadIndex.load,
+    graph_loader: Callable[[Path], Any] = RideGraph.load,
     search_timeout_s: float = 60.0,
     search_queue_timeout_s: float = 120.0,
     search_routers: int = 2,
@@ -363,6 +411,7 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _invalid_request)
     layout = DataLayout(data_root)
     current = CurrentRouter(layout, router_factory)
+    graph_cache = _CurrentGraph(layout, graph_loader)
     # 每個 worker 同時只進行一個吸附：Router 本來就把 Valhalla 呼叫序列化，所以不損失吞吐量；
     # 多出來的請求在事件迴圈上限時等待（不佔 thread），不會各自卡在 Router 鎖上，到期後還各多跑一次 Valhalla 呼叫
     admission = asyncio.Semaphore(1)
@@ -401,7 +450,7 @@ def create_app(
         log, status = _MatchLog(strokes=len(payload.strokes)), 500  # 沒被下面接住的例外會變成 500
         watcher = asyncio.create_task(_watch_disconnect(request, deadline))
         try:
-            response = await _admitted_match(admission, current, payload, deadline, log)
+            response = await _admitted_match(admission, current, payload, deadline, log, graph_cache.get)
             status = response.status_code if isinstance(response, Response) else 200
             return response
         except HTTPException as error:
