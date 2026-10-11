@@ -39,6 +39,10 @@ class Deadline:
         if self._clock() > self._end:
             raise MatchTimeout("吸附超過時間上限")
 
+    def child(self, seconds: float) -> "Deadline":
+        """同一個時鐘、以自己為外層的子期限：子期限先到期時，呼叫端可以接住它的 MatchTimeout、外層照常進行。"""
+        return Deadline(seconds, self._clock, parent=self)
+
     def remaining(self) -> float:
         """距離到期還有幾秒（外層更早到期時取外層）；到期後為 0（給等待時限這類不接受負數的地方用）。"""
         own = max(0.0, self._end - self._clock())
