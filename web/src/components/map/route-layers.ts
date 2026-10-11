@@ -57,7 +57,8 @@ function addSearchLayers(map: MapLibreMap): void {
 }
 
 /**
- * 加上路線圖層：連接線（淡、虛線）、圖形段（藍）、繞路段（橘、粗，醒目標示）、方向箭頭、起點（綠）終點（紅）。
+ * 加上路線圖層：連接線（淡、虛線）、圖形段（藍）、繞路段（橘、粗，醒目標示）、微調換上的段（藍＋深色虛線外框）、
+ * 方向箭頭、起點（綠）終點（紅）。
  * 自動搜尋的範圍與預覽先加，所以在路線底下。
  * 只用 icon、不用文字，所以不需要 style 的 glyphs（e2e 用空白 style 也能跑）。
  */
@@ -91,6 +92,22 @@ export function addRouteLayers(map: MapLibreMap): void {
     filter: ["==", ["get", "kind"], "detour"],
     layout: lineLayout,
     paint: { "line-color": "#f97316", "line-width": 6 },
+  });
+  // 手動微調換上的段：底下一條較寬的深色虛線當外框，上面跟圖形段同色，看得出改了哪裡又不像繞路
+  map.addLayer({
+    id: "route-edit-outline",
+    type: "line",
+    source: SEGMENTS_SOURCE,
+    filter: ["==", ["get", "kind"], "edit"],
+    paint: { "line-color": "#1e293b", "line-width": 9, "line-dasharray": [1, 0.75] },
+  });
+  map.addLayer({
+    id: "route-edit",
+    type: "line",
+    source: SEGMENTS_SOURCE,
+    filter: ["==", ["get", "kind"], "edit"],
+    layout: lineLayout,
+    paint: { "line-color": "#2563eb", "line-width": 4 },
   });
   map.addLayer({
     id: "route-arrows",

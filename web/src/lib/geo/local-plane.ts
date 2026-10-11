@@ -1,7 +1,7 @@
 import type { LonLat } from "@/lib/shape/types";
 
-/** 地球平均半徑（公尺）。 */
-const EARTH_RADIUS_M = 6_371_008.8;
+/** 地球平均半徑（公尺）；引擎 routing/geo.py 與 MapLibre 用同一個值。 */
+export const EARTH_RADIUS_M = 6_371_008.8;
 const RAD = Math.PI / 180;
 
 /**
