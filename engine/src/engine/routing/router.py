@@ -21,6 +21,8 @@ MAX_SNAP_GAP_RADII = 2  # 吸附結果、route 端點離原始輸入點的上限
 # route 預設 node_snap_tolerance = 5 m：離路口 5 m 內的端點會被拉到路口，而 trace 只吸附 1 m 內的節點。
 # 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
 ROUTE_NODE_SNAP_TOLERANCE_M = 0
+# 拖曳放開的位置離可騎的路最遠幾公尺（route editing spec §3.3）：route_through 經過點的 search_cutoff，更遠就找不到路
+DRAG_SNAP_M = 50.0
 CACHE_SIZE_BYTES = 256 * 1024 * 1024  # 每個 worker 各有一份 tile 快取（Valhalla 預設 1 GB）
 # edge_walk 回應的形狀與輸入逐點對應的容許距離。回應的點可能落在旁邊重疊 way 的節點上（真實路網實測 1.9 m），
 # 點數仍一一對應；合法重現量的是輸入折線本身，這裡只防止整個對錯位
@@ -210,14 +212,28 @@ class Router:
         _ensure_matched(result, points, search_radius_m)
         return result
 
-    def route(self, start: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult:
-        """shortest=True：bicycle 成本改成取最短距離（costing_options.bicycle.shortest）；
-        只換成本函數，通行權、單行道、轉向限制照舊。"""
-        locations = [{**loc, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M} for loc in _locations([start, end])]
+    def _route(self, locations: list[dict], shortest: bool) -> RouteResult:
         request: dict = {"locations": locations, "costing": COSTING}
         if shortest:
             request["costing_options"] = {COSTING: {"shortest": True}}
         return _route_result(self._call("route", request))
+
+    def route(self, start: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult:
+        """shortest=True：bicycle 成本改成取最短距離（costing_options.bicycle.shortest）；
+        只換成本函數，通行權、單行道、轉向限制照舊。"""
+        locations = [{**loc, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M} for loc in _locations([start, end])]
+        return self._route(locations, shortest)
+
+    def route_through(self, start: LonLat, via: LonLat, end: LonLat, *, shortest: bool = False) -> RouteResult:
+        """start → via → end 的 route，起訖同 route。via 是 through：經過但不停（不會在那裡迴轉），
+        只吸附 DRAG_SNAP_M 內的路。"""
+        first, middle, last = _locations([start, via, end])
+        locations = [
+            {**first, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M},
+            {**middle, "type": "through", "search_cutoff": DRAG_SNAP_M},
+            {**last, "node_snap_tolerance": ROUTE_NODE_SNAP_TOLERANCE_M},
+        ]
+        return self._route(locations, shortest)
 
     def edges(self, points: list[LonLat]) -> list[EdgeInfo]:
         # edge_walk 把折線的點逐一對上路段形狀的點，多一個重複點整條就配不上。

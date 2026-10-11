@@ -8,6 +8,7 @@ import pytest
 from engine.routing import router as router_module
 from engine.routing.polyline import encode
 from engine.routing.router import (
+    DRAG_SNAP_M,
     FAST_TURN_PENALTY_FACTOR,
     EdgeInfo,
     RouteResult,
@@ -170,6 +171,34 @@ def test_route_asks_for_the_shortest_path_only_when_told(monkeypatch: pytest.Mon
     assert shortest["costing"] == "bicycle"
     assert shortest["costing_options"] == {"bicycle": {"shortest": True}}
     assert [loc["node_snap_tolerance"] for loc in shortest["locations"]] == [0, 0]
+
+
+def test_route_through_passes_through_the_via_point_without_stopping(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 拖曳（route editing spec §3.3）：放開的位置是 through，不會在那裡停下迴轉；離路超過 DRAG_SNAP_M 就找不到路
+    router, actor = _fake_router(monkeypatch)
+    result = router.route_through(A, B, C)
+    method, request = actor.seen[0]
+    assert method == "route"
+    assert request["costing"] == "bicycle" and "costing_options" not in request
+    start, via, end = request["locations"]
+    assert [(loc["lon"], loc["lat"]) for loc in (start, via, end)] == [A, B, C]
+    assert start["node_snap_tolerance"] == end["node_snap_tolerance"] == 0
+    assert "type" not in start and "type" not in end
+    assert via == {"lon": B[0], "lat": B[1], "type": "through", "search_cutoff": 50.0}
+    assert DRAG_SNAP_M == 50.0
+    assert result.points == pytest.approx([A, B, C])
+
+
+def test_route_through_can_ask_for_the_shortest_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, request = _captured_request(monkeypatch, lambda router: router.route_through(A, B, C, shortest=True))
+    assert request["costing_options"] == {"bicycle": {"shortest": True}}
+
+
+def test_route_through_rejects_gaps_between_legs(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, actor = _fake_router(monkeypatch)
+    monkeypatch.setattr(actor, "route", lambda request: _response([A, B], [FAR, C]))
+    with pytest.raises(RoutingError, match="不連續"):
+        router.route_through(A, B, C)
 
 
 def test_trace_request_without_turn_penalty_factor_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
