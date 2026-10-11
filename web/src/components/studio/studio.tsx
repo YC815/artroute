@@ -3,6 +3,7 @@
 import { X } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useState } from "react";
+import { fitMapToRoute } from "@/components/map/fit-route";
 import { MapView } from "@/components/map/map-view";
 import { RouteEditLayer } from "@/components/map/route-edit-layer";
 import { ShapeOverlay } from "@/components/map/shape-overlay";
@@ -268,6 +269,8 @@ export function Studio() {
     editSession.begin(session);
     setDraftNotice(null);
     edit.enter(draft.route, draft.id, placementOf(session));
+    // 草稿可能在別的地方：看不到路線就把地圖移過去（圖形鎖住，沒有「移到畫面中央」可用）
+    if (map) fitMapToRoute(map, draft.route.segments);
     void drafts.markOpened(draft.id);
   };
 
