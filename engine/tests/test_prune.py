@@ -291,6 +291,23 @@ def test_cut_that_removes_a_whole_stroke_is_not_made() -> None:
     assert any(s.stroke_index == 1 and s.kind == "stroke" for s in result)
 
 
+def test_cut_that_leaves_only_a_few_meters_of_a_stroke_is_not_made() -> None:
+    # 筆畫 1 繞完 80 m 小圈回到 X，收尾再往東 3 m。舊判斷只看還有兩個不同點，會把筆畫剪到只剩 3 m，
+    # 而 v3 只看可見幾何的聯集，剪掉偏離目標直線的小圈後分數反而上升，不能靠評分擋住。
+    x, tail = east(W, 500), east(W, 503)
+    stroke = seg([*square(x, 20), tail], "stroke", 1)
+    segments = [seg([W, x]), stroke, seg([tail, C], "connector", None)]
+    targets = [[W, C]]
+    positions = flat(segments)
+    pruned = _cut_loop(segments, positions[1], next(p for p in positions if p.point == x and p.segment == 1))
+    assert pruned is not None
+    assert prune.score(targets, prune.route_points(pruned.segments)).exact >= prune.score(
+        targets, prune.route_points(segments)
+    ).exact
+
+    assert run(segments, targets=targets, extent_m=target_extent_m(targets)) == segments
+
+
 def test_cut_that_removes_a_stroke_drawn_only_by_a_detour_is_not_made() -> None:
     # 複審 R1：整段 trace 失敗時筆畫可能全是 detour（例如短筆畫逆著單行道），detour 不記警告：剪掉一樣會悄悄消失
     x = east(W, 500)
