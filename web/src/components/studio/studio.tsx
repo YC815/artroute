@@ -50,6 +50,7 @@ import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storag
 import {
   canEnterEdit,
   currentBuildVersion,
+  editChrome,
   editSupersededBy,
   liveMatchEnabled,
   resolveDisplayedRoute,
@@ -185,7 +186,8 @@ export function Studio() {
   const warnings = display.edited ? NO_WARNINGS : liveWarnings;
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
   const editing = edit.state?.active === true;
-  const canOperate = editing && !outdated;
+  const chrome = editChrome({ edited: display.edited, active: editing, outdated });
+  const canOperate = chrome.toolbar;
   const editPicks = useMemo(
     () => (editing && edit.state ? edit.state.picks.map((p) => p.point) : NO_PICKS),
     [editing, edit.state],
@@ -219,12 +221,15 @@ export function Studio() {
   // 使用者移動了圖形（拖曳、鍵盤、套用搜尋候選、改文字、換圖片）：離開微調、回到即時吸附。
   // 微調的路線已經在草稿裡（每次編輯都存），不會消失。
   const { reset: resetEdit } = edit;
+  const { cancel: cancelReverify } = reverify;
   const hasEdit = edit.state !== null;
   useEffect(() => {
     if (hasEdit && editSupersededBy(editSession.base(), { shapeKey: currentShapeKey, transform })) {
+      // 在途的 /verify 也要取消：它會佔住引擎名額到 15 秒，結果也已經沒人要
+      cancelReverify();
       resetEdit();
     }
-  }, [hasEdit, currentShapeKey, transform, resetEdit, editSession]);
+  }, [hasEdit, currentShapeKey, transform, resetEdit, cancelReverify, editSession]);
 
   const canEnter = canEnterEdit({
     response: display.response,
@@ -381,9 +386,9 @@ export function Studio() {
           edited={display.edited}
           editAction={
             display.edited
-              ? editing || outdated
-                ? null
-                : { label: "繼續微調", disabled: false, onClick: edit.resume }
+              ? chrome.resume
+                ? { label: "繼續微調", disabled: false, onClick: edit.resume }
+                : null
               : { label: "微調路線", disabled: !canEnter, onClick: enterEdit }
           }
           plannerReady={engine.plannerReady && !display.edited}
@@ -442,7 +447,7 @@ export function Studio() {
             </>
           )}
         </MapView>
-        {outdated && editedRoute && (
+        {chrome.notice && editedRoute && (
           <div className="pointer-events-none absolute inset-x-3 bottom-14 z-10 flex justify-center">
             <ReverifyNotice
               label={routeStale ? `路網已更新。${outdatedLabel(editedRoute.dataVersion)}` : outdatedLabel(editedRoute.dataVersion)}
@@ -464,7 +469,6 @@ export function Studio() {
               onUndo={edit.undo}
               onRedo={edit.redo}
               onFinish={edit.finish}
-              onReverify={startReverify}
             />
           </div>
         )}

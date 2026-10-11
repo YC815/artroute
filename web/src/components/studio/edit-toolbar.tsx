@@ -16,8 +16,6 @@ type Props = {
   onUndo: () => void;
   onRedo: () => void;
   onFinish: () => void;
-  /** 409「路網已更新」時提供「重新驗證」；沒給就不顯示按鈕。 */
-  onReverify?: () => void;
 };
 
 const TOOLS = [
@@ -32,7 +30,7 @@ const isTool = (value: string): value is EditTool => TOOLS.some((t) => t.value =
  * 微調工具列：操作（剪掉／重畫／拖曳）、復原、重做、完成；下面是下一步的說明、引擎的回應與草稿的提示。
  * 等待引擎時只剩 Esc（取消）可用，其他按鈕停用。
  */
-export function EditToolbar({ state, canUndo, canRedo, draftNotice, onTool, onMode, onUndo, onRedo, onFinish, onReverify }: Props) {
+export function EditToolbar({ state, canUndo, canRedo, draftNotice, onTool, onMode, onUndo, onRedo, onFinish }: Props) {
   const { pending } = state;
   const choosingMode = state.tool === "reroute" && state.picks.length === 2 && state.rerouteMode === null && !pending;
   return (
@@ -84,11 +82,6 @@ export function EditToolbar({ state, canUndo, canRedo, draftNotice, onTool, onMo
       </p>
       <div role="alert" className="flex flex-col gap-1 text-xs text-destructive empty:hidden">
         {state.message && <p>{state.message}</p>}
-        {state.errorCode === "stale_data" && onReverify && (
-          <Button size="xs" variant="outline" className="self-start" onClick={onReverify}>
-            重新驗證
-          </Button>
-        )}
         {draftNotice && <p>{draftNoticeMessage(draftNotice)}</p>}
       </div>
     </div>

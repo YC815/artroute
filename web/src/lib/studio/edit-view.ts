@@ -66,3 +66,18 @@ export type VerifiedBuild = { seenEngineVersion: string | null; version: string 
 export function currentBuildVersion(engineVersion: string | null, verified: VerifiedBuild | null): string | null {
   return verified && verified.seenEngineVersion === engineVersion ? verified.version : engineVersion;
 }
+
+/**
+ * 微調相關的畫面元件各在什麼時候出現：
+ * - 工具列：微調中（active）而且路線不是舊路網的；
+ * - 重新驗證的提示：微調中而且路線是舊路網的（打開舊草稿，或引擎回 409）。按了「完成」之後不顯示——
+ *   它只在要編輯時有意義（完成後路線照常顯示、可下載 GPX，要編輯用「繼續微調」，那時才被要求重新驗證）；
+ * - 「繼續微調」：畫面上是微調過的路線、但已經按了「完成」。
+ */
+export function editChrome(args: { edited: boolean; active: boolean; outdated: boolean }) {
+  return {
+    toolbar: args.active && !args.outdated,
+    notice: args.active && args.outdated,
+    resume: args.edited && !args.active,
+  };
+}

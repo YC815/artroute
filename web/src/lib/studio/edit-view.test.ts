@@ -4,7 +4,7 @@ import { editReducer, startEdit, type EditedRoute } from "@/lib/edit/edit-state"
 import { buildGpx } from "@/lib/export/gpx";
 import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import type { Transform } from "@/lib/shape/transform";
-import { canEnterEdit, currentBuildVersion, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
+import { canEnterEdit, currentBuildVersion, editChrome, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
 
 const LIVE = { response: SAMPLE_MATCH_RESPONSE, downloadable: true };
 const T: Transform = { center: [121.5, 25.03], sizeM: 2000, rotationDeg: 0 };
@@ -110,5 +110,21 @@ describe("currentBuildVersion", () => {
 
   it("/status 重新讀到別的版本：以它為準", () => {
     expect(currentBuildVersion("v3", { seenEngineVersion: "v1", version: "v2" })).toBe("v3");
+  });
+});
+
+describe("editChrome", () => {
+  it("微調中的新路網：工具列；微調中的舊路網：重新驗證的提示（沒有工具列）", () => {
+    expect(editChrome({ edited: true, active: true, outdated: false })).toEqual({ toolbar: true, notice: false, resume: false });
+    expect(editChrome({ edited: true, active: true, outdated: true })).toEqual({ toolbar: false, notice: true, resume: false });
+  });
+
+  it("按了「完成」之後：不顯示重新驗證的提示（即使 /status 之後讀到新版本），只留「繼續微調」", () => {
+    expect(editChrome({ edited: true, active: false, outdated: true })).toEqual({ toolbar: false, notice: false, resume: true });
+    expect(editChrome({ edited: true, active: false, outdated: false })).toEqual({ toolbar: false, notice: false, resume: true });
+  });
+
+  it("沒有微調：什麼都不顯示", () => {
+    expect(editChrome({ edited: false, active: false, outdated: false })).toEqual({ toolbar: false, notice: false, resume: false });
   });
 });
