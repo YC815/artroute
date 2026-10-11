@@ -247,3 +247,10 @@
 3. 重現出來的路線再跑一次 edge_walk，又被配到駐車彎、判成逆向 → 重現路線只查禁行（未修補路網的對照組需要），不查方向（`route` 本身遵守單行）。
 
 修正後（`c871cfe`，以 `PYTHONPATH` 在服務中的容器裡跑）：吸附 bench fast 25/25 安全、沒有退步；fine 25/25 安全（13 行「退步」是 fine 比 fast 的 baseline 低，§4.2）；搜尋 bench 12 個案例 0 不合格、最慢 28.4 s。合成地圖上真的逆向騎單行道（`ONEWAY_MAP`）仍抓得到；拿掉擴大、重現路線改回查方向、不查禁行，各有測試會紅。
+
+### 4.6 部署（`d7f6283`）
+
+- 網站加上快速版／描形版切換（合併 `fine-toggle`）：本機 tsc、lint、vitest 455 個通過。
+- 容器測試（m1）1490 passed。
+- 引擎 `hl deploy artroute-engine --internal`、網站 `hl deploy artroute`（私人），都是 `d7f6283`。
+- 部署後：`/api/status` 為 build `20261011T095232Z`、`search_ready`／`planner_ready` 都是 true；`/api/match` 同一條測試路線 fast 200（155 ms，v3 67）、fine 200（130 ms，v3 64）；首頁 200。瀏覽器裡的切換由使用者確認。

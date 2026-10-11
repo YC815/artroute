@@ -4,13 +4,16 @@
 
 - P0、P1、P1.5、P2 已完成。P2.5 的設計：`docs/superpowers/specs/2026-10-11-p2-5-likeness-design.md`；實作計畫：`docs/superpowers/plans/2026-10-11-p2-5-likeness.md`。
 - **PR A**（#3，分支 `claude/p2-5-likeness-rl4bgr`）：Q1＋Q2。評分 v3、搜尋排名 rank、A 參數（轉彎懲罰 500）、剪小刺與小圈、旋轉 ±15°、隱藏原圖、bench 的 v3／v2／SVG／改前旗標、標註樣本工具。校正沒達到 80%，**使用者決定改成防退步**（findings §1、主 spec §8 第 38、39 列）。**本機已驗證並部署**（2026-10-11，findings §2）：安全全過、v3 平均 68.1 → 67.9、搜尋最慢 28.5 s；baseline 已換成 v3。
-- **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖（建圖流程新增，要重建路網）、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`、網站放開後換精緻版。雲端完成，**等本機驗證**（PR 說明有「給本機 Agent 的 prompt」）。
-- 部署中（m1）：
-  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。程式是 PR A（`14c849d`）。
-  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。程式是 PR A（`14c849d`）。`/status` 的 `search_ready: true`。
-  - 路網 build `20261011T040535Z`（有可騎道路索引，沒有路網圖），回滾用 `20261010T235143Z`。
-- 下一步：本機照 PR B 的 prompt 部署引擎、重建路網、比較 fast 與 fine、做下一輪標註（Q2、P2、F）。Q4 要等本機判定規劃器是否贏過 Q2。
-- **使用者新提的方向（2026-10-11，看 PR A 縮圖後）**：開放使用者手動微調路線（例如剪掉多繞的小圈），改過的路線在瀏覽器裡自動保存，移走底圖也不會不見，很久沒動又從沒打開過才自動清掉。還沒設計；硬限制是不能直接刪點（會畫直線），要改成「選一段、由 Valhalla 重新規劃並過轉彎檢查」。
+- **PR B**（#4，分支 `claude/p2-5-planner-rl4bgr`，疊在 PR A 上）：Q3。可騎路網圖、描形規劃器、`/match` 的 `quality: "fast" | "fine"`、`/status` 的 `planner_ready`。**本機已驗證並部署**（2026-10-11，findings §4）：
+  - fine 沒有全面贏過 fast（v3 好 3、差 19；盲測有表態 8 組只有 3 組選 fine）。但使用者看圖認為有的案例 fine 好很多，所以網站兩版都算、可切換，預設快速版（主 spec §8 第 60 列）。
+  - bench 的逆向誤報已修（合法重現，§8 第 61 列）；fast／fine／搜尋 bench 全部安全。
+- 部署中（m1），程式都是 `d7f6283`：
+  - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access）。
+  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker。`/status` 的 `search_ready`、`planner_ready` 都是 true。
+  - 路網 build `20261011T095232Z`（有可騎路網圖），回滾用 `20261011T040535Z`。
+- 下一步：
+  1. 使用者審手動微調的 spec（`docs/superpowers/specs/2026-10-11-route-editing-design.md`，主 spec §8 第 56–58 列），同意後寫實作計畫（PR C 引擎 `/edit`、`/verify`，PR D 網站）。
+  2. Q4（P2.5 spec §7）：含嘗試性的「長直線優先」（§7.4，要盲測驗收）。規劃器的問題（折回的 detour、細碎階梯、河濱變長、退回 fast 的比例沒量）先查，見 `docs/backlog.md`。
 - P3（每週重建、rate limiting、公開）排在 P2.5 之後。
 
 ## 為什麼做 P2.5
@@ -35,8 +38,8 @@
 ## 雲端的工作（三個 PR，每個 PR 一輪本機驗證）
 
 1. **PR A：Q1＋Q2** — 完成：本機驗證並部署（2026-10-11，findings §2）。
-2. **PR B：Q3 描形規劃器** — 雲端完成，等本機驗證（見 PR 說明）。規劃器以 `quality: "fine"` 選用；本機在真實路網上判定它是否贏過 Q2，使用者看縮圖同意後才設成放開時的預設（網站已經是「planner_ready 時放開就送 fine」，所以部署 PR B 等於設成預設：本機要先量、先給使用者看再部署）。
-3. **PR C：Q4**（§7）：變形、連接線輕量版、搜尋改用規劃器與 60 秒預算。**等 PR B 的本機判定之後才開始。**
+2. **PR B：Q3 描形規劃器** — 完成：本機驗證並部署（2026-10-11，findings §4）。fine 沒有全面贏過 fast，網站改成兩版可切換、預設快速版。
+3. **Q4**（§7）：變形、連接線輕量版、搜尋改用規劃器與 60 秒預算、長直線優先（嘗試性）。可以開始；手動微調（PR C／D）與它互不依賴，順序由使用者決定。
 
 每個 PR：
 - `cd engine && uv run pytest -q -W error` 零警告全過；有改網站就跑 `cd web && pnpm exec tsc --noEmit && pnpm lint && pnpm test && pnpm build && pnpm test:e2e`。
@@ -75,11 +78,11 @@
 
 ## 已知限制與風險
 
-- 雲端不能在真實路網上驗證：v3、剪小刺、轉彎懲罰 500、規劃器的效果與時間都還沒在真實路網量過。
-- v3 校正只有 15 組有表態、一致 10 組（與 v2 相同）：v3 在下一輪標註前只當診斷參考，不當部署門檻（使用者決定）。下一輪用 `likeness_samples` 只標差異明顯的配對，目標至少 40 組有表態。
-- 規劃器的權重只在合成地圖上定過（主 spec §8）；真實路網比合成棋盤密，時間要本機量（合成：2 km 文字 0.25 s）。
+- 雲端不能在真實路網上驗證；真實路網的數字都在 `docs/p2-5-likeness-findings.md`。
+- v3 只當診斷參考，不當部署門檻：第一輪一致 10/15，第二輪 41 組只有 10 組有表態、一致 6/10。下一輪標註要想辦法讓有表態的配對變多（`docs/backlog.md`）。
+- 規劃器的權重只在合成地圖上定過；真實路網上 fine 中位數 239 ms，但像不像沒有全面贏過 fast（findings §4.2）。
 - 粗篩排名幾乎預測不了精算分數（Spearman 中位數約 0）。Q4 改用規劃器精算後要重新量。
-- 建圖仍在服務中的容器裡跑（`docs/backlog.md` P3）；PR B 加了路網圖，要量建圖的記憶體峰值（雲端推估額外 0.3–0.5 GB）。
+- 建圖仍在服務中的容器裡跑（`docs/backlog.md` P3）；加了路網圖後重建的記憶體峰值 3.54 GiB／7.817 GiB。
 - 其餘見 `docs/backlog.md`。
 
 ## 過去的紀錄
