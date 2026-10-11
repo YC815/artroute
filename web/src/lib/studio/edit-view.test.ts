@@ -27,7 +27,7 @@ describe("resolveDisplayedRoute", () => {
   });
 
   it("微調中：畫面、長度、分數與 GPX 的點都是微調後的路線，不是即時吸附的", () => {
-    const shown = resolveDisplayedRoute(editing(), LIVE, 2000);
+    const shown = resolveDisplayedRoute(editing().history.present, LIVE, 2000);
     expect(shown.edited).toBe(true);
     expect(shown.response?.route.length_m).toBe(2500);
     expect(shown.response?.route_sig).toBe("sig-edited");
@@ -38,19 +38,19 @@ describe("resolveDisplayedRoute", () => {
   });
 
   it("微調中：即時吸附已經過期（downloadable 為 false）也能下載微調後的路線", () => {
-    expect(resolveDisplayedRoute(editing(), { response: null, downloadable: false }, null).downloadable).toBe(true);
+    expect(resolveDisplayedRoute(editing().history.present, { response: null, downloadable: false }, null).downloadable).toBe(true);
   });
 
   it("按了「完成」之後（active: false）畫面仍是微調後的路線", () => {
     const finished = editReducer(editing(), { type: "finish" });
     expect(finished.active).toBe(false);
-    expect(resolveDisplayedRoute(finished, LIVE, 2000).response?.route_sig).toBe("sig-edited");
+    expect(resolveDisplayedRoute(finished.history.present, LIVE, 2000).response?.route_sig).toBe("sig-edited");
   });
 
   it("復原後顯示歷史上一步的路線", () => {
     const first = routeFromResponse(SAMPLE_EDIT_RESPONSE);
     const state = editReducer({ ...editing(first), history: { past: [first], present: EDITED, future: [] } }, { type: "undo" });
-    expect(resolveDisplayedRoute(state, LIVE, 2000).response?.route_sig).toBe(first.routeSig);
+    expect(resolveDisplayedRoute(state.history.present, LIVE, 2000).response?.route_sig).toBe(first.routeSig);
   });
 });
 

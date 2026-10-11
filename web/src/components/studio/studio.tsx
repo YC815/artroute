@@ -4,9 +4,11 @@ import { X } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useState } from "react";
 import { MapView } from "@/components/map/map-view";
+import { RouteEditLayer } from "@/components/map/route-edit-layer";
 import { ShapeOverlay } from "@/components/map/shape-overlay";
 import { ImageSource } from "@/components/source/image-source";
 import { TextSource } from "@/components/source/text-source";
+import { EditToolbar } from "@/components/studio/edit-toolbar";
 import { EngineBanner } from "@/components/studio/engine-banner";
 import { InfoPanel } from "@/components/studio/info-panel";
 import { SearchPanel } from "@/components/studio/search-panel";
@@ -14,8 +16,12 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEngineStatus } from "@/hooks/use-engine-status";
 import { useLiveMatch } from "@/hooks/use-live-match";
+import { useRouteEdit } from "@/hooks/use-route-edit";
 import { useSearch } from "@/hooks/use-search";
-import type { SearchCandidate } from "@/lib/engine/contract";
+import { routeFromResponse } from "@/lib/edit/edit-bridge";
+import type { DraftNotice } from "@/lib/edit/edit-hint";
+import { createEditSession } from "@/lib/edit/edit-session";
+import type { MatchWarning, SearchCandidate } from "@/lib/engine/contract";
 import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
 import {
   buildSearchRequest,
@@ -33,13 +39,18 @@ import {
   saveRouteVariant,
   type RouteVariant,
 } from "@/lib/storage/route-variant";
+import { notifyDraftsChanged, openDraftDb, requestPersist } from "@/lib/storage/drafts";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
-import { isToggleTargetKey } from "@/lib/studio/hotkeys";
+import { canEnterEdit, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
+import { editHotkey, isToggleTargetKey } from "@/lib/studio/hotkeys";
 import { canDownloadGpx, gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
 import type { HersheyFontId } from "@/lib/text/hershey";
 import { textShape, validateText } from "@/lib/text/layout";
 
 type Mode = "text" | "image";
+
+const NO_PICKS: readonly [number, number][] = [];
+const NO_WARNINGS: readonly MatchWarning[] = [];
 type TextInput = { text: string; font: HersheyFontId };
 
 /** 預設擺在台北 101 附近，長邊 2 km。 */
@@ -68,6 +79,17 @@ export function Studio() {
   const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
   const [map, setMap] = useState<MapLibreMap | null>(null);
   const engine = useEngineStatus();
+  // 微調：狀態、對引擎的請求、自動存的草稿。草稿存檔的結果（超過上限、存不了）要讓使用者看到
+  const [draftNotice, setDraftNotice] = useState<DraftNotice | null>(null);
+  const [editSession] = useState(() =>
+    createEditSession({
+      openDb: () => openDraftDb(),
+      requestPersist,
+      notifyChanged: notifyDraftsChanged,
+      onStatus: (status) => setDraftNotice(status === "saved" ? null : status),
+    }),
+  );
+  const edit = useRouteEdit({ postEdit: editSession.postEdit, saveDraft: editSession.saveDraft });
 
   const source = useMemo<SavedSource>(
     () => (mode === "text" ? { kind: "text", ...textInput } : { kind: "image", strokes: imageStrokes }),
@@ -91,7 +113,8 @@ export function Studio() {
   const { response, fineResponse, error, pending, appliedTag, appliedKey, currentKey, retry, refine } = useLiveMatch(
     request,
     dragging,
-    engine.status === "ok",
+    // 微調（含按了「完成」之後還留著的微調路線）：吸附一律停掉，進行中的請求取消、遲到的結果丟掉
+    liveMatchEnabled(engine.status === "ok", edit.state),
     engine.markDown,
     currentShapeKey,
     engine.plannerReady,
@@ -118,9 +141,23 @@ export function Studio() {
   );
   // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key。
   // 描形版與 fast 共用同一個 key；response 則是目前實際顯示的版本。
-  const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
-  const warnings = outcomeWarnings(visible);
+  const liveDownloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
+  // 畫面、資訊面板與 GPX 的路線：有微調（含按了「完成」之後）就是微調後的，否則是即時吸附的
+  const editedRoute = edit.state?.history.present ?? null;
+  const display = useMemo(
+    () => resolveDisplayedRoute(editedRoute, { response: visible.response, downloadable: liveDownloadable }, targetLengthM),
+    [editedRoute, visible.response, liveDownloadable, targetLengthM],
+  );
+  const downloadable = display.downloadable;
+  // 微調過的路線沒有警告（引擎不回半成品）；即時吸附的警告屬於被取代的路線，不再標紅
+  const liveWarnings = outcomeWarnings(visible);
+  const warnings = display.edited ? NO_WARNINGS : liveWarnings;
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
+  const editing = edit.state?.active === true;
+  const editPicks = useMemo(
+    () => (editing && edit.state ? edit.state.picks.map((p) => p.point) : NO_PICKS),
+    [editing, edit.state],
+  );
   // 搜尋結果屬於搜尋當時的圖形（候選的擺放只對它有意義）：圖形換了就不顯示、進行中的取消
   const search = useSearch(currentShapeKey, engine.markDown);
   const blocker = searchBlocker({
@@ -129,7 +166,7 @@ export function Studio() {
     engineStatus: engine.status,
     searchReady: engine.searchReady,
   });
-  const routeStart = visible.response?.route.points[0];
+  const routeStart = display.response?.route.points[0];
   const startFromCenter = searchArea && routeStart ? startDistance(searchArea, routeStart) : null;
 
   // 拖曳中圖形變成 null 時編輯器會卸載、收不到放開事件：在這裡結束拖曳，否則自動存檔會一直停著
@@ -140,6 +177,29 @@ export function Studio() {
     if (dragging || !isSavable(source)) return;
     saveWork(browserStore, { source, transform });
   }, [source, transform, dragging]);
+
+  // 使用者移動了圖形（拖曳、鍵盤、套用搜尋候選、改文字、換圖片）：離開微調、回到即時吸附。
+  // 微調的路線已經在草稿裡（每次編輯都存），不會消失。
+  const { reset: resetEdit } = edit;
+  const hasEdit = edit.state !== null;
+  useEffect(() => {
+    if (hasEdit && editSupersededBy(editSession.base(), { shapeKey: currentShapeKey, transform })) {
+      resetEdit();
+    }
+  }, [hasEdit, currentShapeKey, transform, resetEdit, editSession]);
+
+  const canEnter = canEnterEdit({
+    response: display.response,
+    downloadable: display.downloadable,
+    pending,
+    edit: edit.state,
+  });
+  const enterEdit = () => {
+    if (!canEnter || !request || !display.response) return;
+    editSession.begin({ source, transform, strokes: request.strokes, base: { shapeKey: currentShapeKey, transform } });
+    setDraftNotice(null);
+    edit.enter(routeFromResponse(display.response), null);
+  };
 
   const chooseRouteVariant = (variant: RouteVariant) => {
     setRouteVariant(variant);
@@ -156,6 +216,21 @@ export function Studio() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // 微調中的快捷鍵：⌘／Ctrl＋Z 復原、Shift＋⌘／Ctrl＋Z 重做、Esc 取消正在選的操作（打字的地方除外，見 editHotkey）
+  const { undo, redo, cancel } = edit;
+  useEffect(() => {
+    if (!editing) return;
+    const actions = { undo, redo, cancel };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const key = editHotkey(e);
+      if (!key) return;
+      e.preventDefault();
+      actions[key]();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editing, undo, redo, cancel]);
 
   const onTransform = (next: Transform, isDragging: boolean) => {
     setTransform(next);
@@ -216,15 +291,24 @@ export function Studio() {
         />
         <InfoPanel
           targetLengthM={targetLengthM}
-          response={visible.response}
+          response={display.response}
           fastResponse={visibleFast.response}
           fineResponse={currentFine}
-          error={visible.error}
-          pending={pending}
-          plannerReady={engine.plannerReady}
+          error={display.edited ? null : visible.error}
+          pending={display.edited ? (edit.state?.pending ?? false) : pending}
+          pendingLabel={display.edited ? "微調中…" : "吸附中…"}
+          edited={display.edited}
+          editAction={
+            display.edited
+              ? editing
+                ? null
+                : { label: "繼續微調", disabled: false, onClick: edit.resume }
+              : { label: "微調路線", disabled: !canEnter, onClick: enterEdit }
+          }
+          plannerReady={engine.plannerReady && !display.edited}
           routeVariant={routeVariant}
           onRouteVariantChange={chooseRouteVariant}
-          refineStatus={refine}
+          refineStatus={display.edited ? "idle" : refine}
           downloadable={downloadable}
           onRetry={retry}
           warnings={warnings}
@@ -237,28 +321,53 @@ export function Studio() {
       <main className="relative order-1 min-h-0 flex-1 md:order-2">
         <MapView
           initialCenter={transform.center}
-          response={visible.response}
-          editPicks={[]}
+          response={display.response}
+          editPicks={editPicks}
           searchArea={searchArea}
           preview={search.active ? (search.best?.match ?? null) : null}
           onMapChange={setMap}
           onError={() => setMapNotice(true)}
         >
-          {(map) =>
-            shape && (
-              <ShapeOverlay
+          {(map) => (
+            <>
+              {shape && (
+                <ShapeOverlay
+                  map={map}
+                  shape={shape}
+                  transform={transform}
+                  warned={warned}
+                  targetHidden={targetHidden}
+                  onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
+                  locked={editing}
+                  onChange={onTransform}
+                />
+              )}
+              <RouteEditLayer
                 map={map}
-                shape={shape}
-                transform={transform}
-                warned={warned}
-                targetHidden={targetHidden}
-                onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
-                locked={false}
-                onChange={onTransform}
+                route={display.edited ? display.response : null}
+                tool={edit.state?.tool ?? null}
+                enabled={editing && edit.state?.pending === false}
+                onPick={edit.pick}
+                onDrag={edit.drag}
               />
-            )
-          }
+            </>
+          )}
         </MapView>
+        {edit.state?.active && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-14 z-10 flex justify-center">
+            <EditToolbar
+              state={edit.state}
+              canUndo={edit.canUndo}
+              canRedo={edit.canRedo}
+              draftNotice={draftNotice}
+              onTool={edit.selectTool}
+              onMode={edit.chooseMode}
+              onUndo={edit.undo}
+              onRedo={edit.redo}
+              onFinish={edit.finish}
+            />
+          </div>
+        )}
         {/* 不擋操作：只有關閉按鈕接收指標事件，圖形照樣可以拖曳、吸附。live region 一直存在，提示出現時才念得出來 */}
         <div role="status" className="pointer-events-none absolute inset-x-3 bottom-10 z-10 flex justify-center">
           {mapNotice && (

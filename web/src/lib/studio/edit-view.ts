@@ -1,5 +1,5 @@
 import { responseFromRoute } from "@/lib/edit/edit-bridge";
-import type { EditState } from "@/lib/edit/edit-state";
+import type { EditedRoute, EditState } from "@/lib/edit/edit-state";
 import type { MatchResponse } from "@/lib/engine/contract";
 import type { Transform } from "@/lib/shape/transform";
 
@@ -42,15 +42,16 @@ export type DisplayedRoute = {
 };
 
 /**
- * 畫面上、資訊面板、GPX 用的路線：有微調狀態就用微調後（歷史目前那一步）的路線，否則用即時吸附的結果。
+ * 畫面上、資訊面板、GPX 用的路線：有微調的路線（edited：微調狀態裡歷史目前那一步，含按了「完成」之後）就用它，
+ * 否則用即時吸附的結果。
  * 微調的路線由引擎簽章、整條都檢查過，不需要比對請求的 key。
  */
 export function resolveDisplayedRoute(
-  edit: EditState | null,
+  edited: EditedRoute | null,
   live: { response: MatchResponse | null; downloadable: boolean },
   targetLengthM: number | null,
 ): DisplayedRoute {
-  if (edit === null) return { ...live, edited: false };
-  const response = responseFromRoute(edit.history.present, targetLengthM);
+  if (edited === null) return { ...live, edited: false };
+  const response = responseFromRoute(edited, targetLengthM);
   return { response, downloadable: response.route.points.length >= 2, edited: true };
 }
