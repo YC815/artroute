@@ -1,9 +1,29 @@
 import type { MatchOutcome } from "@/lib/engine/client";
-import type { MatchRequest } from "@/lib/engine/contract";
+import type { MatchRequest, MatchResponse } from "@/lib/engine/contract";
 import { requestKey } from "@/lib/match/request";
 
 /** 拖曳中兩次送出之間的最小間隔（spec §4.2），從上一筆送出的時間起算。 */
 export const THROTTLE_MS = 300;
+
+/** 精緻版的狀態：idle（沒有在途、也沒有要提示的失敗）、refining（fine 在途）、failed（目前擺放的 fine 失敗，顯示快速版）。 */
+export type RefineStatus = "idle" | "refining" | "failed";
+
+/**
+ * 放開後的精緻版（P2.5 spec §2、§6.5）。fast 成功、而且它就是目前擺放的請求、最後一次排程不是拖曳中時，
+ * 接著送同一個請求加 quality: "fine"。fine 不影響 pending（「吸附中…」只代表 fast），也不佔拖曳中「最多一筆在途」的名額：
+ * 排程到不同的擺放時（拖曳開始、放開、改文字…）一律 abort 在途的 fine，所以同時在途的請求仍最多一筆。
+ */
+export type RefineOptions = {
+  /** 現在能不能送 fine（引擎的 planner_ready）；每次要送之前才讀。 */
+  enabled: () => boolean;
+  /**
+   * fine 成功、而且仍是目前擺放的結果。key 是 fast 請求（不帶 quality）的 requestKey，與 onOutcome 的 key 同義：
+   * fine 和 fast 屬於同一個擺放，GPX 的判斷照舊。
+   */
+  onRefined: (response: MatchResponse, tag: string | null, key: string) => void;
+  /** 值不變時不呼叫。 */
+  onStatusChange: (status: RefineStatus) => void;
+};
 
 export type SchedulerOptions = {
   send: (request: MatchRequest, signal: AbortSignal) => Promise<MatchOutcome>;
@@ -21,6 +41,8 @@ export type SchedulerOptions = {
   intervalMs?: number;
   /** 單調遞增的毫秒時鐘；預設 performance.now()，不受系統時間調整影響。 */
   now?: () => number;
+  /** 放開後接著送精緻版；省略時只送 fast，行為與以前完全相同。 */
+  refine?: RefineOptions;
 };
 
 export type MatchScheduler = {
@@ -33,10 +55,11 @@ export type MatchScheduler = {
    * 內容與上一個送出的相同（同一個物件或結構相等）且沒有失敗就不重送；失敗的可以再送。
    * 在途那筆失敗、而最新的和它相同時不會自動重送（不對壞掉的引擎無限重試），要下一次 schedule 才重送。
    * tag 會跟著這個請求，結果回來時交給 onOutcome（例如標記請求屬於哪個圖形）。
+   * 有 refine 時：dragging 為 false 且目前擺放的 fast 已成功，就送 fine（見 RefineOptions）；擺放和在途的 fine 不同時 abort 它。
    */
   schedule: (request: MatchRequest, dragging: boolean, tag?: string | null) => void;
   /**
-   * 暫停：取消排定的節流計時器與進行中的請求（結果丟棄），pending 回到 false。
+   * 暫停：取消排定的節流計時器與進行中的請求（含 fine，結果丟棄），pending 回到 false，精緻版狀態回到 idle。
    * 排程器之後仍可繼續使用；已成功套用的請求不會因此被當成沒送過。
    */
   cancel: () => void;
@@ -50,8 +73,15 @@ const UNEXPECTED_FAILURE: MatchOutcome = {
   error: { status: 0, message: "吸附失敗（未預期的錯誤）", warnings: [], engineDown: false },
 };
 
+/** fine 的一次嘗試：屬於哪個擺放（fast 請求的 key）、在途或已經有結果。 */
+type FineAttempt = {
+  key: string;
+  controller: AbortController;
+  status: "refining" | "done" | "failed";
+};
+
 export function createMatchScheduler(options: SchedulerOptions): MatchScheduler {
-  const { send, onOutcome, onPendingChange, intervalMs = THROTTLE_MS, now = () => performance.now() } = options;
+  const { send, onOutcome, onPendingChange, intervalMs = THROTTLE_MS, now = () => performance.now(), refine } = options;
   let latest: MatchRequest | null = null;
   let latestTag: string | null = null;
   let lastSent: MatchRequest | null = null; // 同一個物件的快速判斷
@@ -62,6 +92,11 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
   let issued = 0; // 最後送出的序號
   let applied = 0; // 最後套用（或取消）的序號
   let pending = false; // 最後通知的 pending
+  let settled = false; // 最後一次 schedule 不是拖曳中：只有這時候才送 fine
+  let fastOkKey: string | null = null; // 最後套用的成功 fast 的 key
+  let fine: FineAttempt | null = null; // 目前擺放的 fine（在途、成功或失敗）；擺放變了就丟掉
+  let refineStatus: RefineStatus = "idle"; // 最後通知的精緻版狀態
+  let disposed = false;
 
   function clearTimer() {
     if (timer !== null) clearTimeout(timer);
@@ -94,11 +129,60 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
     applied = seq;
     // 最新的請求失敗了：允許同一個 request 重送（例如引擎恢復後重試）
     if (!outcome.ok && seq === issued) forgetLastSent();
+    fastOkKey = outcome.ok ? key : null;
     onOutcome(outcome, tag, key);
     // 拖曳中被擋下的 latest：和剛回來的這筆內容不同才補送。比的是這筆的 key 而不是 lastSentKey：
     // 失敗時 lastSentKey 已被清掉，拿它比會把「剛失敗的同一個請求」當成新請求而無限重送。
     if (latest !== null && requestKey(latest) !== key) arm();
     syncPending();
+    maybeRefine();
+  }
+
+  function syncRefineStatus() {
+    const next: RefineStatus = fine === null || fine.status === "done" ? "idle" : fine.status;
+    if (next === refineStatus) return;
+    refineStatus = next;
+    refine?.onStatusChange(next);
+  }
+
+  /** 丟掉目前的 fine（abort 在途的，失敗的提示也清掉）。 */
+  function dropFine() {
+    if (fine === null) return;
+    fine.controller.abort();
+    fine = null;
+    syncRefineStatus();
+  }
+
+  /**
+   * 送 fine 的條件：有 refine 且 enabled、最後一次排程不是拖曳中、沒有計時器也沒有在途的 fast、
+   * 目前擺放還沒有 fine（在途、成功或失敗都算：失敗不自動重送），而且目前擺放的 fast 已成功套用。
+   */
+  function maybeRefine() {
+    if (!refine || disposed || !settled || fine !== null || latest === null) return;
+    if (timer !== null || inFlight() || fastOkKey === null) return;
+    const key = requestKey(latest);
+    if (key !== fastOkKey || !refine.enabled()) return;
+    const request: MatchRequest = { ...latest, quality: "fine" };
+    const tag = latestTag;
+    const attempt: FineAttempt = { key, controller: new AbortController(), status: "refining" };
+    fine = attempt;
+    syncRefineStatus();
+    const { signal } = attempt.controller;
+    void send(request, signal)
+      .catch(() => UNEXPECTED_FAILURE)
+      .then((outcome) => {
+        // 被 abort（擺放變了、cancel、dispose）或已被新的嘗試取代：丟掉。新的 fast 一定是不同的擺放，
+        // schedule 在送出它之前就 dropFine 了，所以「fine 晚於新的 fast 回來」也在這裡擋下（send 不理會 abort 也一樣）。
+        if (signal.aborted || fine !== attempt) return;
+        if (outcome.ok) {
+          attempt.status = "done";
+          refine.onRefined(outcome.response, tag, key);
+        } else {
+          // 保留 fast 的路線；不自動重送，要等下一次操作
+          attempt.status = "failed";
+        }
+        syncRefineStatus();
+      });
   }
 
   /**
@@ -149,8 +233,12 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
 
   return {
     schedule(request, dragging, tag = null) {
+      // 擺放變了（拖曳開始、放開到別處、改文字…）：在途的 fine 取消、失敗的提示清掉。
+      // 只在有 fine 時才序列化比對，拖曳中第一次丟掉之後就不再多花這個成本。
+      if (fine !== null && requestKey(request) !== fine.key) dropFine();
       latest = request;
       latestTag = tag;
+      settled = !dragging;
       if (dragging) {
         arm();
       } else {
@@ -159,10 +247,14 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
         sendLatest();
       }
       syncPending();
+      // 放開的位置就是拖曳中已經成功的那筆（不重送 fast）：直接送 fine
+      maybeRefine();
     },
     cancel() {
       clearTimer();
       controller?.abort();
+      // 成功的 fine 留著（同一個擺放回來時不必重送）；在途的取消、失敗的提示清掉
+      if (fine !== null && fine.status !== "done") dropFine();
       latest = null;
       // 進行中的請求結果會被丟棄，等於沒送成：之後再排程同一個請求必須能重送
       if (applied !== issued) forgetLastSent();
@@ -171,8 +263,10 @@ export function createMatchScheduler(options: SchedulerOptions): MatchScheduler 
       syncPending();
     },
     dispose() {
+      disposed = true;
       clearTimer();
       controller?.abort();
+      fine?.controller.abort();
       latest = null;
     },
   };

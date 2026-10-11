@@ -80,18 +80,21 @@ export function Studio() {
     [shape, problem, transform, searchArea],
   );
   // 每個請求送出時帶著圖形的 key：結果只在屬於目前圖形時顯示（圖形換了、新結果回來前不顯示舊圖形的路線）
-  const { response, error, pending, appliedTag, appliedKey, currentKey, retry } = useLiveMatch(
+  // planner_ready 時，立刻送出的請求（放開、微調、套用候選、改文字）在 fast 之後接著送精緻版，回來就換上
+  const { response, error, pending, appliedTag, appliedKey, currentKey, retry, refine } = useLiveMatch(
     request,
     dragging,
     engine.status === "ok",
     engine.markDown,
     currentShapeKey,
+    engine.plannerReady,
   );
   const visible = useMemo(
     () => visibleOutcome({ response, error }, appliedTag, currentShapeKey),
     [response, error, appliedTag, currentShapeKey],
   );
-  // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key
+  // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key。
+  // 精緻版的 key 與 fast 相同（同一個擺放），所以下載的是目前顯示的那一條（fast 或 fine）
   const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
   const warnings = outcomeWarnings(visible);
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
@@ -188,6 +191,8 @@ export function Studio() {
           response={visible.response}
           error={visible.error}
           pending={pending}
+          refining={refine === "refining"}
+          refineFailed={refine === "failed"}
           downloadable={downloadable}
           onRetry={retry}
           warnings={warnings}
