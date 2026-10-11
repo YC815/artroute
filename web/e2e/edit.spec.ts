@@ -1008,3 +1008,44 @@ test("引擎沒有回 route_sig（舊版引擎）：路線與 GPX 照常，只�
   const expected = engine.lastMatch!.route.points.map(([x, y]) => `<trkpt lat="${y.toFixed(6)}" lon="${x.toFixed(6)}"/>`);
   expect(await downloadGpxPoints(page)).toEqual(expected);
 });
+
+test("按「完成」之後再打開同一份草稿：接著微調（路線與復原紀錄都在），不重建草稿", async ({ page }) => {
+  const engine = await mockEditEngine(page);
+  await makeDraft(page, engine);
+  const item = draftsPanel(page).getByRole("listitem");
+  await item.getByRole("button", { name: "打開 HI" }).click();
+  await expect(toolbar(page)).toBeVisible();
+  await expect(page.getByText(EDITED_KM, { exact: true })).toBeVisible();
+  // 歷史還在：能復原剛才的剪掉（重新打開的話歷史會重來，復原是停用的）
+  await expect(page.getByRole("button", { name: "復原" })).toBeEnabled();
+  await expect(item).toHaveCount(1);
+});
+
+test("刪除失敗後再打開同一份草稿：之後的編輯照樣存（不被刪除前的 discard 擋掉）", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/刪除草稿失敗/);
+  const engine = await mockEditEngine(page);
+  const { view } = await makeDraft(page, engine);
+  const item = draftsPanel(page).getByRole("listitem");
+  await page.getByRole("button", { name: "繼續微調" }).click();
+  await expect(toolbar(page)).toBeVisible();
+  // 下一次 IndexedDB 的刪除丟錯（只這一次）
+  await page.evaluate(() => {
+    const original = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function () {
+      IDBObjectStore.prototype.delete = original;
+      throw new DOMException("測試用的刪除失敗", "AbortError");
+    };
+  });
+  await item.getByRole("button", { name: "刪除 HI" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "刪除" }).click();
+  await expect(draftsPanel(page).getByRole("alert")).toContainText("刪除草稿失敗");
+  await expect(item).toHaveCount(1);
+
+  // 草稿還在：打開它、再微調一次，要存進去
+  await item.getByRole("button", { name: "打開 HI" }).click();
+  await expect(toolbar(page)).toBeVisible();
+  await cutOnRoute(page, engine, pickOnRoute(view, editedResponseFor(engine.edits[0], 1)));
+  await expect(page.getByText("2.10 km", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(draftsPanel(page).getByText("2.10 km")).toBeVisible();
+});
