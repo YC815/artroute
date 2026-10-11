@@ -82,15 +82,18 @@ def hausdorff_m(
     return max(forward, backward) + step_m / 2
 
 
-def start_loop_mid_side(piece: PlannedPiece) -> PlannedPiece:
-    """封閉筆畫整圈規劃成一段時（頭尾同一點），改從最長那段的中點開始、繞一圈回到那裡（同一條路徑，只換起點）。
+def start_loop_mid_side(piece: PlannedPiece, n: int) -> PlannedPiece:
+    """封閉筆畫（n 個輸入點）整圈規劃成一段時（頭尾同一點，而且目標範圍涵蓋整圈：end − start ≥ n），
+    改從最長那段的中點開始、繞一圈回到那裡（同一條路徑，只換起點）。只有頭尾同一點不夠：一段只畫半圈的路徑也可能剛好
+    繞回起點，換了起點它在目標上的先後就亂了。
 
     規劃器的圈從最尖的轉角開始；map_snap 在轉角上的起點可以吸附到兩條路的任一條（轉彎懲罰偏好不轉彎的那條），
     頭尾就吸到不同處，圈接不回來（合成正方形實測頭尾差 10 m）。從直路中間開始，頭尾只有一個吸附位置。
     edges 不跟著轉（follow 只用 points）。
     """
     points = piece.points
-    if len(points) < 3 or points[0] != points[-1]:
+    start, end = piece.target_range
+    if len(points) < 3 or points[0] != points[-1] or end - start < n:
         return piece
     origin = points[0]
     xy = _local(origin, points)

@@ -383,8 +383,11 @@ def test_closed_stroke_fallback_wraps_around_to_its_neighbours() -> None:
 
 def test_loop_is_followed_from_the_middle_of_its_longest_side() -> None:
     loop = [(121.50, LAT), (121.51, LAT), (121.51, LAT + 0.002), (121.50, LAT + 0.002), (121.50, LAT)]
-    rotated = start_loop_mid_side(piece(loop, (0, 4)))
+    rotated = start_loop_mid_side(piece(loop, (0, 4)), 4)
     middle = (121.505, LAT)
     assert rotated.points[0] == pytest.approx(middle) and rotated.points[-1] == rotated.points[0]
     assert rotated.points[1:-1] == [loop[1], loop[2], loop[3], loop[0]]
-    assert start_loop_mid_side(piece(loop[:-1], (0, 3))).points == loop[:-1]  # 不是圈就不動
+    assert start_loop_mid_side(piece(loop, (2, 6)), 4).points != loop  # 從哪裡開始繞都一樣，只要涵蓋整圈
+    assert start_loop_mid_side(piece(loop[:-1], (0, 3)), 4).points == loop[:-1]  # 不是圈就不動
+    # 頭尾剛好同一點、但目標只涵蓋半圈（例如規劃器在這段裡繞了回來）：不是整圈，不換起點
+    assert start_loop_mid_side(piece(loop, (0, 2)), 4).points == loop

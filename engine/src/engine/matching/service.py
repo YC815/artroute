@@ -244,16 +244,17 @@ class _Fallback:
 type _Item = list[Segment] | _Fallback
 
 
-def _follow_pieces(fine: _Fine, steps: list[PlanStep], index: int, closed: bool) -> list[_Item]:
+def _follow_pieces(fine: _Fine, steps: list[PlanStep], index: int, loop_points: int | None) -> list[_Item]:
     """依規劃的先後（StrokePlan.steps，不能拿範圍排序：不同的步驟可能有一樣的範圍）：照著走收下的 piece 換成那段
     Segment 的 list，其餘是 _Fallback。相鄰的 _Fallback 合成一個（規劃器的範圍在交界共用那段輸入線段），
-    所以兩個 _Fallback 之間一定隔著收下的段。封閉筆畫整圈一段時從直路中間開始照著走（start_loop_mid_side）。"""
+    所以兩個 _Fallback 之間一定隔著收下的段。loop_points：封閉筆畫的輸入點數（開放筆畫為 None）；整圈一段時從直路中間
+    開始照著走（start_loop_mid_side）。"""
     items: list[_Item] = []
     for step in steps:
         followed = None
         if isinstance(step, PlannedPiece):
             if time.monotonic() < fine.stop_at:
-                path = start_loop_mid_side(step) if closed else step
+                path = step if loop_points is None else start_loop_mid_side(step, loop_points)
                 followed = follow(fine.router, path, fine.deadline, stroke_index=index)
             if followed is None:
                 fine.rejected += 1
@@ -322,7 +323,7 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
         一條 chain 都沒有是 no_route；有段找不到路、或斷成多條 chain 是 partial。
         整個筆畫都沒規劃時，交給 fast 的就是整個目標，結果與 fast 相同。"""
         stroke, plan = strokes[index], fine.plans[index]
-        items = _follow_pieces(fine, plan.steps, index, stroke.closed)
+        items = _follow_pieces(fine, plan.steps, index, len(stroke.points) if stroke.closed else None)
         if stroke.closed:
             items = _wrap_fallbacks(items, len(stroke.points))
         blocks: list[tuple[list[list[Segment]], bool]] = []
@@ -363,7 +364,7 @@ def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: in
             return PlannedPiece(step.points, step.edges, (last - start, last - end), step.cost)
         return (last - step[0], last - step[1])
 
-    items = _follow_pieces(fine, [flip(step) for step in plan.backward_steps], index, False)
+    items = _follow_pieces(fine, [flip(step) for step in plan.backward_steps], index, None)
     blocks: list[tuple[list[list[Segment]], bool]] = []
     for k, item in enumerate(items):
         if not isinstance(item, _Fallback):
