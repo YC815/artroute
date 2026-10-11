@@ -22,6 +22,9 @@ MAX_SNAP_GAP_RADII = 2  # 吸附結果、route 端點離原始輸入點的上限
 # 以 trace 端點當 route 起訖時，連線就從路口出發，和端點之間留下最多 5 m 的缺口；兩個端點又可能被拉到同一個路口而塌縮。
 ROUTE_NODE_SNAP_TOLERANCE_M = 0
 CACHE_SIZE_BYTES = 256 * 1024 * 1024  # 每個 worker 各有一份 tile 快取（Valhalla 預設 1 GB）
+# fast 吸附的轉彎懲罰（唯一定義處）。依據 P2.5 spec §5.1：使用者盲測 V2（加 500）對現行 2 勝 0 負 10 平，
+# 減少鑽進旁邊巷子又退出來的小刺。不帶時由 meili 設定決定（設定檔的 bicycle 模式是 140）
+FAST_TURN_PENALTY_FACTOR = 500.0
 
 
 @dataclass(frozen=True)
@@ -106,11 +109,11 @@ class Router:
     所以同一個 Router 上的呼叫由鎖序列化，同時間只有一個在跑。
     要平行就開多個 Router 實例（每個各自載入 Actor）或多個行程。
 
-    turn_penalty_factor：吸附（trace）的轉彎懲罰，有值才放進 trace_options；None 不帶，由 meili 設定決定。
+    turn_penalty_factor：吸附（trace）的轉彎懲罰，預設 FAST_TURN_PENALTY_FACTOR；明確傳 None 才不帶，由 meili 設定決定。
     只影響 trace，route 與 edges 的請求不變。
     """
 
-    def __init__(self, config: Path | dict, *, turn_penalty_factor: float | None = None) -> None:
+    def __init__(self, config: Path | dict, *, turn_penalty_factor: float | None = FAST_TURN_PENALTY_FACTOR) -> None:
         try:
             self._actor = Actor(config if isinstance(config, dict) else str(config))
         except (OSError, RuntimeError) as error:  # tiles 目錄不存在（FileNotFoundError 是 OSError）、設定不合法
@@ -120,7 +123,11 @@ class Router:
 
     @classmethod
     def from_build(
-        cls, build_dir: Path, *, sigma_z: float | None = None, turn_penalty_factor: float | None = None
+        cls,
+        build_dir: Path,
+        *,
+        sigma_z: float | None = None,
+        turn_penalty_factor: float | None = FAST_TURN_PENALTY_FACTOR,
     ) -> "Router":
         return cls(load_config(build_dir, sigma_z=sigma_z), turn_penalty_factor=turn_penalty_factor)
 

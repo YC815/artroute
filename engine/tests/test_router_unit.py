@@ -7,7 +7,15 @@ import pytest
 
 from engine.routing import router as router_module
 from engine.routing.polyline import encode
-from engine.routing.router import EdgeInfo, RouteResult, Router, RoutingError, _ensure_matched, _route_result
+from engine.routing.router import (
+    FAST_TURN_PENALTY_FACTOR,
+    EdgeInfo,
+    RouteResult,
+    Router,
+    RoutingError,
+    _ensure_matched,
+    _route_result,
+)
 from engine.routing.tiles import config_path
 
 A, B, C = (121.5, 25.05), (121.502, 25.05), (121.504, 25.05)
@@ -200,9 +208,37 @@ def _write_config(build_dir: Path) -> None:
 def test_from_build_passes_sigma_z_and_turn_penalty_factor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _write_config(tmp_path)
     monkeypatch.setattr(router_module, "Actor", FakeActor)
-    router = Router.from_build(tmp_path, sigma_z=15.0, turn_penalty_factor=500.0)
+    router = Router.from_build(tmp_path, sigma_z=15.0, turn_penalty_factor=140.0)  # 都不是預設值
     actor = router._actor
     assert isinstance(actor, FakeActor) and isinstance(actor.config, dict)
     assert actor.config["meili"]["default"]["sigma_z"] == 15.0
     router.trace([A, B, C])
-    assert actor.seen[0][1]["trace_options"]["turn_penalty_factor"] == 500.0
+    assert actor.seen[0][1]["trace_options"]["turn_penalty_factor"] == 140.0
+
+
+def test_from_build_can_leave_turn_penalty_factor_out(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_config(tmp_path)
+    monkeypatch.setattr(router_module, "Actor", FakeActor)
+    router = Router.from_build(tmp_path, turn_penalty_factor=None)
+    router.trace([A, B, C])
+    actor = router._actor
+    assert isinstance(actor, FakeActor)
+    assert actor.seen[0][1]["trace_options"] == {"search_radius": 50.0}
+
+
+def test_fast_turn_penalty_factor_is_500() -> None:
+    # 使用者盲測：V2（turn_penalty_factor 500）對現行 2 勝 0 負 10 平（P2.5 spec §5.1）
+    assert FAST_TURN_PENALTY_FACTOR == 500.0
+
+
+def test_trace_uses_fast_turn_penalty_factor_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _, request = _captured_request(monkeypatch, lambda router: router.trace([A, B, C], search_radius_m=50.0))
+    assert request["trace_options"] == {"search_radius": 50.0, "turn_penalty_factor": FAST_TURN_PENALTY_FACTOR}
+
+    _write_config(tmp_path)
+    router = Router.from_build(tmp_path)
+    actor = router._actor
+    assert isinstance(actor, FakeActor) and isinstance(actor.config, dict)
+    assert actor.config["meili"]["default"]["sigma_z"] == 4.07  # sigma_z 維持建圖時的設定
+    router.trace([A, B, C])
+    assert actor.seen[0][1]["trace_options"]["turn_penalty_factor"] == FAST_TURN_PENALTY_FACTOR
