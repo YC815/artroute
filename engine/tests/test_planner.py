@@ -16,7 +16,7 @@ from engine.data.ridegraph import extract_graph
 from engine.matching.deadline import Deadline, MatchCancelled
 from engine.planner import plan as plan_module
 from engine.planner.graph import BACKWARD, FORWARD, Region, RideGraph
-from engine.planner.plan import PlannedPiece, PlannerWeights, StrokePlan, plan_shape
+from engine.planner.plan import PlannedPiece, PlannerWeights, StrokePlan, plan_shape, region_bounds
 from engine.search.geometry import place
 from engine.search.types import NormStroke, Placement
 from osm_fixture import (
@@ -293,6 +293,15 @@ def test_same_input_gives_the_same_plan(tmp_path: Path) -> None:
     first = run(region, strokes, [False, True])
     assert first == run(region, strokes, [False, True])
     assert first[1].forward  # 正方形在棋盤上也規劃得出來
+
+
+def test_region_bounds_cover_candidates_and_transitions() -> None:
+    """外框往外擴 R + 4Δ：L = 1600 m 時 R = 80 m、Δ = 16 m，所以 144 m（經度方向在這個緯度上保守一點點）。"""
+    lonlat = [[meter_point(x, y) for x, y in PARALLEL_TARGET]]
+    min_lon, min_lat, max_lon, max_lat = region_bounds(lonlat)
+    (x0, y0), (x1, y1) = to_meters([(min_lon, min_lat), (max_lon, max_lat)])
+    assert y0 == pytest.approx(-144.0, abs=0.01) and y1 == pytest.approx(144.0, abs=0.01)
+    assert -144.1 <= x0 <= -144.0 and 1744.0 <= x1 <= 1744.1
 
 
 def test_empty_region_leaves_everything_unplanned(tmp_path: Path) -> None:
