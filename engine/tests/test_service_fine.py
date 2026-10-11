@@ -197,6 +197,18 @@ def test_incomplete_backward_keeps_the_drawn_direction(monkeypatch) -> None:
     assert second[0].points[0][0] == pytest.approx(121.53) and second[-1].points[-1][0] == pytest.approx(121.52)
 
 
+def test_backward_that_needs_a_bridging_route_is_not_used(monkeypatch) -> None:
+    """反向的兩段照著走結果不相接、要靠 connect 補一段 route 才接得上：反向不補繞路（主 spec §8），照畫的方向走。"""
+    one, two = row(121.50, 121.51), row(121.53, 121.52)
+    use_plans(monkeypatch, [StrokePlan([piece(one, (0, 8))], [piece(one[::-1], (8, 0))]),
+                            StrokePlan([piece(two, (0, 8))],
+                                       [piece(row(121.52, 121.524, n=4), (8, 4)), piece(row(121.526, 121.53, n=4), (4, 0))])])
+    result = fine(Router(), [StrokeInput(one, False), StrokeInput(two, False)])
+    second = [s for s in result.segments if s.stroke_index == 1]
+    assert second[0].points[0][0] == pytest.approx(121.53) and second[-1].points[-1][0] == pytest.approx(121.52)
+    assert [s.kind for s in second] == ["stroke"]
+
+
 def test_fast_quality_or_missing_graph_never_plans(monkeypatch) -> None:
     def boom(*args, **kwargs):
         raise AssertionError("不該規劃")

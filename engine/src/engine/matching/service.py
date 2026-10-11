@@ -336,8 +336,8 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
 
 def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: int) -> list[Segment] | None:
     """開放筆畫反向（從終點畫到起點）：規劃器的 backward 照著走，沒照著走的範圍各 trace_whole 一次（同 fast 的反向：
-    只 trace 一次、不對半切、不補繞路，免得反向用繞路換掉乾淨的正向）。任何一段走不通、或串不成一條 chain 回傳 None
-    （部件照畫的方向走）。整個筆畫都沒規劃時就是 fast 的反向（整段倒過來 trace_whole 一次）。"""
+    只 trace 一次、不對半切、不補繞路，免得反向用繞路換掉乾淨的正向）。任何一段走不通、串不成一條 chain、或段與段之間
+    要靠 connect 補一段 route（kind="detour"）才接得上，都回傳 None（部件照畫的方向走）。整個筆畫都沒規劃時就是 fast 的反向（整段倒過來 trace_whole 一次）。"""
     if plan.backward_steps is None:
         return None
     last = len(stroke.points) - 1
@@ -363,7 +363,9 @@ def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: in
             return None
         blocks.append(([[whole]], False))
     chains = _link_blocks(fine, blocks, index)
-    return chains[0] if len(chains) == 1 else None
+    if len(chains) != 1 or any(segment.kind == "detour" for segment in chains[0]):
+        return None  # 串不成一條，或要靠 connect 補一段 route（kind="detour"）才接得上：反向不補繞路
+    return chains[0]
 
 
 def _fine_rematcher(fine: _Fine, strokes: list[StrokeInput], owners: list[int]) -> Rematch:
