@@ -27,6 +27,7 @@ from engine.search.types import NormStroke, Placement
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "tests" / "data" / "likeness"
 CURRENT = "V0"  # routes.json 的現行吸附（正式搜尋的結果）
+CURRENT_VARIANTS = frozenset({CURRENT, "Q2"})  # 下一輪樣本（likeness_samples）的現行預設是 Q2
 KIND_ORDER = ("現行 vs V2", "現行 vs V3", "不同擺放")
 
 type Choice = Literal["L", "R", "same"]
@@ -113,12 +114,19 @@ def _median(values: list[float]) -> float:
     return statistics.median(values) if values else float("nan")
 
 
+def split_key(key: str) -> tuple[str, int]:
+    """`<variant><rank>` → (variant, rank)。名次只有一位數（樣本最多取前 10 名），變體名稱本身可以含數字（V0、Q2）或只有一個字（F）。"""
+    return key[:-1], int(key[-1])
+
+
 def kind(pair: Pair) -> str:
-    variants = sorted((pair.left[:2], pair.right[:2]))
-    if variants == [CURRENT, CURRENT]:
+    """配對的種類：同一個變體是「不同擺放」；含現行（V0：第一輪的現行吸附；Q2：P2.5 Q2 的現行預設）的寫成「現行 vs 另一個」。"""
+    variants = sorted((split_key(pair.left)[0], split_key(pair.right)[0]))
+    if variants[0] == variants[1]:
         return "不同擺放"
-    if CURRENT in variants:
-        other = variants[1] if variants[0] == CURRENT else variants[0]
+    current = [v for v in variants if v in CURRENT_VARIANTS]
+    if len(current) == 1:
+        other = variants[1] if variants[0] == current[0] else variants[0]
         return f"現行 vs {other}"
     return f"{variants[0]} vs {variants[1]}"
 

@@ -455,3 +455,14 @@ def test_samples_cli_on_a_real_build(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "__" not in html and f"共 {len(pairs)} 組" in html
     stdout = capsys.readouterr().out
     assert "square@city@R5" in stdout and "配對" in stdout
+
+
+def test_likeness_kind_handles_single_letter_and_new_current_variants() -> None:
+    from engine.bench.likeness import Pair, kind, split_key
+
+    assert split_key("V02") == ("V0", 2) and split_key("Q21") == ("Q2", 1) and split_key("F0") == ("F", 0)
+    assert kind(Pair(1, "c", "F0", "F2", "L")) == "不同擺放"  # 舊寫法 left[:2] 會把 F0、F2 當成不同變體
+    assert kind(Pair(1, "c", "F0", "Q20", "L")) == "現行 vs F"
+    assert kind(Pair(1, "c", "P21", "Q21", "R")) == "現行 vs P2"
+    assert kind(Pair(1, "c", "V00", "V20", "same")) == "現行 vs V2"
+    assert kind(Pair(1, "c", "V00", "V02", "L")) == "不同擺放"
