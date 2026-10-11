@@ -36,7 +36,7 @@ export function EditToolbar({ state, canUndo, canRedo, draftNotice, onTool, onMo
   const { pending } = state;
   const choosingMode = state.tool === "reroute" && state.picks.length === 2 && state.rerouteMode === null && !pending;
   return (
-    <div className="pointer-events-auto flex max-w-full flex-col gap-2 rounded-lg bg-background/95 p-2 shadow-md ring-1 ring-foreground/10">
+    <div data-testid="edit-toolbar" className="pointer-events-auto flex max-w-full flex-col gap-2 rounded-lg bg-background/95 p-2 shadow-md ring-1 ring-foreground/10">
       <div className="flex flex-wrap items-center gap-2">
         <ToggleGroup
           type="single"

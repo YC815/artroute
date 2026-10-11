@@ -19,7 +19,7 @@ type Props = {
 export function ReverifyNotice({ label, state, onReverify, onBackToAuto }: Props) {
   const verifying = state.status === "verifying";
   return (
-    <div className="pointer-events-auto flex max-w-full flex-col gap-2 rounded-lg bg-background/95 p-2 shadow-md ring-1 ring-foreground/10">
+    <div data-testid="reverify-notice" className="pointer-events-auto flex max-w-full flex-col gap-2 rounded-lg bg-background/95 p-2 shadow-md ring-1 ring-foreground/10">
       <p className="text-sm font-medium">{label}</p>
       <p className="text-xs text-muted-foreground">
         仍可下載 GPX。要編輯，請先到目前的路網上重新驗證；沒通過的段會標成紅色。
