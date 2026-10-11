@@ -8,7 +8,7 @@ from engine.matching.deadline import Deadline
 from engine.matching.join import adjacent, connect
 from engine.matching.score import Score, score
 from engine.matching.stroke import match_stroke, trace_whole
-from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment
+from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, StartHint
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
@@ -199,6 +199,7 @@ def match_shape(
     *,
     search_radius_m: float | None,
     deadline: Deadline,
+    start: StartHint | None = None,
 ) -> MatchResult:
     _check_inside_taiwan(strokes)
     targets = [_target(s) for s in strokes]
@@ -211,7 +212,9 @@ def match_shape(
     if not parts:
         raise AllStrokesFailed(warnings)
 
-    composition = compose(router, parts, deadline, rematch=_rematcher(router, targets, owners, radius, deadline))
+    composition = compose(
+        router, parts, deadline, rematch=_rematcher(router, targets, owners, radius, deadline), start=start
+    )
     warnings = _merge_warnings(warnings, _dropped_warnings(owners, composition.dropped))
     _check_continuous(composition.segments)
     route = _route_points(composition.segments)

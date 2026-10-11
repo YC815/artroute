@@ -115,7 +115,7 @@ class SteppingMatch:
         self.started: list[float] = []
         self.cancelled = 0
 
-    def __call__(self, router, strokes, *, search_radius_m, deadline: Deadline) -> MatchResult:
+    def __call__(self, router, strokes, *, search_radius_m, deadline: Deadline, start=None) -> MatchResult:
         self.started.append(time.monotonic())
         try:
             for _ in range(self.steps):
@@ -135,7 +135,7 @@ class HoldingMatch:
         self.calls = 0
         self.before_return: Callable[[], None] | None = None
 
-    def __call__(self, router, strokes, *, search_radius_m, deadline: Deadline) -> MatchResult:
+    def __call__(self, router, strokes, *, search_radius_m, deadline: Deadline, start=None) -> MatchResult:
         self.calls += 1
         if self.calls == 1:
             assert self.release.wait(timeout=5)
@@ -334,7 +334,7 @@ def test_cancelled_and_timed_out_requests_are_logged(
 ) -> None:
     started: list[float] = []
 
-    def until_cancelled(router, strokes, *, search_radius_m, deadline: Deadline) -> MatchResult:
+    def until_cancelled(router, strokes, *, search_radius_m, deadline: Deadline, start=None) -> MatchResult:
         """只理會取消、不理會期限：讓它一直佔著名額，直到呼叫端離開。"""
         started.append(time.monotonic())
         for _ in range(100):
@@ -375,7 +375,7 @@ def test_cancelled_and_timed_out_requests_are_logged(
 def test_unexpected_error_is_logged_as_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def broken(router, strokes, *, search_radius_m, deadline):
+    def broken(router, strokes, *, search_radius_m, deadline, start=None):
         raise RuntimeError("bug")
 
     app = make_app(tmp_path, monkeypatch, broken)

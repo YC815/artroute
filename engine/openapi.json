@@ -33,7 +33,8 @@
               "too_small",
               "no_route",
               "no_data",
-              "timeout"
+              "timeout",
+              "no_search_data"
             ],
             "title": "Code",
             "type": "string"
@@ -90,6 +91,16 @@
               }
             ],
             "title": "Search Radius M"
+          },
+          "start_circle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StartCircle"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "strokes": {
             "items": {
@@ -148,6 +159,81 @@
           "data_version"
         ],
         "title": "MatchResponse",
+        "type": "object"
+      },
+      "NormStrokeIn": {
+        "description": "圖形的正規化座標（web 的 normalizeStrokes：x 向右、y 向上，外框中心為原點、長邊 = 1）。",
+        "properties": {
+          "closed": {
+            "default": false,
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "points": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "maximum": 1.0,
+                  "minimum": -1.0,
+                  "type": "number"
+                },
+                {
+                  "maximum": 1.0,
+                  "minimum": -1.0,
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 2000,
+            "minItems": 2,
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "NormStrokeIn",
+        "type": "object"
+      },
+      "PlacementOut": {
+        "description": "圖形的擺放，與 web 的 Transform 相同：size_m 是正規化座標 1 單位的公尺數，rotation_deg 順時針、介於 [0, 360)。",
+        "properties": {
+          "center": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Center",
+            "type": "array"
+          },
+          "rotation_deg": {
+            "exclusiveMaximum": 360.0,
+            "minimum": 0.0,
+            "title": "Rotation Deg",
+            "type": "number"
+          },
+          "size_m": {
+            "exclusiveMinimum": 0.0,
+            "title": "Size M",
+            "type": "number"
+          }
+        },
+        "required": [
+          "center",
+          "size_m",
+          "rotation_deg"
+        ],
+        "title": "PlacementOut",
         "type": "object"
       },
       "RouteOut": {
@@ -211,6 +297,260 @@
         "title": "ScoreOut",
         "type": "object"
       },
+      "SearchBest": {
+        "description": "到目前為止最好的候選（即時預覽）。",
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/SearchCandidate"
+          },
+          "type": {
+            "const": "best",
+            "default": "best",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "title": "SearchBest",
+        "type": "object"
+      },
+      "SearchCandidate": {
+        "properties": {
+          "length_ok": {
+            "title": "Length Ok",
+            "type": "boolean"
+          },
+          "match": {
+            "$ref": "#/components/schemas/MatchResponse"
+          },
+          "placement": {
+            "$ref": "#/components/schemas/PlacementOut"
+          },
+          "start_distance_m": {
+            "minimum": 0.0,
+            "title": "Start Distance M",
+            "type": "number"
+          }
+        },
+        "required": [
+          "placement",
+          "match",
+          "start_distance_m",
+          "length_ok"
+        ],
+        "title": "SearchCandidate",
+        "type": "object"
+      },
+      "SearchFailed": {
+        "description": "最後一個事件（失敗）。",
+        "properties": {
+          "code": {
+            "enum": [
+              "timeout",
+              "busy",
+              "no_data",
+              "internal"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "const": "error",
+            "default": "error",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "SearchFailed",
+        "type": "object"
+      },
+      "SearchProgress": {
+        "properties": {
+          "done": {
+            "minimum": 0.0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "stage": {
+            "enum": [
+              "coarse",
+              "refine",
+              "match"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "type": {
+            "const": "progress",
+            "default": "progress",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "done",
+          "total"
+        ],
+        "title": "SearchProgress",
+        "type": "object"
+      },
+      "SearchQueued": {
+        "properties": {
+          "position": {
+            "minimum": 1.0,
+            "title": "Position",
+            "type": "integer"
+          },
+          "type": {
+            "const": "queued",
+            "default": "queued",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "title": "SearchQueued",
+        "type": "object"
+      },
+      "SearchRequest": {
+        "properties": {
+          "center": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Center",
+            "type": "array"
+          },
+          "max_km": {
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Max Km",
+            "type": "number"
+          },
+          "min_km": {
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Min Km",
+            "type": "number"
+          },
+          "radius_m": {
+            "maximum": 10000.0,
+            "minimum": 300.0,
+            "title": "Radius M",
+            "type": "number"
+          },
+          "rotation_max_deg": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Rotation Max Deg",
+            "type": "number"
+          },
+          "rotation_min_deg": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Rotation Min Deg",
+            "type": "number"
+          },
+          "strokes": {
+            "items": {
+              "$ref": "#/components/schemas/NormStrokeIn"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Strokes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "strokes",
+          "center",
+          "radius_m",
+          "min_km",
+          "max_km",
+          "rotation_min_deg",
+          "rotation_max_deg"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResult": {
+        "description": "最後一個事件（成功）：前 5 名，依符合條件、貼合度排序；沒有符合公里數的就列出最接近的並附 notice。",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/SearchCandidate"
+            },
+            "maxItems": 5,
+            "title": "Candidates",
+            "type": "array"
+          },
+          "coarse_candidates": {
+            "minimum": 0.0,
+            "title": "Coarse Candidates",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "minimum": 0.0,
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "evaluated": {
+            "minimum": 0.0,
+            "title": "Evaluated",
+            "type": "integer"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "type": {
+            "const": "result",
+            "default": "result",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidates",
+          "coarse_candidates",
+          "evaluated",
+          "elapsed_ms"
+        ],
+        "title": "SearchResult",
+        "type": "object"
+      },
       "SegmentOut": {
         "properties": {
           "kind": {
@@ -265,6 +605,37 @@
         "title": "SegmentOut",
         "type": "object"
       },
+      "StartCircle": {
+        "description": "路線起點想落在的圓（自動搜尋的範圍）。只是提示：串接器優先從圈內、離圓心最近的進入點出發，不保證做得到。",
+        "properties": {
+          "center": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Center",
+            "type": "array"
+          },
+          "radius_m": {
+            "maximum": 10000.0,
+            "minimum": 300.0,
+            "title": "Radius M",
+            "type": "number"
+          }
+        },
+        "required": [
+          "center",
+          "radius_m"
+        ],
+        "title": "StartCircle",
+        "type": "object"
+      },
       "StatusResponse": {
         "properties": {
           "data": {
@@ -276,6 +647,11 @@
                 "type": "null"
               }
             ]
+          },
+          "search_ready": {
+            "default": false,
+            "title": "Search Ready",
+            "type": "boolean"
           }
         },
         "required": [
@@ -520,6 +896,121 @@
           }
         },
         "summary": "Match"
+      }
+    },
+    "/search": {
+      "post": {
+        "description": "自動搜尋（SSE）。事件依序：queued（排隊時）→ progress／best（多次）→ result 或 error（最後一個）。\n呼叫端離開（連線中斷）時，排隊中的立刻離開，搜尋中的在下一次檢查時停下。",
+        "operationId": "search_endpoint_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "discriminator": {
+                          "mapping": {
+                            "best": "#/components/schemas/SearchBest",
+                            "error": "#/components/schemas/SearchFailed",
+                            "progress": "#/components/schemas/SearchProgress",
+                            "queued": "#/components/schemas/SearchQueued",
+                            "result": "#/components/schemas/SearchResult"
+                          },
+                          "propertyName": "type"
+                        },
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/SearchQueued"
+                          },
+                          {
+                            "$ref": "#/components/schemas/SearchProgress"
+                          },
+                          {
+                            "$ref": "#/components/schemas/SearchBest"
+                          },
+                          {
+                            "$ref": "#/components/schemas/SearchResult"
+                          },
+                          {
+                            "$ref": "#/components/schemas/SearchFailed"
+                          }
+                        ],
+                        "title": "Streamitem Search Endpoint Search Post"
+                      },
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "圓心不在台灣範圍內（outside_taiwan）"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "圖形太小（too_small），或請求格式錯誤"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "路網資料尚未就緒（no_data），或目前的路網沒有搜尋用的道路資料（no_search_data）"
+          }
+        },
+        "summary": "Search Endpoint"
       }
     },
     "/status": {

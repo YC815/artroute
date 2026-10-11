@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import os
+import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
@@ -12,6 +14,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from starlette.concurrency import run_in_threadpool
 
 from engine.api.models import (
@@ -19,14 +22,36 @@ from engine.api.models import (
     ErrorResponse,
     MatchRequest,
     MatchResponse,
+    PlacementOut,
+    SearchBest,
+    SearchCandidate,
+    SearchEvent,
+    SearchFailed,
+    SearchProgress,
+    SearchQueued,
+    SearchRequest,
+    SearchResult,
     StatusResponse,
     ValidationErrorResponse,
 )
 from engine.data.layout import DataLayout
 from engine.data.pipeline import read_meta
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
-from engine.matching.service import AllStrokesFailed, MatchResult, OutsideTaiwan, StrokeInput, TargetTooSmall, match_shape
+from engine.matching.service import (
+    TAIWAN_BBOX,
+    AllStrokesFailed,
+    MatchResult,
+    OutsideTaiwan,
+    StrokeInput,
+    TargetTooSmall,
+    match_shape,
+)
+from engine.matching.types import StartHint
 from engine.routing.router import Router, RoutingError
+from engine.search.gate import SearchBusy, SearchGate
+from engine.search.roads import RoadDataMissing, RoadIndex, has_road_data
+from engine.search.service import run_search
+from engine.search.types import Best, Candidate, NormStroke, Progress, SearchEventOut, SearchOutcome, SearchParams
 from engine.service.current import CurrentRouter, NoDataError
 
 logger = logging.getLogger(__name__)
@@ -48,6 +73,25 @@ MATCH_ERRORS: dict[int | str, dict[str, Any]] = {
 
 def _error(status: int, code: str, message: str, **extra: Any) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message, **extra})
+
+
+def _json_error(description: str, *schemas: str) -> dict[str, Any]:
+    """/search 的錯誤回應是 JSON（串流開始前就回）；不能用 "model"：FastAPI 會把它記成路由的 text/event-stream。
+    引用的 schema 已經因為 /match 而在 components 裡。"""
+    refs = [{"$ref": f"#/components/schemas/{name}"} for name in schemas]
+    schema = refs[0] if len(refs) == 1 else {"anyOf": refs}
+    return {"description": description, "content": {"application/json": {"schema": schema}}}
+
+
+SEARCH_ERRORS: dict[int | str, dict[str, Any]] = {
+    400: _json_error("圓心不在台灣範圍內（outside_taiwan）", "ErrorResponse"),
+    422: _json_error("圖形太小（too_small），或請求格式錯誤", "ErrorResponse", "ValidationErrorResponse"),
+    503: _json_error("路網資料尚未就緒（no_data），或目前的路網沒有搜尋用的道路資料（no_search_data）", "ErrorResponse"),
+}
+SEARCH_TIMEOUT_MESSAGE = "搜尋超過時間上限，請縮小半徑或放寬條件"
+SEARCH_INTERNAL_MESSAGE = "搜尋發生內部錯誤"
+NO_SEARCH_DATA_MESSAGE = "目前的路網還沒有自動搜尋需要的道路資料，要等路網重建"
+MIN_SHAPE_EXTENT = 1e-3  # 正規化座標的外框長邊下限：更小代表所有點幾乎重合，量不出大小
 
 
 def _response(result: MatchResult, version: str) -> MatchResponse:
@@ -86,8 +130,9 @@ def _get_router(current: CurrentRouter) -> tuple[Any, str]:
 def _match(current: CurrentRouter, payload: MatchRequest, deadline: Deadline) -> MatchResponse:
     router, version = _get_router(current)
     strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
+    start = None if payload.start_circle is None else StartHint(payload.start_circle.center, payload.start_circle.radius_m)
     try:
-        result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline)
+        result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start)
     except OutsideTaiwan as error:
         raise _error(400, "outside_taiwan", str(error)) from error
     except TargetTooSmall as error:
@@ -175,11 +220,87 @@ async def _admitted_match(
         admission.release()
 
 
+class _CurrentRoads:
+    """每個 worker 一份：目前 build 的可騎道路索引（mmap），換版時重新載入。"""
+
+    def __init__(self, loader: Callable[[Path], Any]) -> None:
+        self._loader = loader
+        self._lock = threading.Lock()
+        self._build: Path | None = None
+        self._roads: Any = None
+
+    def get(self, build: Path) -> Any:
+        with self._lock:
+            if build != self._build or self._roads is None:
+                self._roads = self._loader(build)  # 沒有資料丟 RoadDataMissing
+                self._build = build
+            return self._roads
+
+
+@dataclass(frozen=True)
+class _PreparedSearch:
+    params: SearchParams
+    build: Path
+    roads: Any
+
+
+def _search_params(payload: SearchRequest) -> SearchParams:
+    return SearchParams(
+        strokes=[NormStroke(points=[(x, y) for x, y in s.points], closed=s.closed) for s in payload.strokes],
+        center=payload.center,
+        radius_m=payload.radius_m,
+        min_km=payload.min_km,
+        max_km=payload.max_km,
+        rotation_min_deg=payload.rotation_min_deg,
+        rotation_max_deg=payload.rotation_max_deg,
+    )
+
+
+def _candidate_out(candidate: Candidate, version: str) -> SearchCandidate:
+    placement = candidate.placement
+    return SearchCandidate(
+        placement=PlacementOut(
+            center=placement.center, size_m=placement.size_m, rotation_deg=placement.rotation_deg % 360.0
+        ),
+        match=_response(candidate.result, version),
+        start_distance_m=candidate.start_distance_m,
+        length_ok=candidate.length_ok,
+    )
+
+
+def _event_out(event: SearchEventOut, version: str) -> SearchProgress | SearchBest:
+    if isinstance(event, Progress):
+        return SearchProgress(stage=event.stage, done=event.done, total=event.total)
+    if isinstance(event, Best):
+        return SearchBest(candidate=_candidate_out(event.candidate, version))
+    raise TypeError(f"未知的搜尋事件：{event!r}")
+
+
+def _result_out(outcome: SearchOutcome, version: str, elapsed_s: float) -> SearchResult:
+    return SearchResult(
+        candidates=[_candidate_out(c, version) for c in outcome.candidates],
+        coarse_candidates=outcome.coarse_candidates,
+        evaluated=outcome.evaluated,
+        elapsed_ms=round(elapsed_s * 1000),
+        notice=outcome.notice,
+    )
+
+
+def _sse(event: Any) -> ServerSentEvent:
+    return ServerSentEvent(data=event, event=event.type)
+
+
 def create_app(
     data_root: Path,
     *,
     router_factory: Callable[[Path], Any] = Router.from_build,
     match_timeout_s: float = 5.0,
+    road_loader: Callable[[Path], Any] = RoadIndex.load,
+    search_timeout_s: float = 60.0,
+    search_queue_timeout_s: float = 120.0,
+    search_routers: int = 2,
+    search_gate: SearchGate | None = None,
+    search: Callable[..., SearchOutcome] = run_search,
 ) -> FastAPI:
     app = FastAPI(title="artroute-engine")
     app.add_exception_handler(RequestValidationError, _invalid_request)
@@ -206,7 +327,10 @@ def create_app(
     def status() -> StatusResponse:
         build = layout.current()
         meta = read_meta(build) if build else None
-        return StatusResponse(data=BuildInfo.model_validate(asdict(meta)) if meta else None)
+        return StatusResponse(
+            data=BuildInfo.model_validate(asdict(meta)) if meta else None,
+            search_ready=bool(meta and build and has_road_data(build)),
+        )
 
     @app.post("/match", response_model=MatchResponse, responses=MATCH_ERRORS)
     async def match(
@@ -228,6 +352,100 @@ def create_app(
         finally:
             watcher.cancel()
             log.emit(status, deadline.cancelled)
+
+    roads_cache = _CurrentRoads(road_loader)
+    # 跨 worker 行程共用的名額：同一個容器裡的 worker 共用 /tmp
+    gate = search_gate or SearchGate(Path(tempfile.gettempdir()) / "artroute-search.lock")
+
+    async def prepare_search(payload: SearchRequest) -> _PreparedSearch:
+        """開始串流之前的檢查：出錯時回一般的 JSON 錯誤（串流開始後狀態碼就改不了了）。"""
+        min_lon, min_lat, max_lon, max_lat = TAIWAN_BBOX
+        lon, lat = payload.center
+        if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
+            raise _error(400, "outside_taiwan", "圓心不在台灣範圍內")
+        xs = [x for s in payload.strokes for x, _ in s.points]
+        ys = [y for s in payload.strokes for _, y in s.points]
+        if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_SHAPE_EXTENT:
+            raise _error(422, "too_small", "圖形的所有點幾乎重合，量不出大小")
+        build = layout.current()
+        if build is None or not build.is_dir():
+            raise _error(503, "no_data", NO_DATA_MESSAGE)
+        try:
+            roads = await run_in_threadpool(roads_cache.get, build)
+        except RoadDataMissing as error:
+            raise _error(503, "no_search_data", NO_SEARCH_DATA_MESSAGE) from error
+        return _PreparedSearch(_search_params(payload), build, roads)
+
+    def _run(prepared: _PreparedSearch, deadline: Deadline, emit: Callable[[SearchEventOut], None]) -> SearchOutcome:
+        # 搜尋用自己的 Router（各自的 Actor）：不佔 /match 的名額，即時吸附不必等整個搜尋跑完
+        routers = [router_factory(prepared.build) for _ in range(max(1, search_routers))]
+        return search(prepared.params, routers, prepared.roads, deadline, emit)
+
+    @app.post("/search", response_class=EventSourceResponse, responses=SEARCH_ERRORS)
+    async def search_endpoint(prepared: Annotated[_PreparedSearch, Depends(prepare_search)]) -> AsyncIterable[SearchEvent]:
+        """自動搜尋（SSE）。事件依序：queued（排隊時）→ progress／best（多次）→ result 或 error（最後一個）。
+        呼叫端離開（連線中斷）時，排隊中的立刻離開，搜尋中的在下一次檢查時停下。"""
+        version = prepared.build.name
+        notices: asyncio.Queue[int] = asyncio.Queue()
+        acquiring = asyncio.create_task(gate.acquire(search_queue_timeout_s, lambda: False, notices.put_nowait))
+        handed_over = False
+        try:
+            while not acquiring.done():
+                notice = asyncio.ensure_future(notices.get())
+                await asyncio.wait({acquiring, notice}, return_when=asyncio.FIRST_COMPLETED)
+                if notice.done():
+                    yield _sse(SearchQueued(position=notice.result()))
+                else:
+                    notice.cancel()
+            try:
+                acquiring.result()
+            except SearchBusy as error:
+                yield _sse(SearchFailed(code="busy", message=str(error)))
+                return
+            handed_over = True
+        finally:
+            if not acquiring.done():
+                acquiring.cancel()  # 排隊中呼叫端離開：離開佇列
+            elif not handed_over and not acquiring.cancelled() and acquiring.exception() is None:
+                gate.release()  # 拿到名額的同一刻呼叫端離開了
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue[Any] = asyncio.Queue()
+        deadline = Deadline(search_timeout_s)
+        started = time.monotonic()
+        done = object()
+
+        def emit(event: SearchEventOut) -> None:
+            loop.call_soon_threadsafe(events.put_nowait, event)
+
+        async def work() -> None:
+            try:
+                outcome = await asyncio.to_thread(_run, prepared, deadline, emit)
+                events.put_nowait(_result_out(outcome, version, time.monotonic() - started))
+            except MatchTimeout:
+                events.put_nowait(SearchFailed(code="timeout", message=SEARCH_TIMEOUT_MESSAGE))
+            except MatchCancelled:
+                pass
+            except RoutingError as error:
+                logger.error("搜尋載入路網失敗：%s", error)
+                events.put_nowait(SearchFailed(code="no_data", message=NO_DATA_MESSAGE))
+            except Exception:
+                logger.exception("搜尋失敗")
+                events.put_nowait(SearchFailed(code="internal", message=SEARCH_INTERNAL_MESSAGE))
+            finally:
+                events.put_nowait(done)
+
+        task = asyncio.create_task(work())
+        # 名額在搜尋的 thread 真的結束後才釋放（呼叫端先離開也一樣），下一個搜尋不會和它重疊
+        task.add_done_callback(lambda _: gate.release())
+        try:
+            while (event := await events.get()) is not done:
+                yield _sse(event if isinstance(event, SearchResult | SearchFailed) else _event_out(event, version))
+        finally:
+            deadline.cancel()  # 呼叫端離開（產生器被取消）時讓搜尋在下一次檢查停下；正常結束時沒有作用
+            logger.info(
+                "search center=%s radius_m=%.0f elapsed_ms=%.0f cancelled=%s",
+                prepared.params.center, prepared.params.radius_m, (time.monotonic() - started) * 1000, not task.done(),
+            )
 
     return app
 
