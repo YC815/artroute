@@ -69,4 +69,5 @@ def run_search(
         evaluated=fine.done,
         notice=_notice(len(candidates), sum(c.length_ok for c in candidates)),
         evaluations=list(fine.evaluations),
+        ranked=list(fine.ranked),
     )
