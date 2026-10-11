@@ -6,10 +6,10 @@
 - 完成條件（R = 5 km 時 30 秒內前 5 名）達成：搜尋 bench 12 個案例都有 5 個候選，最慢 13.5 s、中位數 4.7 s。粗篩最多 1.3 s。記憶體峰值 1.345 GiB。60 個候選全部通過安全斷言、樓梯 0 m。`SEARCH_ROUTERS` 維持預設 2。
 - 部署中：
   - 網站 `artroute`：https://artroute.fiir.fyi ，**私人**（Cloudflare Access），含自動搜尋面板。
-  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker，`/status` 的 `search_ready: true`。部署的是 `dc48f8a` 的程式（K = 10）。
+  - 引擎 `artroute-engine`：只在內網（`http://artroute-engine:8080`），2 個 uvicorn worker，`/status` 的 `search_ready: true`。部署的是本分支 `d69e0ca` 的程式（16 個全部精算，2026-10-11 04:44Z）。
   - 路網 build `20261011T040535Z`：有可騎道路索引，654,328 條 way、5,777,571 個路段、93.9 MB。pbf 與 `20261010T235143Z` 相同，回滾用 `20261010T235143Z`。
 - 吸附 bench 的 baseline 已換成評分 v2：路線與 P1.5 完全相同，v2 overall 中位數 61、平均 53.6；不安全 0、不能直騎的接點 0、樓梯 0 m。
-- **本分支（`claude/p2-search-validation-jn70st`）還沒部署**：精算改成 16 個候選全部跑完（spec §8 第 29 列），搜尋 bench 多了 `late`、`gain` 兩欄。`/match` 與 API 契約都沒變，網站不用重新部署。
+- **本分支（`claude/p2-search-validation-jn70st`）已部署並量完**（`docs/p2-search-findings.md` 第 8 節）：精算改成 16 個候選全部跑完（spec §8 第 29 列）。12 個案例仍全部合格，最慢 19.9 s、中位數 8.3 s，記憶體峰值 2.145 GiB，安全斷言全過。前 5 名有 18／60 個來自粗篩第 11–16 名，平均 overall 比 K = 10 實際部署的結果高（中位數 +2.1）。判讀：建議評估 `FINE_KEEP` 24。`/match` 與 API 契約都沒變，網站沒有重新部署。
 
 ## 這個分支做了什麼
 
@@ -35,7 +35,7 @@
 
 ## 本機待辦（雲端連不到 m1）
 
-順序重要。完整的步驟、接受條件與停止條件寫在 PR 說明的「給本機 Agent 的 prompt」。
+順序重要。完整的步驟、接受條件與停止條件寫在 PR 說明的「給本機 Agent 的 prompt」。**1–5 已在 2026-10-11 完成**，數字見 `docs/p2-search-findings.md` 第 8 節；剩第 6 項。
 
 1. 本機驗證：`cd engine && uv run pytest -q -W error`（網站沒有改，不用跑網站全套）。
 2. 部署引擎：`cd engine && hl deploy artroute-engine --internal`；先跑容器測試 `docker build --target test .`。不重建路網。
@@ -54,7 +54,7 @@
 
 ## 已知限制與風險
 
-- 精算 16 個的時間還沒在真實路網量：最慢的案例推估約 21 s（K = 10 時 13.5 s），最壞由 25 秒軟性預算與 28 秒的單一吸附時限擋住。網站的等待時間中位數也會變長（推估 4.7 → 約 7 s）。
+- 精算 16 個後，最慢的案例 19.9 s（K = 10 時 13.5 s），網站的等待時間中位數 4.7 → 8.3 s。最壞由 25 秒軟性預算與 28 秒的單一吸附時限擋住。`FINE_KEEP` 加到 24 的話，heart 推估會碰到 25 秒的軟性預算（findings 第 8 節）。
 - 粗篩的排名幾乎預測不了精算分數（Spearman 中位數 +0.04）。粗篩參數（繞路係數、截斷 × 3、方向權重、`KEEP_A`）只在合成地圖調過；現在靠多精算彌補，粗篩本身變準要在真實資料上多量幾次。
 - 建圖的記憶體峰值沒有精確量（每 30 秒取樣，1.996 GiB）。建圖仍在服務中的容器裡跑（`docs/backlog.md` P3）。
 - 「trace 吸得到、route 進不去」的部件（ramp）可能讓搜尋的起點跑出圈外而被淘汰。
@@ -64,7 +64,7 @@
 
 ## 下一步
 
-- 本機待辦做完、判讀 K 之後進入 P3：每週自動更新資料（先處理 `docs/backlog.md` P3 一節的建圖鎖、原子寫入、一次性容器）、Cloudflare rate limiting、公開部署（`hl public artroute` 已授權，但公開前要再經使用者確認）。
+- 雲端 session 依 findings 第 8 節的判讀評估 `FINE_KEEP` 24（或 `SEARCH_ROUTERS=3`），之後進入 P3：每週自動更新資料（先處理 `docs/backlog.md` P3 一節的建圖鎖、原子寫入、一次性容器）、Cloudflare rate limiting、公開部署（`hl public artroute` 已授權，但公開前要再經使用者確認）。
 
 ## 過去的流程紀錄
 
