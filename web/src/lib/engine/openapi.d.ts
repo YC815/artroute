@@ -798,7 +798,7 @@ export interface operations {
                     "application/json": components["schemas"]["MatchResponse"];
                 };
             };
-            /** @description 簽章不對（invalid_route）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤 */
+            /** @description 簽章不對（invalid_route）、圖形太小（too_small）、新路網上有問題的段落（verify_failed，附段落序號），或請求格式錯誤 */
             422: {
                 headers: {
                     [name: string]: unknown;

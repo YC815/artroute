@@ -6,17 +6,21 @@
 """
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from engine.app import create_app
+from engine.app import VERIFY_TIMEOUT_MESSAGE, create_app
 from engine.data.build import DENIED_FILE
 from engine.data.layout import DataLayout
 from engine.data.pipeline import run_build
 from engine.edit.signature import load_or_create_key, sign_route, verify_route
+from engine.matching.score import Score
+from engine.matching.service import MatchResult
 from engine.matching.types import Segment, segment_from
 from engine.routing.router import EdgeInfo, Router, RoutingError
 from edit_router import FakeRouter
@@ -232,6 +236,27 @@ def test_slow_verify_is_504_without_a_partial_route(tmp_path: Path) -> None:
     的 deadline.check() 會紅（跑完回 200）；只拿掉其中一處時另一處仍會擋下，所以 test_safety 另外守住前者。"""
     api = fake_api(tmp_path, EdgeRouter(delay_s=0.3), denied=[], verify_timeout_s=0.2)
     assert_failed(api.post("/verify", json=signed(tmp_path, ROUTE)), "timeout", 504)
+
+
+def test_verify_queue_timeout_uses_the_verify_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/match 佔著名額、/verify 排到期限：504 的說明是重新檢查的，不是 /match 的「吸附超過時間上限」。
+    拿掉 _admit 的 timeout_message 參數（寫回 TIMEOUT_MESSAGE）會紅。"""
+    release, started = threading.Event(), threading.Event()
+
+    def holding(router, strokes, *, search_radius_m, deadline, start=None) -> MatchResult:
+        started.set()
+        assert release.wait(timeout=5)
+        return MatchResult([], 0.0, [], Score(0, 0, 0), 0.0, [])
+
+    monkeypatch.setattr("engine.app.match_shape", holding)
+    with fake_api(tmp_path, EdgeRouter(), denied=[], verify_timeout_s=0.3) as api, ThreadPoolExecutor(max_workers=2) as pool:
+        match = pool.submit(api.post, "/match", json={"strokes": STROKES})
+        assert started.wait(timeout=3)
+        response = api.post("/verify", json=signed(tmp_path, ROUTE))
+        release.set()
+        match.result()
+    assert response.status_code == 504
+    assert response.json()["detail"] == {"code": "timeout", "message": VERIFY_TIMEOUT_MESSAGE}
 
 
 def test_verify_deadline_is_independent_of_match_timeout(tmp_path: Path) -> None:
