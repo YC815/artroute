@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit
+         * @description 手動微調：剪掉、重畫、拖曳（route editing spec §3）。與 /match 共用名額、期限與斷線取消。
+         */
+        post: operations["edit_edit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -106,18 +126,56 @@ export interface components {
             /** Osm Md5 */
             osm_md5: string;
         };
+        /** CutOp */
+        CutOp: {
+            at: components["schemas"]["RoutePosIn"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "cut";
+        };
+        /** DragOp */
+        DragOp: {
+            grab: components["schemas"]["RoutePosIn"];
+            /** To */
+            to: [
+                number,
+                number
+            ];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "drag";
+        };
+        /** EditRequest */
+        EditRequest: {
+            /** Data Version */
+            data_version: string;
+            /** Op */
+            op: components["schemas"]["CutOp"] | components["schemas"]["RerouteOp"] | components["schemas"]["DragOp"];
+            /** Route Sig */
+            route_sig: string;
+            /** Segments */
+            segments: components["schemas"]["SegmentIn"][];
+            /** Strokes */
+            strokes: components["schemas"]["StrokeIn"][];
+        };
         /**
          * ErrorDetail
-         * @description 領域錯誤的 detail；warnings 只有 no_route 會帶。
+         * @description 領域錯誤的 detail；warnings 只有 /match 的 no_route 會帶，segments 只有 /verify 的 verify_failed 會帶。
          */
         ErrorDetail: {
             /**
              * Code
              * @enum {string}
              */
-            code: "outside_taiwan" | "too_small" | "no_route" | "no_data" | "timeout" | "no_search_data";
+            code: "outside_taiwan" | "too_small" | "no_route" | "no_data" | "timeout" | "no_search_data" | "stale_data" | "invalid_route" | "not_on_route" | "nothing_to_cut" | "turn_not_rideable" | "no_road" | "verify_failed";
             /** Message */
             message: string;
+            /** Segments */
+            segments?: number[] | null;
             /** Warnings */
             warnings?: components["schemas"]["WarningOut"][] | null;
         };
@@ -140,6 +198,8 @@ export interface components {
             /** Data Version */
             data_version: string;
             route: components["schemas"]["RouteOut"];
+            /** Route Sig */
+            route_sig: string;
             score: components["schemas"]["ScoreOut"];
             /** Segments */
             segments: components["schemas"]["SegmentOut"][];
@@ -179,6 +239,21 @@ export interface components {
             /** Size M */
             size_m: number;
         };
+        /** RerouteOp */
+        RerouteOp: {
+            from: components["schemas"]["RoutePosIn"];
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "shortest" | "shape";
+            to: components["schemas"]["RoutePosIn"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "reroute";
+        };
         /** RouteOut */
         RouteOut: {
             /** Length M */
@@ -188,6 +263,16 @@ export interface components {
                 number,
                 number
             ][];
+        };
+        /**
+         * RoutePosIn
+         * @description 路線上的位置：第幾段、從該段起點沿折線量的公尺數（用經緯度會在來回騎的路上選錯是哪一趟）。
+         */
+        RoutePosIn: {
+            /** Offset M */
+            offset_m: number;
+            /** Segment */
+            segment: number;
         };
         /** ScoreOut */
         ScoreOut: {
@@ -307,13 +392,33 @@ export interface components {
              */
             type: "result";
         };
+        /**
+         * SegmentIn
+         * @description 與 SegmentOut 同形：必須是上一次回應的 segments 原封不動（簽章會驗）。
+         */
+        SegmentIn: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "stroke" | "detour" | "connector" | "edit";
+            /** Length M */
+            length_m: number;
+            /** Points */
+            points: [
+                number,
+                number
+            ][];
+            /** Stroke Index */
+            stroke_index: number | null;
+        };
         /** SegmentOut */
         SegmentOut: {
             /**
              * Kind
              * @enum {string}
              */
-            kind: "stroke" | "detour" | "connector";
+            kind: "stroke" | "detour" | "connector" | "edit";
             /** Length M */
             length_m: number;
             /** Points */
@@ -420,6 +525,66 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    edit_edit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchResponse"];
+                };
+            };
+            /** @description 路線的路網版本不是目前的版本（stale_data），要先 POST /verify */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 簽章不對、這個操作做不到，或請求格式錯誤 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 路網資料尚未就緒（no_data） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 微調超過時間上限（timeout） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

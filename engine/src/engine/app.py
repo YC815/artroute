@@ -8,7 +8,8 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import AsyncIterable, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
@@ -21,10 +22,16 @@ from starlette.concurrency import run_in_threadpool
 
 from engine.api.models import (
     BuildInfo,
+    CutOp,
+    DragOp,
+    EditOp,
+    EditRequest,
     ErrorResponse,
     MatchRequest,
     MatchResponse,
     PlacementOut,
+    RerouteOp,
+    RoutePosIn,
     SearchBest,
     SearchCandidate,
     SearchEvent,
@@ -38,6 +45,10 @@ from engine.api.models import (
 )
 from engine.data.layout import DataLayout
 from engine.data.pipeline import read_meta
+from engine.edit.ops import cut_at, drag, reroute
+from engine.edit.position import RoutePos
+from engine.edit.signature import load_or_create_key, sign_route, verify_route
+from engine.edit.splice import EditRejected
 from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.service import (
     TAIWAN_BBOX,
@@ -46,9 +57,10 @@ from engine.matching.service import (
     OutsideTaiwan,
     StrokeInput,
     TargetTooSmall,
+    build_result,
     match_shape,
 )
-from engine.matching.types import StartHint
+from engine.matching.types import Segment, StartHint
 from engine.planner.graph import GraphDataMissing, RideGraph, has_graph_data
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router, RoutingError
 from engine.search.gate import SearchBusy, SearchGate
@@ -61,6 +73,9 @@ logger = logging.getLogger(__name__)
 
 NO_DATA_MESSAGE = "路網資料尚未就緒，請稍後再試"  # 固定字串：RoutingError 的訊息含 build 路徑，不能回給呼叫端
 TIMEOUT_MESSAGE = "吸附超過時間上限，請縮小圖形或減少部件"
+EDIT_TIMEOUT_MESSAGE = "微調超過時間上限，請把範圍選小一點再試"
+STALE_DATA_MESSAGE = "路網已經更新，這條路線要先重新檢查才能繼續微調"
+INVALID_ROUTE_MESSAGE = "路線的簽章不對：只能微調引擎輸出過、沒有修改的路線"
 MAX_VALIDATION_ISSUES = 20
 DISCONNECT_POLL_S = 0.05  # 多久看一次呼叫端還在不在（也是等名額時重新檢查的間隔）
 CLIENT_CLOSED = 499  # nginx 的慣例：呼叫端已經離開，這個回應不會有人收到（uvicorn 也不會送出）
@@ -71,6 +86,16 @@ MATCH_ERRORS: dict[int | str, dict[str, Any]] = {
     422: {"model": ErrorResponse | ValidationErrorResponse, "description": "圖形太小、找不到路線，或請求格式錯誤"},
     503: {"model": ErrorResponse, "description": "路網資料尚未就緒（no_data）"},
     504: {"model": ErrorResponse, "description": "吸附超過時間上限（timeout）"},
+}
+
+
+EDIT_ERRORS: dict[int | str, dict[str, Any]] = {
+    409: {"model": ErrorResponse, "description": "路線的路網版本不是目前的版本（stale_data），要先 POST /verify"},
+    # 422 有兩種形狀：領域錯誤是物件（invalid_route、not_on_route、nothing_to_cut、no_route、turn_not_rideable、no_road、too_small），
+    # 請求格式錯誤是陣列
+    422: {"model": ErrorResponse | ValidationErrorResponse, "description": "簽章不對、這個操作做不到，或請求格式錯誤"},
+    503: {"model": ErrorResponse, "description": "路網資料尚未就緒（no_data）"},
+    504: {"model": ErrorResponse, "description": "微調超過時間上限（timeout）"},
 }
 
 
@@ -98,7 +123,22 @@ GRAPH_RETRY_S = 60  # 路網圖的檔案都在卻讀不了時，多久之後再�
 MIN_SHAPE_EXTENT = 1e-3  # 正規化座標的外框長邊下限：更小代表所有點幾乎重合，量不出大小
 
 
-def _response(result: MatchResult, version: str) -> MatchResponse:
+class _EditKey:
+    """簽章金鑰：啟動時（lifespan）就建好；沒跑 lifespan 的使用方式（直接呼叫 ASGI app）第一次用到時才讀。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._key: bytes | None = None
+
+    def get(self) -> bytes:
+        with self._lock:
+            if self._key is None:
+                self._key = load_or_create_key(self._path)
+            return self._key
+
+
+def _response(result: MatchResult, version: str, key: bytes) -> MatchResponse:
     return MatchResponse.model_validate(
         {
             "route": {"points": result.route_points, "length_m": result.route_length_m},
@@ -113,6 +153,7 @@ def _response(result: MatchResult, version: str) -> MatchResponse:
             "target_length_m": result.target_length_m,
             "warnings": [asdict(w) for w in result.warnings],
             "data_version": version,
+            "route_sig": sign_route(key, version, result.segments),
         }
     )
 
@@ -138,7 +179,11 @@ def _get_router(current: CurrentRouter) -> tuple[Any, str]:
 
 
 def _match(
-    current: CurrentRouter, payload: MatchRequest, deadline: Deadline, graph: Callable[[str], Any] | None = None
+    current: CurrentRouter,
+    key: _EditKey,
+    payload: MatchRequest,
+    deadline: Deadline,
+    graph: Callable[[str], Any] | None = None,
 ) -> MatchResponse:
     """graph：build 名稱 → 那個 build 的可騎路網圖（沒有就 None）。只有 quality="fine" 才讀，fast 不碰。"""
     router, version = _get_router(current)
@@ -162,7 +207,45 @@ def _match(
         raise _error(422, "no_route", str(error), warnings=[asdict(w) for w in error.warnings]) from error
     except MatchTimeout as error:
         raise _error(504, "timeout", TIMEOUT_MESSAGE) from error
-    return _response(result, version)
+    return _response(result, version, key.get())
+
+
+def _pos(pos: RoutePosIn) -> RoutePos:
+    return RoutePos(pos.segment, pos.offset_m)
+
+
+def _apply_edit(
+    op: EditOp, router: Any, deadline: Deadline, segments: list[Segment], strokes: list[StrokeInput]
+) -> list[Segment]:
+    if isinstance(op, CutOp):
+        return cut_at(router, deadline, segments, _pos(op.at))
+    if isinstance(op, RerouteOp):
+        return reroute(router, deadline, segments, _pos(op.from_), _pos(op.to), op.mode, strokes)
+    if isinstance(op, DragOp):
+        return drag(router, deadline, segments, _pos(op.grab), op.to)
+    raise TypeError(f"未知的微調操作：{op!r}")
+
+
+def _edit(current: CurrentRouter, key: _EditKey, payload: EditRequest, deadline: Deadline) -> MatchResponse:
+    """檢查順序固定（route editing spec §3.1）：版本 → 簽章 → 操作。簽章用請求自己的版本驗，所以先比版本，
+    舊版本簽的路線不會被當成目前版本的路線編輯。任何一步沒過都只回錯，不回半成品。"""
+    router, version = _get_router(current)
+    if payload.data_version != version:
+        raise _error(409, "stale_data", STALE_DATA_MESSAGE)
+    segments = [Segment(s.kind, s.stroke_index, list(s.points), s.length_m) for s in payload.segments]
+    if not verify_route(key.get(), payload.data_version, segments, payload.route_sig):
+        raise _error(422, "invalid_route", INVALID_ROUTE_MESSAGE)
+    strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
+    try:
+        edited = _apply_edit(payload.op, router, deadline, segments, strokes)
+        result = build_result(strokes, edited, [])
+    except EditRejected as error:
+        raise _error(422, error.code, error.message) from error
+    except TargetTooSmall as error:
+        raise _error(422, "too_small", str(error)) from error
+    except MatchTimeout as error:
+        raise _error(504, "timeout", EDIT_TIMEOUT_MESSAGE) from error
+    return _response(result, version, key.get())
 
 
 async def _watch_disconnect(request: Request, deadline: Deadline) -> None:
@@ -199,42 +282,40 @@ async def _admit(admission: asyncio.Semaphore, deadline: Deadline) -> bool:
 
 
 @dataclass
-class _MatchLog:
-    """一個 /match 的紀錄：結束時寫一行 INFO，拿來確認取消有效、之後調查吸附品質。"""
+class _RequestLog:
+    """一個 /match 或 /edit 的紀錄：結束時寫一行 INFO，拿來確認取消有效、之後調查吸附品質。
+    label：行首（"match" 或 "edit op=cut"）；work：做事那段的名稱（match_ms／edit_ms）。"""
 
+    label: str
+    work: str
     strokes: int
     arrived: float = field(default_factory=time.monotonic)
     admitted: float | None = None  # 拿到名額的時刻；沒拿到（離開、逾時）就是 None
     finished: float | None = None
-    segments: int | None = None  # 吸附成功才有
+    segments: int | None = None  # 成功才有
 
     def emit(self, status: int, cancelled: bool) -> None:
         now = time.monotonic()
         if self.admitted is None:
-            wait_ms, match_ms = (now - self.arrived) * 1000, 0.0
+            wait_ms, work_ms = (now - self.arrived) * 1000, 0.0
         else:
             finished = now if self.finished is None else self.finished
-            wait_ms, match_ms = (self.admitted - self.arrived) * 1000, (finished - self.admitted) * 1000
+            wait_ms, work_ms = (self.admitted - self.arrived) * 1000, (finished - self.admitted) * 1000
         segments = "-" if self.segments is None else self.segments
         logger.info(
-            "match status=%d wait_ms=%.0f match_ms=%.0f strokes=%d segments=%s cancelled=%s",
-            status, wait_ms, match_ms, self.strokes, segments, cancelled,
+            f"{self.label} status=%d wait_ms=%.0f {self.work}_ms=%.0f strokes=%d segments=%s cancelled=%s",
+            status, wait_ms, work_ms, self.strokes, segments, cancelled,
         )
 
 
-async def _admitted_match(
-    admission: asyncio.Semaphore,
-    current: CurrentRouter,
-    payload: MatchRequest,
-    deadline: Deadline,
-    log: _MatchLog,
-    graph: Callable[[str], Any] | None = None,
+async def _admitted(
+    admission: asyncio.Semaphore, deadline: Deadline, log: _RequestLog, work: Callable[[], MatchResponse]
 ) -> Any:
     if not await _admit(admission, deadline):
         return Response(status_code=CLIENT_CLOSED)
     log.admitted = time.monotonic()
     try:
-        response = await run_in_threadpool(_match, current, payload, deadline, graph)
+        response = await run_in_threadpool(work)
         log.segments = len(response.segments)
         return response
     except MatchCancelled:
@@ -244,6 +325,32 @@ async def _admitted_match(
         # run_in_threadpool 不會丟下還在跑的 thread（即使這個 task 被取消也會等它結束），
         # 所以名額一定在吸附真的結束後才釋放，Router 不會被兩個請求同時使用
         admission.release()
+
+
+async def _serve(
+    request: Request,
+    admission: asyncio.Semaphore,
+    deadline: Deadline,
+    log: _RequestLog,
+    work: Callable[[], MatchResponse],
+) -> Any:
+    """/match 與 /edit 共用：排隊、跑、斷線取消、紀錄。
+    期限在解依賴時起算（請求本文已讀完），等名額與吸附的時間都算在內；等名額不佔 thread。
+    不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
+    最壞情況：到期（或呼叫端離開）後，最多再多一次進行中的 Valhalla 呼叫，或串接排序（2-opt）的一列。
+    呼叫端離開（web 放開、微調或離開頁面時取消在途的請求）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。"""
+    status = 500  # 沒被下面接住的例外會變成 500
+    watcher = asyncio.create_task(_watch_disconnect(request, deadline))
+    try:
+        response = await _admitted(admission, deadline, log, work)
+        status = response.status_code if isinstance(response, Response) else 200
+        return response
+    except HTTPException as error:
+        status = error.status_code
+        raise
+    finally:
+        watcher.cancel()
+        log.emit(status, deadline.cancelled)
 
 
 class _CurrentRoads:
@@ -312,6 +419,7 @@ class _PreparedSearch:
     params: SearchParams
     build: Path
     roads: Any
+    key: bytes
 
 
 def _search_params(payload: SearchRequest) -> SearchParams:
@@ -332,29 +440,29 @@ def _rotation_out(deg: float) -> float:
     return 0.0 if out >= 360.0 else out
 
 
-def _candidate_out(candidate: Candidate, version: str) -> SearchCandidate:
+def _candidate_out(candidate: Candidate, version: str, key: bytes) -> SearchCandidate:
     placement = candidate.placement
     return SearchCandidate(
         placement=PlacementOut(
             center=placement.center, size_m=placement.size_m, rotation_deg=_rotation_out(placement.rotation_deg)
         ),
-        match=_response(candidate.result, version),
+        match=_response(candidate.result, version, key),
         start_distance_m=candidate.start_distance_m,
         length_ok=candidate.length_ok,
     )
 
 
-def _event_out(event: SearchEventOut, version: str) -> SearchProgress | SearchBest:
+def _event_out(event: SearchEventOut, version: str, key: bytes) -> SearchProgress | SearchBest:
     if isinstance(event, Progress):
         return SearchProgress(stage=event.stage, done=event.done, total=event.total)
     if isinstance(event, Best):
-        return SearchBest(candidate=_candidate_out(event.candidate, version))
+        return SearchBest(candidate=_candidate_out(event.candidate, version, key))
     raise TypeError(f"未知的搜尋事件：{event!r}")
 
 
-def _result_out(outcome: SearchOutcome, version: str, elapsed_s: float) -> SearchResult:
+def _result_out(outcome: SearchOutcome, version: str, key: bytes, elapsed_s: float) -> SearchResult:
     return SearchResult(
-        candidates=[_candidate_out(c, version) for c in outcome.candidates],
+        candidates=[_candidate_out(c, version, key) for c in outcome.candidates],
         coarse_candidates=outcome.coarse_candidates,
         evaluated=outcome.evaluated,
         elapsed_ms=round(elapsed_s * 1000),
@@ -420,8 +528,18 @@ def create_app(
     search_routers: int = 2,
     search_gate: SearchGate | None = None,
     search: Callable[..., SearchOutcome] = run_search,
+    edit_key_path: Path | None = None,
+    verify_timeout_s: float = 15.0,
 ) -> FastAPI:
-    app = FastAPI(title="artroute-engine")
+    edit_key = _EditKey(data_root / "edit-key" if edit_key_path is None else edit_key_path)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # 啟動時就建好金鑰：多個 worker 同時啟動時由 load_or_create_key 保證只有一把
+        await run_in_threadpool(edit_key.get)
+        yield
+
+    app = FastAPI(title="artroute-engine", lifespan=lifespan)
     app.add_exception_handler(RequestValidationError, _invalid_request)
     layout = DataLayout(data_root)
     current = CurrentRouter(layout, router_factory)
@@ -457,22 +575,18 @@ def create_app(
     async def match(
         request: Request, payload: MatchRequest, deadline: Annotated[Deadline, Depends(start_deadline)]
     ) -> Any:
-        # 期限在解依賴時起算（請求本文已讀完），等名額與吸附的時間都算在內；等名額不佔 thread。
-        # 不含：讀取請求本文的時間、已經送進 Valhalla 的那一次呼叫（無法中斷）、已經在進行的 Router 載入。
-        # 最壞情況：到期（或呼叫端離開）後，最多再多一次進行中的 Valhalla 呼叫，或串接排序（2-opt）的一列。
-        # 呼叫端離開（web 放開、微調或離開頁面時取消在途的請求）：排隊中的立刻離開佇列，吸附中的在下一次檢查時停下，都回 499。
-        log, status = _MatchLog(strokes=len(payload.strokes)), 500  # 沒被下面接住的例外會變成 500
-        watcher = asyncio.create_task(_watch_disconnect(request, deadline))
-        try:
-            response = await _admitted_match(admission, current, payload, deadline, log, graph_cache.get)
-            status = response.status_code if isinstance(response, Response) else 200
-            return response
-        except HTTPException as error:
-            status = error.status_code
-            raise
-        finally:
-            watcher.cancel()
-            log.emit(status, deadline.cancelled)
+        log = _RequestLog("match", "match", len(payload.strokes))
+        work = functools.partial(_match, current, edit_key, payload, deadline, graph_cache.get)
+        return await _serve(request, admission, deadline, log, work)
+
+    @app.post("/edit", response_model=MatchResponse, responses=EDIT_ERRORS)
+    async def edit(
+        request: Request, payload: EditRequest, deadline: Annotated[Deadline, Depends(start_deadline)]
+    ) -> Any:
+        """手動微調：剪掉、重畫、拖曳（route editing spec §3）。與 /match 共用名額、期限與斷線取消。"""
+        log = _RequestLog(f"edit op={payload.op.type}", "edit", len(payload.strokes))
+        work = functools.partial(_edit, current, edit_key, payload, deadline)
+        return await _serve(request, admission, deadline, log, work)
 
     roads_cache = _CurrentRoads(road_loader)
     # 跨 worker 行程共用的名額：同一個容器裡的 worker 共用 /tmp
@@ -499,7 +613,8 @@ def create_app(
             roads = await run_in_threadpool(roads_cache.get, build)
         except RoadDataMissing as error:
             raise _error(503, "no_search_data", NO_SEARCH_DATA_MESSAGE) from error
-        return _PreparedSearch(_search_params(payload), build, roads)
+        key = await run_in_threadpool(edit_key.get)
+        return _PreparedSearch(_search_params(payload), build, roads, key)
 
     def _run(prepared: _PreparedSearch, deadline: Deadline, emit: Callable[[SearchEventOut], None]) -> SearchOutcome:
         # 搜尋用自己的 Router（各自的 Actor）：不佔 /match 的名額，即時吸附不必等整個搜尋跑完
@@ -551,7 +666,7 @@ def create_app(
             順序一定和產生的順序相同。結果若改由 to_thread 回傳，可能比還在路上的進度事件早到（測試實際遇過）。"""
             try:
                 outcome = _run(prepared, deadline, send)
-                send(_result_out(outcome, version, time.monotonic() - started))
+                send(_result_out(outcome, version, prepared.key, time.monotonic() - started))
             except MatchTimeout:
                 send(SearchFailed(code="timeout", message=SEARCH_TIMEOUT_MESSAGE))
             except MatchCancelled:
@@ -574,7 +689,7 @@ def create_app(
         finished = False
         try:
             while (event := await events.get()) is not done:
-                yield _sse(event if isinstance(event, SearchResult | SearchFailed) else _event_out(event, version))
+                yield _sse(event if isinstance(event, SearchResult | SearchFailed) else _event_out(event, version, prepared.key))
             finished = True
         finally:
             deadline.cancel()  # 呼叫端離開（產生器被取消）時讓搜尋在下一次檢查停下；正常結束時沒有作用

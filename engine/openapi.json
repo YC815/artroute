@@ -24,8 +24,122 @@
         "title": "BuildInfo",
         "type": "object"
       },
+      "CutOp": {
+        "properties": {
+          "at": {
+            "$ref": "#/components/schemas/RoutePosIn"
+          },
+          "type": {
+            "const": "cut",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "at"
+        ],
+        "title": "CutOp",
+        "type": "object"
+      },
+      "DragOp": {
+        "properties": {
+          "grab": {
+            "$ref": "#/components/schemas/RoutePosIn"
+          },
+          "to": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "To",
+            "type": "array"
+          },
+          "type": {
+            "const": "drag",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "grab",
+          "to"
+        ],
+        "title": "DragOp",
+        "type": "object"
+      },
+      "EditRequest": {
+        "properties": {
+          "data_version": {
+            "maxLength": 64,
+            "title": "Data Version",
+            "type": "string"
+          },
+          "op": {
+            "discriminator": {
+              "mapping": {
+                "cut": "#/components/schemas/CutOp",
+                "drag": "#/components/schemas/DragOp",
+                "reroute": "#/components/schemas/RerouteOp"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CutOp"
+              },
+              {
+                "$ref": "#/components/schemas/RerouteOp"
+              },
+              {
+                "$ref": "#/components/schemas/DragOp"
+              }
+            ],
+            "title": "Op"
+          },
+          "route_sig": {
+            "maxLength": 128,
+            "title": "Route Sig",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentIn"
+            },
+            "maxItems": 2000,
+            "minItems": 1,
+            "title": "Segments",
+            "type": "array"
+          },
+          "strokes": {
+            "items": {
+              "$ref": "#/components/schemas/StrokeIn"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Strokes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "segments",
+          "data_version",
+          "route_sig",
+          "strokes",
+          "op"
+        ],
+        "title": "EditRequest",
+        "type": "object"
+      },
       "ErrorDetail": {
-        "description": "領域錯誤的 detail；warnings 只有 no_route 會帶。",
+        "description": "領域錯誤的 detail；warnings 只有 /match 的 no_route 會帶，segments 只有 /verify 的 verify_failed 會帶。",
         "properties": {
           "code": {
             "enum": [
@@ -34,7 +148,14 @@
               "no_route",
               "no_data",
               "timeout",
-              "no_search_data"
+              "no_search_data",
+              "stale_data",
+              "invalid_route",
+              "not_on_route",
+              "nothing_to_cut",
+              "turn_not_rideable",
+              "no_road",
+              "verify_failed"
             ],
             "title": "Code",
             "type": "string"
@@ -42,6 +163,20 @@
           "message": {
             "title": "Message",
             "type": "string"
+          },
+          "segments": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segments"
           },
           "warnings": {
             "anyOf": [
@@ -142,6 +277,10 @@
           "route": {
             "$ref": "#/components/schemas/RouteOut"
           },
+          "route_sig": {
+            "title": "Route Sig",
+            "type": "string"
+          },
           "score": {
             "$ref": "#/components/schemas/ScoreOut"
           },
@@ -171,7 +310,8 @@
           "score",
           "target_length_m",
           "warnings",
-          "data_version"
+          "data_version",
+          "route_sig"
         ],
         "title": "MatchResponse",
         "type": "object"
@@ -251,6 +391,37 @@
         "title": "PlacementOut",
         "type": "object"
       },
+      "RerouteOp": {
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/RoutePosIn"
+          },
+          "mode": {
+            "enum": [
+              "shortest",
+              "shape"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "to": {
+            "$ref": "#/components/schemas/RoutePosIn"
+          },
+          "type": {
+            "const": "reroute",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "from",
+          "to",
+          "mode"
+        ],
+        "title": "RerouteOp",
+        "type": "object"
+      },
       "RouteOut": {
         "properties": {
           "length_m": {
@@ -281,6 +452,27 @@
           "length_m"
         ],
         "title": "RouteOut",
+        "type": "object"
+      },
+      "RoutePosIn": {
+        "description": "路線上的位置：第幾段、從該段起點沿折線量的公尺數（用經緯度會在來回騎的路上選錯是哪一趟）。",
+        "properties": {
+          "offset_m": {
+            "minimum": 0.0,
+            "title": "Offset M",
+            "type": "number"
+          },
+          "segment": {
+            "minimum": 0.0,
+            "title": "Segment",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "segment",
+          "offset_m"
+        ],
+        "title": "RoutePosIn",
         "type": "object"
       },
       "ScoreOut": {
@@ -573,13 +765,73 @@
         "title": "SearchResult",
         "type": "object"
       },
+      "SegmentIn": {
+        "description": "與 SegmentOut 同形：必須是上一次回應的 segments 原封不動（簽章會驗）。",
+        "properties": {
+          "kind": {
+            "enum": [
+              "stroke",
+              "detour",
+              "connector",
+              "edit"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "length_m": {
+            "minimum": 0.0,
+            "title": "Length M",
+            "type": "number"
+          },
+          "points": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 20000,
+            "minItems": 2,
+            "title": "Points",
+            "type": "array"
+          },
+          "stroke_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stroke Index"
+          }
+        },
+        "required": [
+          "kind",
+          "stroke_index",
+          "points",
+          "length_m"
+        ],
+        "title": "SegmentIn",
+        "type": "object"
+      },
       "SegmentOut": {
         "properties": {
           "kind": {
             "enum": [
               "stroke",
               "detour",
-              "connector"
+              "connector",
+              "edit"
             ],
             "title": "Kind",
             "type": "string"
@@ -825,6 +1077,83 @@
           }
         },
         "summary": "Root"
+      }
+    },
+    "/edit": {
+      "post": {
+        "description": "手動微調：剪掉、重畫、拖曳（route editing spec §3）。與 /match 共用名額、期限與斷線取消。",
+        "operationId": "edit_edit_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "路線的路網版本不是目前的版本（stale_data），要先 POST /verify"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Edit Edit Post"
+                }
+              }
+            },
+            "description": "簽章不對、這個操作做不到，或請求格式錯誤"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "路網資料尚未就緒（no_data）"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "微調超過時間上限（timeout）"
+          }
+        },
+        "summary": "Edit"
       }
     },
     "/health": {

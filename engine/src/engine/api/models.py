@@ -46,8 +46,12 @@ class RouteOut(BaseModel):
     length_m: float = Field(ge=0)
 
 
+# edit：手動微調換上的段落，只有 /edit、/verify 會回（route editing spec §3.2）
+SegmentKind = Literal["stroke", "detour", "connector", "edit"]
+
+
 class SegmentOut(BaseModel):
-    kind: Literal["stroke", "detour", "connector"]
+    kind: SegmentKind
     stroke_index: int | None
     points: list[LonLatPair]
     length_m: float = Field(ge=0)
@@ -74,6 +78,59 @@ class MatchResponse(BaseModel):
     target_length_m: float = Field(ge=0)
     warnings: list[WarningOut]
     data_version: str
+    # 整條路線（data_version＋依序的每段）的 HMAC-SHA256（route editing spec §3.4）：/edit、/verify 原封不動帶回來
+    route_sig: str
+
+
+# ---- POST /edit、POST /verify（route editing spec §3）：請求帶整條路線與它的簽章 ----
+
+
+class RoutePosIn(BaseModel):
+    """路線上的位置：第幾段、從該段起點沿折線量的公尺數（用經緯度會在來回騎的路上選錯是哪一趟）。"""
+
+    segment: int = Field(ge=0)
+    offset_m: Finite = Field(ge=0)
+
+
+class CutOp(BaseModel):
+    type: Literal["cut"]
+    at: RoutePosIn
+
+
+class RerouteOp(BaseModel):
+    type: Literal["reroute"]
+    from_: RoutePosIn = Field(alias="from")
+    to: RoutePosIn
+    mode: Literal["shortest", "shape"]
+
+
+class DragOp(BaseModel):
+    type: Literal["drag"]
+    grab: RoutePosIn
+    to: LonLatPair
+
+
+EditOp = Annotated[CutOp | RerouteOp | DragOp, Field(discriminator="type")]
+
+
+class SegmentIn(BaseModel):
+    """與 SegmentOut 同形：必須是上一次回應的 segments 原封不動（簽章會驗）。"""
+
+    kind: SegmentKind
+    stroke_index: int | None = Field(ge=0)
+    points: list[LonLatPair] = Field(min_length=2, max_length=20_000)
+    length_m: Finite = Field(ge=0)
+
+
+class RouteRequest(BaseModel):
+    segments: list[SegmentIn] = Field(min_length=1, max_length=2000)
+    data_version: str = Field(max_length=64)
+    route_sig: str = Field(max_length=128)
+    strokes: list[StrokeIn] = Field(min_length=1, max_length=40)
+
+
+class EditRequest(RouteRequest):
+    op: EditOp
 
 
 class BuildInfo(BaseModel):
@@ -91,11 +148,16 @@ class StatusResponse(BaseModel):
 
 
 class ErrorDetail(BaseModel):
-    """領域錯誤的 detail；warnings 只有 no_route 會帶。"""
+    """領域錯誤的 detail；warnings 只有 /match 的 no_route 會帶，segments 只有 /verify 的 verify_failed 會帶。"""
 
-    code: Literal["outside_taiwan", "too_small", "no_route", "no_data", "timeout", "no_search_data"]
+    code: Literal[
+        "outside_taiwan", "too_small", "no_route", "no_data", "timeout", "no_search_data",
+        # 手動微調（route editing spec §3.1、§3.6）
+        "stale_data", "invalid_route", "not_on_route", "nothing_to_cut", "turn_not_rideable", "no_road", "verify_failed",
+    ]
     message: str
     warnings: list[WarningOut] | None = None
+    segments: list[int] | None = None  # 在目前的路網上有問題的段落序號（接點有問題時兩側都列）
 
 
 class ErrorResponse(BaseModel):

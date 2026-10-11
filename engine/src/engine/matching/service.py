@@ -432,6 +432,29 @@ def _never_raising(rematch: Rematch) -> Rematch:
     return guarded
 
 
+def _checked_targets(strokes: list[StrokeInput]) -> tuple[list[list[LonLat]], float]:
+    """每個筆畫的目標折線（封閉的接回起點）與總長；圖形太小丟 TargetTooSmall（score 量不出來）。"""
+    targets = [_target(s) for s in strokes]
+    target_length = sum(polyline_length_m(t) for t in targets)
+    if target_length < MIN_TARGET_LENGTH_M or _diagonal_m(strokes) < MIN_DIAGONAL_M:
+        raise TargetTooSmall(f"圖形太小：總長須至少 {MIN_TARGET_LENGTH_M:.0f} m，且範圍須至少 {MIN_DIAGONAL_M:.0f} m")
+    return targets, target_length
+
+
+def build_result(strokes: list[StrokeInput], segments: list[Segment], warnings: list[MatchWarning]) -> MatchResult:
+    """已經組好的路線（吸附或手動微調的結果）對原圖算分數，包成回應用的 MatchResult。"""
+    targets, target_length = _checked_targets(strokes)
+    route = route_points(segments)
+    return MatchResult(
+        route_points=route,
+        route_length_m=sum(s.length_m for s in segments),
+        segments=segments,
+        score=score(targets, route),
+        target_length_m=target_length,
+        warnings=warnings,
+    )
+
+
 def match_shape(
     router: MatchRouter,
     strokes: list[StrokeInput],
@@ -449,10 +472,7 @@ def match_shape(
     與沒有這兩個參數的版本完全相同。fine 的預算是 0 或規劃失敗（非期限的例外）時也整張圖走 fast（_start_fine）。串接、剪小刺、連續性檢查與評分兩種都一樣。
     """
     _check_inside_taiwan(strokes)
-    targets = [_target(s) for s in strokes]
-    target_length = sum(polyline_length_m(t) for t in targets)
-    if target_length < MIN_TARGET_LENGTH_M or _diagonal_m(strokes) < MIN_DIAGONAL_M:
-        raise TargetTooSmall(f"圖形太小：總長須至少 {MIN_TARGET_LENGTH_M:.0f} m，且範圍須至少 {MIN_DIAGONAL_M:.0f} m")
+    targets, _ = _checked_targets(strokes)
     radius = _resolve_radius(search_radius_m, strokes)
 
     rematch: Rematch
@@ -483,12 +503,4 @@ def match_shape(
         check_continuous(segments)
         segments = prune_loops(router, segments, targets, deadline, extent_m=target_extent_m(targets))
     check_continuous(segments)
-    route = route_points(segments)
-    return MatchResult(
-        route_points=route,
-        route_length_m=sum(s.length_m for s in segments),
-        segments=segments,
-        score=score(targets, route),
-        target_length_m=target_length,
-        warnings=warnings,
-    )
+    return build_result(strokes, segments, warnings)

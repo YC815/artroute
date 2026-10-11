@@ -29,5 +29,5 @@ def test_match_declares_its_error_bodies(tmp_path: Path) -> None:
         "ValidationErrorResponse",
     }
     detail = spec["components"]["schemas"]["ErrorDetail"]
-    assert set(detail["properties"]) == {"code", "message", "warnings"}
+    assert set(detail["properties"]) == {"code", "message", "warnings", "segments"}
     assert detail["required"] == ["code", "message"]
