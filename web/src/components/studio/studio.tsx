@@ -27,6 +27,12 @@ import {
 } from "@/lib/search/params";
 import { shapeLengthM, type Transform } from "@/lib/shape/transform";
 import type { Shape, Stroke } from "@/lib/shape/types";
+import {
+  displayedRoute,
+  loadRouteVariant,
+  saveRouteVariant,
+  type RouteVariant,
+} from "@/lib/storage/route-variant";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
 import { isToggleTargetKey } from "@/lib/studio/hotkeys";
 import { canDownloadGpx, gpxName, isSavable, outcomeWarnings, shapeKey, visibleOutcome } from "@/lib/studio/state";
@@ -57,6 +63,7 @@ export function Studio() {
   const [mapNotice, setMapNotice] = useState(false);
   // 隱藏原圖（P2.5 spec §5.4）：只看路線像不像。預設顯示、不存檔，重新載入就恢復
   const [targetHidden, setTargetHidden] = useState(false);
+  const [routeVariant, setRouteVariant] = useState<RouteVariant>(() => loadRouteVariant(browserStore));
   // 自動搜尋的範圍：設定後，即時吸附的每個請求都帶 start_circle（手動微調時起點仍盡量在圈內）
   const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -80,8 +87,8 @@ export function Studio() {
     [shape, problem, transform, searchArea],
   );
   // 每個請求送出時帶著圖形的 key：結果只在屬於目前圖形時顯示（圖形換了、新結果回來前不顯示舊圖形的路線）
-  // planner_ready 時，立刻送出的請求（放開、微調、套用候選、改文字）在 fast 之後接著送精緻版，回來就換上
-  const { response, error, pending, appliedTag, appliedKey, currentKey, retry, refine } = useLiveMatch(
+  // planner_ready 時，立刻送出的請求在 fast 之後接著送描形版；兩版同時保留，依使用者偏好顯示
+  const { response, fineResponse, error, pending, appliedTag, appliedKey, currentKey, retry, refine } = useLiveMatch(
     request,
     dragging,
     engine.status === "ok",
@@ -89,12 +96,28 @@ export function Studio() {
     currentShapeKey,
     engine.plannerReady,
   );
-  const visible = useMemo(
+  const visibleFast = useMemo(
     () => visibleOutcome({ response, error }, appliedTag, currentShapeKey),
     [response, error, appliedTag, currentShapeKey],
   );
+  // 描形版除了圖形相同，還必須屬於目前擺放；換位置而新 fast 尚未回來時不能沿用舊描形版。
+  const currentFine = useMemo(
+    () =>
+      engine.plannerReady && appliedTag === currentShapeKey && appliedKey !== null && appliedKey === currentKey
+        ? fineResponse
+        : null,
+    [engine.plannerReady, appliedTag, currentShapeKey, appliedKey, currentKey, fineResponse],
+  );
+  const shown = useMemo(
+    () => displayedRoute(routeVariant, visibleFast.response, currentFine),
+    [routeVariant, visibleFast.response, currentFine],
+  );
+  const visible = useMemo(
+    () => ({ response: shown.response, error: visibleFast.error }),
+    [shown.response, visibleFast.error],
+  );
   // 圖形的 tag 只分得出「哪個圖形」；下載要分到「哪個擺放」：結果所屬請求的 key 等於目前請求的 key。
-  // 精緻版的 key 與 fast 相同（同一個擺放），所以下載的是目前顯示的那一條（fast 或 fine）
+  // 描形版與 fast 共用同一個 key；response 則是目前實際顯示的版本。
   const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
   const warnings = outcomeWarnings(visible);
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
@@ -117,6 +140,11 @@ export function Studio() {
     if (dragging || !isSavable(source)) return;
     saveWork(browserStore, { source, transform });
   }, [source, transform, dragging]);
+
+  const chooseRouteVariant = (variant: RouteVariant) => {
+    setRouteVariant(variant);
+    saveRouteVariant(browserStore, variant);
+  };
 
   // 快捷鍵 H 切換隱藏原圖；掛在 window 上，焦點在哪裡都能用（打字的地方與帶修飾鍵的除外，見 isToggleTargetKey）
   useEffect(() => {
@@ -189,10 +217,14 @@ export function Studio() {
         <InfoPanel
           targetLengthM={targetLengthM}
           response={visible.response}
+          fastResponse={visibleFast.response}
+          fineResponse={currentFine}
           error={visible.error}
           pending={pending}
-          refining={refine === "refining"}
-          refineFailed={refine === "failed"}
+          plannerReady={engine.plannerReady}
+          routeVariant={routeVariant}
+          onRouteVariantChange={chooseRouteVariant}
+          refineStatus={refine}
           downloadable={downloadable}
           onRetry={retry}
           warnings={warnings}

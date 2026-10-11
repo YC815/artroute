@@ -7,19 +7,25 @@ import type { MatchError } from "@/lib/engine/client";
 import type { MatchResponse, MatchWarning } from "@/lib/engine/contract";
 import { buildGpx, gpxFileName } from "@/lib/export/gpx";
 import { formatDataVersion, formatDistance } from "@/lib/format";
+import type { RefineStatus } from "@/lib/match/scheduler";
 import type { LonLat } from "@/lib/shape/types";
+import type { RouteVariant } from "@/lib/storage/route-variant";
 import { canRetry } from "@/lib/studio/state";
 
 type Props = {
   targetLengthM: number | null;
   /** 目前有效的吸附結果；圖形不能吸附、或結果屬於上一個圖形時為 null，不顯示舊路線。 */
   response: MatchResponse | null;
+  /** 目前擺放的快速版與描形版，用於切換選項顯示各自分數。 */
+  fastResponse: MatchResponse | null;
+  fineResponse: MatchResponse | null;
   error: MatchError | null;
   pending: boolean;
-  /** 放開後的精緻版（quality: "fine"）在途：顯示「精緻化中…」，路線先用快速版。 */
-  refining: boolean;
-  /** 目前擺放的精緻版失敗：路線維持快速版，顯示一行提示（下一次操作清掉）。 */
-  refineFailed: boolean;
+  plannerReady: boolean;
+  /** 使用者偏好的版本；描形版不可用時仍保留偏好，但畫面暫時顯示快速版。 */
+  routeVariant: RouteVariant;
+  onRouteVariantChange: (variant: RouteVariant) => void;
+  refineStatus: RefineStatus;
   /** 路線是目前這個擺放的、可以下載 GPX（見 canDownloadGpx）。 */
   downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
@@ -35,8 +41,8 @@ type Props = {
   startDistance: { distanceM: number; outside: boolean } | null;
 };
 
-/** 精緻版失敗時的提示（不是錯誤：快速版的路線照常可用、可下載）。 */
-const REFINE_FAILED_NOTICE = "精緻版失敗，顯示快速版";
+/** 描形版失敗時的提示（不是錯誤：快速版的路線照常可用、可下載）。 */
+const REFINE_FAILED_NOTICE = "描形版失敗，顯示快速版";
 
 /** object URL 保留多久才釋放：iOS Safari 與較慢的下載處理可能在 click 之後一段時間才讀檔。 */
 const REVOKE_AFTER_MS = 60_000;
@@ -75,8 +81,23 @@ const LEGEND = [
 
 export function InfoPanel(props: Props) {
   const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion } = props;
-  const { workName, startDistance, refining, refineFailed } = props;
+  const {
+    workName,
+    startDistance,
+    plannerReady,
+    routeVariant,
+    onRouteVariantChange,
+    refineStatus,
+    fastResponse,
+    fineResponse,
+  } = props;
   const score = response?.score;
+  const fineLabel =
+    fineResponse !== null
+      ? `描形版 ${fineResponse.score.overall}%`
+      : refineStatus === "failed"
+        ? "描形版 失敗"
+        : "描形版 計算中…";
   const headingId = useId();
   return (
     <section className="flex flex-col gap-3" aria-labelledby={headingId}>
@@ -84,15 +105,37 @@ export function InfoPanel(props: Props) {
         <h2 id={headingId} className="text-sm font-semibold">
           路線資訊
         </h2>
-        {/* 「吸附中…」優先：fast 在途時 fine 一定已被取消或還沒送 */}
+        {/* 「吸附中…」優先：fast 在途時描形版一定已被取消或還沒送 */}
         <div role="status">
           {pending ? (
             <Badge variant="secondary">吸附中…</Badge>
           ) : (
-            refining && <Badge variant="secondary">精緻化中…</Badge>
+            refineStatus === "refining" && <Badge variant="secondary">描形版計算中…</Badge>
           )}
         </div>
       </div>
+      {plannerReady && (
+        <div role="group" aria-label="路線版本" className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={routeVariant === "fast" ? "default" : "outline"}
+            aria-pressed={routeVariant === "fast"}
+            onClick={() => onRouteVariantChange("fast")}
+          >
+            快速版 {fastResponse ? `${fastResponse.score.overall}%` : "—"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={routeVariant === "fine" ? "default" : "outline"}
+            aria-pressed={routeVariant === "fine"}
+            onClick={() => onRouteVariantChange("fine")}
+          >
+            {fineLabel}
+          </Button>
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         <Row label="目標長度" value={targetLengthM === null ? "—" : formatDistance(targetLengthM)} />
         <Row label="路線長度" value={response ? formatDistance(response.route.length_m) : "—"} />
@@ -109,7 +152,9 @@ export function InfoPanel(props: Props) {
         <Row label="路網資料" value={formatDataVersion(response?.data_version ?? dataVersion ?? "—")} />
       </div>
       <div aria-live="polite">
-        {refineFailed && response && <p className="text-xs text-muted-foreground">{REFINE_FAILED_NOTICE}</p>}
+        {routeVariant === "fine" && refineStatus === "failed" && response && (
+          <p className="text-xs text-muted-foreground">{REFINE_FAILED_NOTICE}</p>
+        )}
       </div>
 
       {/* live region 一直留在 DOM 裡（不用 hidden）：內容出現時才念得出來 */}

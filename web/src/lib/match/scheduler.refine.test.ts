@@ -6,7 +6,7 @@ import { requestKey } from "@/lib/match/request";
 import { createMatchScheduler, type RefineStatus } from "@/lib/match/scheduler";
 
 /**
- * 放開後的精緻版（P2.5 spec §2、§6.5）：fast 成功、擺放沒變、planner_ready 時接著送同一個請求加 quality: "fine"。
+ * 放開後的描形版（P2.5 spec §2、§6.5）：fast 成功、擺放沒變、planner_ready 時接著送同一個請求加 quality: "fine"。
  * 拖曳中絕不送 fine；新的操作取消在途的 fine；fine 失敗保留 fast 並回報 failed，不自動重送。
  */
 
@@ -61,7 +61,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("放開後的精緻版（fine）", () => {
+describe("放開後的描形版（fine）", () => {
   it("fast 成功後接著送同一個請求加 quality: fine；fast 的請求不帶 quality（與以前逐位元相同）", async () => {
     const { scheduler, calls, onOutcome, onRefined, statuses } = setup();
     const r = req(1);
