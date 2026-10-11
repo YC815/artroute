@@ -462,8 +462,7 @@ test("隱藏原圖：按鈕與 H 切換目標線，路線與把手照常", async
   const decoder = await page.context().newPage();
   const expectHidden = async () => {
     await expect(targets).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "顯示原圖" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveAttribute("aria-pressed", "true");
     // 路線（MapLibre 圖層）照常畫：截圖數路線藍色的像素；外框與把手照常在
     await expect(map).not.toHaveAttribute("data-route-segments", "0");
     await expect
@@ -479,13 +478,12 @@ test("隱藏原圖：按鈕與 H 切換目標線，路線與把手照常", async
     await expect(targets).toHaveCount(strokeCount);
     await expect(targets.first()).toBeAttached();
     await expect(page.getByRole("button", { name: "隱藏原圖" })).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByRole("button", { name: "顯示原圖" })).toHaveCount(0);
   };
 
   // 按鈕：隱藏 → 再按恢復
   await page.getByRole("button", { name: "隱藏原圖" }).click();
   await expectHidden();
-  await page.getByRole("button", { name: "顯示原圖" }).click();
+  await page.getByRole("button", { name: "隱藏原圖" }).click();
   await expectShown();
 
   // 鍵盤 H（大小寫都可）：焦點在按鈕上（不是輸入框）時切換

@@ -229,7 +229,7 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
         <Button size="sm" variant="secondary" className="shadow" onClick={recenter}>
           圖形移到畫面中央
         </Button>
-        {/* 快捷鍵 H 在 studio 處理（焦點不在圖形上也能用） */}
+        {/* 快捷鍵 H 在 studio 處理（焦點不在圖形上也能用）。切換按鈕的名稱固定、狀態由 aria-pressed 表達（WAI-ARIA toggle button） */}
         <Button
           size="sm"
           variant="secondary"
@@ -239,7 +239,7 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
           title="快捷鍵：H"
           onClick={onToggleTarget}
         >
-          {targetHidden ? "顯示原圖" : "隱藏原圖"}
+          隱藏原圖
         </Button>
       </div>
     </>
