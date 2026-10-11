@@ -311,10 +311,29 @@ def test_generated_files_round_trip_through_likeness_loader(tmp_path: Path) -> N
 
 
 def test_variant_table() -> None:
-    assert list(ls.VARIANTS) == ["Q2", "P2"]
+    assert list(ls.VARIANTS) == ["Q2", "P2", "F"]
     assert ls.VARIANTS["Q2"].router == {} and ls.VARIANTS["Q2"].match == {}  # 現行預設：什麼都不覆寫
     assert ls.VARIANTS["P2"].router == {"turn_penalty_factor": None}
     assert ls.VARIANTS["P2"].match == {"prune": False}
+    assert ls.VARIANTS["F"].router == {} and ls.VARIANTS["F"].match == {"quality": "fine"} and ls.VARIANTS["F"].needs_graph
+    assert ("F", "Q2") in ls.ALWAYS_PAIRS  # 現行 vs 規劃器：不論差距
+
+
+def test_fine_variant_needs_the_graph_and_passes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    def fake_match(router, strokes, **kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(ls, "match_shape", fake_match)
+    case = SearchCase("sq@x@R5", SQUARE, (121.5, 25.05), 800.0, 1.0, 3.0, (-15.0, 15.0))
+    with pytest.raises(ValueError):  # 沒有圖就不跑：否則 match_shape 悄悄退回 fast，標成 fast 對 fast
+        ls.match_variant(object(), case, placement_of(0), "F")
+    graph = object()
+    with pytest.raises(RuntimeError):
+        ls.match_variant(object(), case, placement_of(0), "F", graph)
+    assert calls[-1]["quality"] == "fine" and calls[-1]["graph"] is graph
 
 
 def test_variants_build_routers_and_match_with_their_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,7 +461,7 @@ def test_samples_cli_on_a_real_build(tmp_path: Path, monkeypatch: pytest.MonkeyP
     case = SearchCase("square@city@R5", SQUARE, CITY_CENTER, 800.0, 2.0, 4.0, (-15.0, 15.0))
     monkeypatch.setattr(ls, "SEARCH_CASES", [case])
     out = tmp_path / "out"
-    ls.main(["samples", "--out", str(out), "--data-dir", str(data), "--top", "2", "--min-gap", "0"])
+    ls.main(["samples", "--out", str(out), "--data-dir", str(data), "--top", "2", "--min-gap", "0", "--variants", "Q2,P2"])
     with gzip.open(out / "routes.json.gz", "rt") as f:
         (e,) = json.load(f)
     assert e["case"] == "square@city@R5"
@@ -466,3 +485,17 @@ def test_likeness_kind_handles_single_letter_and_new_current_variants() -> None:
     assert kind(Pair(1, "c", "P21", "Q21", "R")) == "現行 vs P2"
     assert kind(Pair(1, "c", "V00", "V20", "same")) == "現行 vs V2"
     assert kind(Pair(1, "c", "V00", "V02", "L")) == "不同擺放"
+
+
+def test_preferences_count_which_variant_the_user_picked() -> None:
+    from engine.bench.likeness import Pair, format_preferences, preferences
+
+    pairs = [
+        Pair(1, "a", "F0", "Q20", "L"), Pair(2, "a", "Q21", "F1", "R"), Pair(3, "b", "F0", "Q20", "R"),
+        Pair(4, "b", "Q22", "F2", "same"), Pair(5, "a", "P20", "Q20", "R"),
+    ]
+    prefs = preferences(pairs)
+    assert prefs["現行 vs F"] == {"F": 2, "Q2": 1, "差不多": 1}
+    assert prefs["現行 vs P2"] == {"Q2": 1}
+    text = format_preferences(prefs)
+    assert "F 2（67%）" in text and "Q2 1（33%）" in text and "差不多 1" in text

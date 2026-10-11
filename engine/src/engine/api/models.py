@@ -37,6 +37,8 @@ class MatchRequest(BaseModel):
     )
     # P2 新增，可省略：省略時與 P1 的行為完全相同
     start_circle: StartCircle | None = None
+    # P2.5 新增（spec §6.5）：fast = 現行吸附；fine = 描形規劃器（目前的路網沒有路網圖時等於 fast）。省略（null）= fast
+    quality: Literal["fast", "fine"] | None = None
 
 
 class RouteOut(BaseModel):
@@ -84,6 +86,8 @@ class StatusResponse(BaseModel):
     data: BuildInfo | None
     # 目前的 build 有沒有自動搜尋需要的可騎道路資料（舊 build 沒有，要重建路網）
     search_ready: bool = False
+    # P2.5：目前的 build 有沒有描形規劃器需要的路網圖（沒有時 quality="fine" 等於 fast）
+    planner_ready: bool = False
 
 
 class ErrorDetail(BaseModel):

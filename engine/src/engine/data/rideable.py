@@ -68,7 +68,8 @@ def taiwan_grid() -> Grid:
     return Grid(min_lon, min_lat, BUCKET_DEG, nx, ny)
 
 
-def _lengths_m(lon1: np.ndarray, lat1: np.ndarray, lon2: np.ndarray, lat2: np.ndarray) -> np.ndarray:
+def lengths_m(lon1: np.ndarray, lat1: np.ndarray, lon2: np.ndarray, lat2: np.ndarray) -> np.ndarray:
+    """逐對的 haversine 距離（公尺），向量化。"""
     phi1, phi2 = np.radians(lat1), np.radians(lat2)
     h = np.sin((phi2 - phi1) / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(np.radians(lon2 - lon1) / 2) ** 2
     return 2 * EARTH_RADIUS_M * np.arcsin(np.sqrt(np.minimum(h, 1.0)))
@@ -76,7 +77,7 @@ def _lengths_m(lon1: np.ndarray, lat1: np.ndarray, lon2: np.ndarray, lat2: np.nd
 
 def split_segments(pairs: np.ndarray) -> np.ndarray:
     """(M, 4) float64 的節點對 → float32 路段：長於 SPLIT_M 的等分成多段，去掉零長度的（含存成 float32 後才重合的）。"""
-    lengths = _lengths_m(*pairs.T)
+    lengths = lengths_m(*pairs.T)
     pieces = np.maximum(np.ceil(lengths / SPLIT_M), 1).astype(np.int64)
     rows = np.repeat(np.arange(len(pairs)), pieces)
     # 每一段在原本節點對裡的序號 0..pieces-1
@@ -96,7 +97,7 @@ def _flush(lons: array, lats: array) -> np.ndarray:
     return split_segments(pairs[np.isfinite(pairs).all(axis=1)])
 
 
-def _replace(path: Path, write) -> None:
+def replace_file(path: Path, write) -> None:
     """先寫暫存檔再改名：中途掛掉不會留下看起來完整的半個檔案。"""
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("wb") as f:
@@ -119,9 +120,9 @@ def write_index(segments: np.ndarray, build_dir: Path, grid: Grid | None = None)
     meta = {"version": RIDEABLE_VERSION, "bucket_deg": grid.bucket_deg, "lon0": grid.lon0, "lat0": grid.lat0,
             "nx": grid.nx, "ny": grid.ny, "segments": len(kept), "max_segment_m": MAX_SEGMENT_M}
     build_dir.mkdir(parents=True, exist_ok=True)
-    _replace(build_dir / RIDEABLE_SEGMENTS, lambda f: np.save(f, kept))
-    _replace(build_dir / RIDEABLE_OFFSETS, lambda f: np.save(f, offsets))
-    _replace(build_dir / RIDEABLE_META, lambda f: f.write(json.dumps(meta).encode()))  # 最後寫：有它才代表另外兩個寫完了
+    replace_file(build_dir / RIDEABLE_SEGMENTS, lambda f: np.save(f, kept))
+    replace_file(build_dir / RIDEABLE_OFFSETS, lambda f: np.save(f, offsets))
+    replace_file(build_dir / RIDEABLE_META, lambda f: f.write(json.dumps(meta).encode()))  # 最後寫：有它才代表另外兩個寫完了
     return len(kept)
 
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult, toSse } from "@/lib/engine/fixtures";
-import { SEARCH_TIMEOUT_MS, proxyMatch, proxySearch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
+import { MATCH_TIMEOUT_MS, SEARCH_TIMEOUT_MS, proxyMatch, proxySearch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
 
 const VALID = { strokes: [{ points: [[121.5, 25.03], [121.51, 25.03]], closed: false }] };
 
@@ -57,6 +57,32 @@ describe("proxyMatch", () => {
     expect(url).toBe("http://engine:8080/match");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual(VALID);
+  });
+
+  it("quality（fast／fine／null）原樣轉給引擎；沒帶就不帶（與以前逐位元相同）", async () => {
+    for (const quality of ["fine", "fast", null] as const) {
+      const fetchImpl = vi.fn(async () => Response.json(SAMPLE_MATCH_RESPONSE));
+      const res = await proxyMatch(post(JSON.stringify({ ...VALID, quality })), deps(fetchImpl));
+      expect(res.status).toBe(200);
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ ...VALID, quality });
+    }
+    const fetchImpl = vi.fn(async () => Response.json(SAMPLE_MATCH_RESPONSE));
+    await proxyMatch(post(JSON.stringify(VALID)), deps(fetchImpl));
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.body).toBe(JSON.stringify(VALID));
+  });
+
+  it("不認得的 quality 回 422，不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const res = await proxyMatch(post(JSON.stringify({ ...VALID, quality: "best" })), deps(fetchImpl));
+    expect(res.status).toBe(422);
+    expect((await res.json()).detail.message).toContain("quality");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fine 用同一個逾時：引擎 /match 上限仍是 5 秒（spec §5），代理的 10 秒已有餘裕", () => {
+    expect(MATCH_TIMEOUT_MS).toBe(10_000);
   });
 
   it("引擎的錯誤狀態碼與 body 原樣轉回", async () => {

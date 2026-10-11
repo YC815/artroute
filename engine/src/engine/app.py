@@ -49,6 +49,7 @@ from engine.matching.service import (
     match_shape,
 )
 from engine.matching.types import StartHint
+from engine.planner.graph import GraphDataMissing, RideGraph, has_graph_data
 from engine.routing.router import FAST_TURN_PENALTY_FACTOR, Router, RoutingError
 from engine.search.gate import SearchBusy, SearchGate
 from engine.search.roads import RoadDataMissing, RoadIndex, has_road_data
@@ -93,6 +94,7 @@ SEARCH_ERRORS: dict[int | str, dict[str, Any]] = {
 SEARCH_TIMEOUT_MESSAGE = "搜尋超過時間上限，請縮小半徑或放寬條件"
 SEARCH_INTERNAL_MESSAGE = "搜尋發生內部錯誤"
 NO_SEARCH_DATA_MESSAGE = "目前的路網還沒有自動搜尋需要的道路資料，要等路網重建"
+GRAPH_RETRY_S = 60  # 路網圖的檔案都在卻讀不了時，多久之後再試（_CurrentGraph）
 MIN_SHAPE_EXTENT = 1e-3  # 正規化座標的外框長邊下限：更小代表所有點幾乎重合，量不出大小
 
 
@@ -135,12 +137,23 @@ def _get_router(current: CurrentRouter) -> tuple[Any, str]:
         raise _error(503, "no_data", NO_DATA_MESSAGE) from error
 
 
-def _match(current: CurrentRouter, payload: MatchRequest, deadline: Deadline) -> MatchResponse:
+def _match(
+    current: CurrentRouter, payload: MatchRequest, deadline: Deadline, graph: Callable[[str], Any] | None = None
+) -> MatchResponse:
+    """graph：build 名稱 → 那個 build 的可騎路網圖（沒有就 None）。只有 quality="fine" 才讀，fast 不碰。"""
     router, version = _get_router(current)
     strokes = [StrokeInput(points=list(s.points), closed=s.closed) for s in payload.strokes]
     start = None if payload.start_circle is None else StartHint(payload.start_circle.center, payload.start_circle.radius_m)
+    fine = payload.quality == "fine"
+    ride_graph = graph(version) if fine and graph is not None else None
     try:
-        result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start)
+        if fine:
+            result = match_shape(
+                router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start,
+                quality="fine", graph=ride_graph,
+            )
+        else:
+            result = match_shape(router, strokes, search_radius_m=payload.search_radius_m, deadline=deadline, start=start)
     except OutsideTaiwan as error:
         raise _error(400, "outside_taiwan", str(error)) from error
     except TargetTooSmall as error:
@@ -210,13 +223,18 @@ class _MatchLog:
 
 
 async def _admitted_match(
-    admission: asyncio.Semaphore, current: CurrentRouter, payload: MatchRequest, deadline: Deadline, log: _MatchLog
+    admission: asyncio.Semaphore,
+    current: CurrentRouter,
+    payload: MatchRequest,
+    deadline: Deadline,
+    log: _MatchLog,
+    graph: Callable[[str], Any] | None = None,
 ) -> Any:
     if not await _admit(admission, deadline):
         return Response(status_code=CLIENT_CLOSED)
     log.admitted = time.monotonic()
     try:
-        response = await run_in_threadpool(_match, current, payload, deadline)
+        response = await run_in_threadpool(_match, current, payload, deadline, graph)
         log.segments = len(response.segments)
         return response
     except MatchCancelled:
@@ -243,6 +261,50 @@ class _CurrentRoads:
                 self._roads = self._loader(build)  # 沒有資料丟 RoadDataMissing
                 self._build = build
             return self._roads
+
+
+class _CurrentGraph:
+    """每個 worker 一份：目前 build 的可騎路網圖（mmap），換版時重新載入；沒有圖就是 None（fine 走 fast），不報錯。
+
+    載入失敗分兩種：
+    - build 本來就沒有圖的檔案（舊 build）：記住 None 到換 build 為止，fine 請求不會每次都去碰檔案系統。
+    - 檔案都在卻讀不了：可能是暫時的（開檔數用完、記憶體不足），也可能是建圖驗證漏掉的壞檔。記 ERROR，
+      GRAPH_RETRY_S 秒內走 fast、之後的請求再試一次（ERROR 每個 worker 最多每 GRAPH_RETRY_S 一則）。
+      不記到換 build：暫時性的錯誤會讓這個 worker 一直用 fast 直到下次重建路網；也不每個請求都重試：壞檔時每個
+      fine 請求都要多讀一次、多一則 ERROR。
+    """
+
+    def __init__(
+        self, layout: DataLayout, loader: Callable[[Path], Any], *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._layout = layout
+        self._loader = loader
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._build: Path | None = None
+        self._graph: Any = None
+        self._retry_at: float | None = None  # 檔案在卻讀不了時，什麼時候再試（None：不再試）
+
+    def get(self, version: str) -> Any:
+        """version 是 Router 所屬 build 的名稱（CurrentRouter.get 回傳的）。current 已經換成別的 build 時回 None：
+        圖與 Router 必須來自同一個 build，對不上就這一次用 fast，不拿新版的圖配舊版的路網。"""
+        with self._lock:
+            build = self._layout.current()
+            if build is None or build.name != version:
+                return None
+            retry = self._retry_at is not None and self._clock() >= self._retry_at
+            if build != self._build or retry:
+                self._build, self._graph, self._retry_at = build, None, None
+                try:
+                    self._graph = self._loader(build)
+                except GraphDataMissing as error:
+                    if has_graph_data(build):
+                        logger.error("可騎路網圖載入失敗，%d 秒內 fine 退回 fast：%s", GRAPH_RETRY_S, error)
+                        self._retry_at = self._clock() + GRAPH_RETRY_S
+                except Exception:  # 讀取器的其他錯誤（例如 numpy 讀到截斷的檔案）：同樣記下來、之後再試，不讓 /match 變成 500
+                    logger.exception("可騎路網圖載入失敗，%d 秒內 fine 退回 fast", GRAPH_RETRY_S)
+                    self._retry_at = self._clock() + GRAPH_RETRY_S
+            return self._graph
 
 
 @dataclass(frozen=True)
@@ -352,6 +414,7 @@ def create_app(
     router_factory: Callable[[Path], Any] = Router.from_build,
     match_timeout_s: float = 5.0,
     road_loader: Callable[[Path], Any] = RoadIndex.load,
+    graph_loader: Callable[[Path], Any] = RideGraph.load,
     search_timeout_s: float = 60.0,
     search_queue_timeout_s: float = 120.0,
     search_routers: int = 2,
@@ -362,6 +425,7 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _invalid_request)
     layout = DataLayout(data_root)
     current = CurrentRouter(layout, router_factory)
+    graph_cache = _CurrentGraph(layout, graph_loader)
     # 每個 worker 同時只進行一個吸附：Router 本來就把 Valhalla 呼叫序列化，所以不損失吞吐量；
     # 多出來的請求在事件迴圈上限時等待（不佔 thread），不會各自卡在 Router 鎖上，到期後還各多跑一次 Valhalla 呼叫
     admission = asyncio.Semaphore(1)
@@ -386,6 +450,7 @@ def create_app(
         return StatusResponse(
             data=BuildInfo.model_validate(asdict(meta)) if meta else None,
             search_ready=bool(meta and build and has_road_data(build)),
+            planner_ready=bool(meta and build and has_graph_data(build)),
         )
 
     @app.post("/match", response_model=MatchResponse, responses=MATCH_ERRORS)
@@ -399,7 +464,7 @@ def create_app(
         log, status = _MatchLog(strokes=len(payload.strokes)), 500  # 沒被下面接住的例外會變成 500
         watcher = asyncio.create_task(_watch_disconnect(request, deadline))
         try:
-            response = await _admitted_match(admission, current, payload, deadline, log)
+            response = await _admitted_match(admission, current, payload, deadline, log, graph_cache.get)
             status = response.status_code if isinstance(response, Response) else 200
             return response
         except HTTPException as error:

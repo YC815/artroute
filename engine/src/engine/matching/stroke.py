@@ -20,6 +20,8 @@ from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import MAX_SNAP_GAP_RADII, MIN_LENGTH_RATIO, LonLat, RoutingError
 
 DENSIFY_STEP_M = 25.0
+NO_ROUTE_MESSAGE = "這個部件附近找不到可騎的道路"
+PARTIAL_MESSAGE = "部分路段找不到可騎的道路，已略過"
 
 
 @dataclass(frozen=True)
@@ -177,9 +179,9 @@ def match_stroke(
     pieces = _merge(ctx, _solve(ctx, densify(points)))
     chains = _link(ctx, pieces)
     if not chains:
-        warning = MatchWarning(stroke_index, "no_route", "這個部件附近找不到可騎的道路")
+        warning = MatchWarning(stroke_index, "no_route", NO_ROUTE_MESSAGE)
         return StrokeMatch(chains=[], warnings=[warning])
     if None in pieces or len(chains) > 1:
-        warning = MatchWarning(stroke_index, "partial", "部分路段找不到可騎的道路，已略過")
+        warning = MatchWarning(stroke_index, "partial", PARTIAL_MESSAGE)
         return StrokeMatch(chains=chains, warnings=[warning])
     return StrokeMatch(chains=chains, warnings=[])

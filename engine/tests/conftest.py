@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 
+from engine.data.build import build_with_patch
 from engine.routing.tiles import build_tiles
-from osm_fixture import CROSSING_MAP, PRUNE_MAP, TEST_MAP, write_grid_pbf
+from osm_fixture import CROSSING_MAP, PLANNER_MAPS, PRUNE_MAP, TEST_MAP, write_grid_pbf, write_meter_pbf
 
 
 @pytest.fixture(scope="session")
@@ -31,3 +32,16 @@ def prune_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
     pbf = root / "prune.osm.pbf"
     write_grid_pbf(pbf, PRUNE_MAP)
     return build_tiles(pbf, root / "build")
+
+
+@pytest.fixture(scope="session")
+def planner_build(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """描形規劃器的場景地圖走正式的建圖流程（build_with_patch）：同一份修補後的 pbf 建 Valhalla tiles 與可騎路網圖，
+    兩者看到的路網（含單行道語意）一致。回傳 build 目錄（整個測試只建一次）。"""
+    root = tmp_path_factory.mktemp("planner")
+    pbf = root / "planner.osm.pbf"
+    write_meter_pbf(pbf, PLANNER_MAPS)
+    build = root / "build"
+    build.mkdir()
+    build_with_patch(pbf, build)
+    return build

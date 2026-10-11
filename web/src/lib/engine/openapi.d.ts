@@ -127,6 +127,8 @@ export interface components {
         };
         /** MatchRequest */
         MatchRequest: {
+            /** Quality */
+            quality?: ("fast" | "fine") | null;
             /** Search Radius M */
             search_radius_m?: number | null;
             start_circle?: components["schemas"]["StartCircle"] | null;
@@ -338,6 +340,11 @@ export interface components {
         /** StatusResponse */
         StatusResponse: {
             data: components["schemas"]["BuildInfo"] | null;
+            /**
+             * Planner Ready
+             * @default false
+             */
+            planner_ready: boolean;
             /**
              * Search Ready
              * @default false

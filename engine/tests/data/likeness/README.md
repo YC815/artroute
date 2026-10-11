@@ -53,7 +53,7 @@ V1 的路線與 V0 完全相同（`gps_accuracy` 沒有作用）。
 
 ```sh
 uv run --no-sync python -m engine.bench.likeness_samples samples --out /tmp/likeness-next \
-  [--data-dir /data] [--case heart …] [--top 3] [--min-gap 3.0] [--max-pairs 60] [--seed 7] [--variants Q2,P2]
+  [--data-dir /data] [--case heart …] [--top 3] [--min-gap 3.0] [--max-pairs 60] [--seed 7] [--variants Q2,P2,F]
 ```
 
 - 每個搜尋 bench 案例跑一次正式搜尋（`run_search`，同 `bench/search.py`；Router 數讀 `SEARCH_ROUTERS`，預設 2），取前 `--top` 名擺放；每個擺放、每個變體各吸附一次（`place` → `match_shape`，帶與搜尋相同的起點提示）。
@@ -63,6 +63,7 @@ uv run --no-sync python -m engine.bench.likeness_samples samples --out /tmp/like
   |---|---|
   | Q2 | 現行預設：Router 預設的 `turn_penalty_factor`（`FAST_TURN_PENALTY_FACTOR`）、`match_shape` 剪小刺（`prune=True`） |
   | P2 | 改前：Router 用 `turn_penalty_factor=None`（不帶）、`match_shape(..., prune=False)` |
+  | F | 描形規劃器：`match_shape(..., quality="fine", graph=current build 的路網圖)`；current build 沒有路網圖時直接結束（不悄悄退回 fast） |
 
 - 配對候選（每個案例）：同擺放的 Q2 vs P2（每個名次）、Q2 第 1 名 vs Q2 第 3 名（`Q20` vs `Q22`，不同擺放），只留 |`rank_score` 差| ≥ `--min-gap` 的；`ALWAYS_PAIRS` 裡的變體配對（PR B 的 F vs Q2）不看差距、一律保留。安全斷言沒過的路線（`unsafe`、`bad_turns` > 0、`steps_m` > 0）照樣記在 `routes.json.gz`，但不進配對（stderr 會警告）。
 - 挑選：每個案例的候選依差距由大到小（一律保留的排最前），各案例輪流（round-robin）各拿一組，挑到 `--max-pairs`；左右隨機、最後整體打亂（`random.Random(--seed)`，結果確定），`n` 從 1 編號。

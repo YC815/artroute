@@ -50,6 +50,9 @@ export const matchRequestSchema = z.object({
   search_radius_m: z.number().min(MIN_SEARCH_RADIUS_M).max(MAX_SEARCH_RADIUS_M).optional(),
   // 可省略：省略時與沒有自動搜尋時的行為完全相同
   start_circle: startCircleSchema.nullish(),
+  // 可省略：省略或 null 等於 fast（與以前完全相同）；fine 是放開後的精緻版（P2.5 spec §6.5）。
+  // 一定要列在這裡：代理用這個 schema 驗證後只轉送 schema 內的欄位，漏列會把 quality 默默丟掉。
+  quality: z.enum(["fast", "fine"]).nullish(),
 }) satisfies z.ZodType<Schemas["MatchRequest"]>;
 
 export const segmentKindSchema = z.enum(["stroke", "detour", "connector"]);
@@ -108,10 +111,12 @@ export const errorBodySchema = z.object({
 /**
  * GET /status：data 為 null 代表引擎還沒有可用的路網。
  * search_ready：目前的路網有沒有自動搜尋需要的資料。舊版引擎不送這個欄位，缺少時當成 false（不是格式錯誤）。
+ * planner_ready：目前的路網有沒有描形規劃器（quality: "fine"）需要的路網圖；同樣，缺少時當成 false。
  */
 export const statusResponseSchema = z.object({
   data: z.object({ build_id: z.string(), osm_md5: z.string(), created_at: z.string() }).nullable(),
   search_ready: z.boolean().default(false),
+  planner_ready: z.boolean().default(false),
 }) satisfies z.ZodType<Schemas["StatusResponse"]>;
 
 // ---- POST /search（spec §4.6）：請求是正規化圖形＋範圍，回應是 SSE，每個事件的 data 是下面其中一種 ----

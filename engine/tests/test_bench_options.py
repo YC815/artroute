@@ -70,3 +70,13 @@ def test_no_prune_flag() -> None:
     assert match_options(parser.parse_args([])) == {}
     assert match_options(parser.parse_args(["--no-prune"])) == {"prune": False}
     assert "關" in describe_match_options({"prune": False}) and "開" in describe_match_options({})
+
+
+def test_quality_flag_only_when_asked() -> None:
+    parser = argparse.ArgumentParser()
+    add_match_options(parser, quality=True)
+    assert match_options(parser.parse_args([])) == {}
+    assert match_options(parser.parse_args(["--quality", "fine", "--no-prune"])) == {"prune": False, "quality": "fine"}
+    assert "quality fine" in describe_match_options({"quality": "fine"})
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--quality", "best"])

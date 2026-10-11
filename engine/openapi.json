@@ -79,6 +79,21 @@
       },
       "MatchRequest": {
         "properties": {
+          "quality": {
+            "anyOf": [
+              {
+                "enum": [
+                  "fast",
+                  "fine"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
           "search_radius_m": {
             "anyOf": [
               {
@@ -654,6 +669,11 @@
                 "type": "null"
               }
             ]
+          },
+          "planner_ready": {
+            "default": false,
+            "title": "Planner Ready",
+            "type": "boolean"
           },
           "search_ready": {
             "default": false,

@@ -10,11 +10,18 @@ export type EngineStatus = {
   dataVersion: string | null;
   /** 目前路網有沒有自動搜尋需要的資料（舊版引擎或舊 build 為 false）。查詢中或離線時沿用上一次的值，要搭配 status 判斷。 */
   searchReady: boolean;
+  /** 目前路網能不能用描形規劃器（放開後的精緻版 quality: "fine"）；舊版引擎或舊 build 為 false，只用 fast。沿用規則同 searchReady。 */
+  plannerReady: boolean;
 };
 
 /** 開頁時查一次 /api/status；retry 重查；吸附遇到 503 或連不上時呼叫 markDown。 */
 export function useEngineStatus(): EngineStatus & { retry: () => void; markDown: () => void } {
-  const [state, setState] = useState<EngineStatus>({ status: "checking", dataVersion: null, searchReady: false });
+  const [state, setState] = useState<EngineStatus>({
+    status: "checking",
+    dataVersion: null,
+    searchReady: false,
+    plannerReady: false,
+  });
   const [attempt, setAttempt] = useState(0);
   // markDown 的次數：查詢開始後才回報離線，這次查詢的結果可能是離線前的狀態
   const downCountRef = useRef(0);
@@ -27,8 +34,8 @@ export function useEngineStatus(): EngineStatus & { retry: () => void; markDown:
       if (cancelled || downCount !== downCountRef.current) return;
       setState(
         info
-          ? { status: "ok", dataVersion: info.dataVersion, searchReady: info.searchReady }
-          : { status: "down", dataVersion: null, searchReady: false },
+          ? { status: "ok", ...info }
+          : { status: "down", dataVersion: null, searchReady: false, plannerReady: false },
       );
     });
     return () => {
