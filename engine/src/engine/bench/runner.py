@@ -3,12 +3,13 @@
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 from engine.bench.cases import Case, place
 from engine.matching.deadline import Deadline, MatchTimeout
+from engine.matching.score import SCORE_VERSION, score_v1
 from engine.matching.service import AllStrokesFailed, StrokeInput, match_shape
 from engine.matching.turns import head_points, rideable, tail_points
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, Segment
@@ -34,7 +35,7 @@ class BenchRouter(MatchRouter, Protocol):
 @dataclass(frozen=True)
 class CaseResult:
     name: str
-    coverage: int
+    coverage: int  # coverage／cleanliness／overall 是 score()（score_version 版）的分數
     cleanliness: int
     overall: int
     length_m: float
@@ -44,11 +45,21 @@ class CaseResult:
     safety: str | None = None  # 安全斷言沒過的說明
     use_m: dict[str, float] = field(default_factory=dict)  # 走在 REPORTED_USES 各用途上的公尺數（只量測）
     bad_turns: int = 0  # 轉彎 Valhalla 不會直接騎的接點數（> 0 就是 UNSAFE）
+    _: KW_ONLY
+    # 同一條路線的 v1 分數（score_v1）：和還是 v1 的 baseline 比，路線退步才不會被評分改版蓋掉；失敗的案例為 0
+    legacy_coverage: int
+    legacy_cleanliness: int
+    legacy_overall: int
+    score_version: int = SCORE_VERSION
+
+
+def _targets(strokes: list[StrokeInput]) -> list[list[LonLat]]:
+    """與 matching.service 的目標同一算法：封閉筆畫含收尾那一段（長度與評分都用它）。"""
+    return [s.points + [s.points[0]] if s.closed else s.points for s in strokes]
 
 
 def _target_length_m(strokes: list[StrokeInput]) -> float:
-    """與 matching.service 的目標長度同一算法：封閉筆畫含收尾那一段。"""
-    return sum(polyline_length_m(s.points + [s.points[0]] if s.closed else s.points) for s in strokes)
+    return sum(polyline_length_m(t) for t in _targets(strokes))
 
 
 def _edges(router: BenchRouter, points: list[LonLat]) -> list[EdgeInfo]:
@@ -134,15 +145,19 @@ def _run_one(router: BenchRouter, case: Case, timeout_s: float, denied_ids: froz
         result = match_shape(router, strokes, search_radius_m=None, deadline=Deadline(timeout_s))
     except (AllStrokesFailed, MatchTimeout) as error:
         ms = round((time.perf_counter() - started) * 1000)
-        return CaseResult(case.name, 0, 0, 0, 0.0, round(_target_length_m(strokes), 1), ms, type(error).__name__)
+        return CaseResult(
+            case.name, 0, 0, 0, 0.0, round(_target_length_m(strokes), 1), ms, type(error).__name__,
+            legacy_coverage=0, legacy_cleanliness=0, legacy_overall=0,
+        )
     ms = round((time.perf_counter() - started) * 1000)
     turns = bad_turns(router, result.segments)
     error, safety = safety_problem(router, result.segments, denied_ids) or _turn_problem(turns) or (None, None)
-    s = result.score
+    s, legacy = result.score, score_v1(_targets(strokes), result.route_points)
     return CaseResult(
         case.name, s.coverage, s.cleanliness, s.overall,
         round(result.route_length_m, 1), round(result.target_length_m, 1), ms, error, safety,
         use_m=use_meters(router, result.segments), bad_turns=turns,
+        legacy_coverage=legacy.coverage, legacy_cleanliness=legacy.cleanliness, legacy_overall=legacy.overall,
     )
 
 
@@ -176,16 +191,29 @@ def run_cases(
     return results
 
 
+def is_legacy(entry: object) -> bool:
+    """baseline 條目是不是 v1 評分：沒有 score_version（v1 時代寫的）或明寫 1。其他版本不是 legacy（見 _regression）。"""
+    return isinstance(entry, dict) and entry.get("score_version", 1) == 1
+
+
 def _regression(r: CaseResult, base: object, tolerance: int) -> str | None:
     if not isinstance(base, dict) or not isinstance(base.get("overall"), int | float):
         return f"{r.name}：baseline 條目缺少數值的 overall，無法比較（請用 --update-baseline 重建）"
     if r.error and not base.get("error"):
         return f"{r.name}：原本成功，現在失敗（{r.error}）"
-    if r.overall < base["overall"] - tolerance:
-        return f"{r.name}：overall {base['overall']} → {r.overall}"
-    coverage = base.get("coverage")
-    if isinstance(coverage, int | float) and r.coverage < coverage - tolerance:
-        return f"{r.name}：coverage {coverage} → {r.coverage}"
+    # v1 baseline 比本次路線的 v1 分數：評分改版不會被當成退步，路線本身的退步也不會被新評分蓋掉
+    if is_legacy(base):
+        overall, coverage, label = r.legacy_overall, r.legacy_coverage, "（v1 評分）"
+    elif base.get("score_version") != SCORE_VERSION:
+        # 不認得的版本（例如以後的 v3 baseline 拿舊程式跑）：不能拿別的尺比，明確失敗
+        return f"{r.name}：baseline 的 score_version {base.get('score_version')!r} 不是 1 或 {SCORE_VERSION}，無法比較"
+    else:
+        overall, coverage, label = r.overall, r.coverage, " "
+    if overall < base["overall"] - tolerance:
+        return f"{r.name}：overall{label}{base['overall']} → {overall}"
+    base_coverage = base.get("coverage")
+    if isinstance(base_coverage, int | float) and coverage < base_coverage - tolerance:
+        return f"{r.name}：coverage{label}{base_coverage} → {coverage}"
     return None
 
 
@@ -196,6 +224,7 @@ def compare(results: list[CaseResult], baseline: dict[str, dict], tolerance: int
     否則一筆寫進 baseline 的 UnsafeRoute 之後就永遠不會再被抓到。
     其餘只比 baseline 有的案例：overall 或 coverage 比 baseline 低超過 tolerance，或從成功變失敗。
     只看 overall 會漏掉「cleanliness 上升抵掉 coverage 掉到 0」的退步（ledger L120）。
+    條目有 score_version == SCORE_VERSION 就比 v2 分數，否則（v1 baseline）比本次的 legacy（v1）分數。
     """
     problems: list[str] = []
     for r in results:
@@ -226,7 +255,7 @@ def load_baseline(path: Path) -> dict[str, dict]:
 
 def format_header() -> str:
     return (
-        f"{'name':34} {'overall':>7} {'cov':>4} {'clean':>5} {'len_m':>9} {'target_m':>9} {'ms':>7} "
+        f"{'name':34} {'overall':>7} {'v1':>4} {'cov':>4} {'clean':>5} {'len_m':>9} {'target_m':>9} {'ms':>7} "
         f"{'foot_m':>7} {'steps_m':>7} {'park_m':>7}  note"
     )
 
@@ -236,7 +265,7 @@ def format_row(r: CaseResult) -> str:
     note = " ".join(filter(None, [slow, r.error, r.safety]))
     uses = " ".join(f"{r.use_m.get(use, 0.0):7.0f}" for use in REPORTED_USES)
     return (
-        f"{r.name:34} {r.overall:7} {r.coverage:4} {r.cleanliness:5} "
+        f"{r.name:34} {r.overall:7} {r.legacy_overall:4} {r.coverage:4} {r.cleanliness:5} "
         f"{r.length_m:9.0f} {r.target_length_m:9.0f} {r.ms:7} {uses}  {note}"
     ).rstrip()
 
@@ -245,12 +274,13 @@ def summarize(results: list[CaseResult]) -> str:
     ok = [r for r in results if not r.error]
     slow = sum(r.ms > PRODUCTION_TIMEOUT_MS for r in results)
     mean = f"{sum(r.overall for r in ok) / len(ok):.1f}" if ok else "-"
+    mean_v1 = f"{sum(r.legacy_overall for r in ok) / len(ok):.1f}" if ok else "-"
     unsafe = sum(r.error == UNSAFE for r in results)
     undetermined = sum(r.error == UNDETERMINED for r in results)
     uses = "／".join(f"{sum(r.use_m.get(use, 0.0) for r in ok):.0f}" for use in REPORTED_USES)
     return (
         f"共 {len(results)} 案例：成功 {len(ok)}、失敗 {len(results) - len(ok)}、"
-        f"SLOW {slow}（> {PRODUCTION_TIMEOUT_MS} ms，僅供參考）；成功案例平均 overall {mean}；"
+        f"SLOW {slow}（> {PRODUCTION_TIMEOUT_MS} ms，僅供參考）；成功案例平均 overall {mean}（v1 評分 {mean_v1}）；"
         f"安全斷言（接點 ≤ {JOIN_TOLERANCE_M:g} m、不經過禁行 way、接點轉彎能直接騎）不安全 {unsafe}、無法判斷 {undetermined}；"
         f"轉彎不能直接騎的接點 {sum(r.bad_turns for r in results)} 個；"
         f"footway／steps／parking_aisle 合計 {uses} m（成功案例，只量測）"

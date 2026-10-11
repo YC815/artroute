@@ -38,7 +38,7 @@ class FakeValhalla:
         self.lock = threading.Lock()
         self.started: list[float] = []
 
-    def __call__(self, router, strokes, *, search_radius_m, deadline) -> MatchResult:
+    def __call__(self, router, strokes, *, search_radius_m, deadline, start=None) -> MatchResult:
         self.started.append(time.monotonic())
         for _ in range(CALLS_PER_MATCH):
             deadline.check()
@@ -71,7 +71,7 @@ def test_request_queued_behind_a_long_one_times_out_without_matching(
     started, hold = threading.Event(), threading.Event()
     calls: list[int] = []
 
-    def long_match(router, strokes, *, search_radius_m, deadline) -> MatchResult:
+    def long_match(router, strokes, *, search_radius_m, deadline, start=None) -> MatchResult:
         calls.append(1)
         started.set()
         hold.wait(timeout=3)
@@ -97,7 +97,7 @@ def test_admission_is_released_after_each_request(tmp_path: Path, monkeypatch: p
     """失敗的請求也要放掉名額，否則一次逾時之後這個 worker 就永遠回 504。"""
     calls = {"n": 0}
 
-    def flaky(router, strokes, *, search_radius_m, deadline) -> MatchResult:
+    def flaky(router, strokes, *, search_radius_m, deadline, start=None) -> MatchResult:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("非預期的錯誤")

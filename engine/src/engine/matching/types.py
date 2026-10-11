@@ -8,7 +8,8 @@ from engine.routing.geo import haversine_m
 from engine.routing.router import JOIN_TOLERANCE_M, LonLat, RouteResult, RoutingError
 
 __all__ = [
-    "JOIN_TOLERANCE_M", "MatchRouter", "MatchWarning", "Segment", "SegmentKind", "legal_route", "segment_from", "try_route",
+    "JOIN_TOLERANCE_M", "MatchRouter", "MatchWarning", "Segment", "SegmentKind", "StartHint", "legal_route", "segment_from",
+    "try_route",
 ]
 
 type SegmentKind = Literal["stroke", "detour", "connector"]
@@ -27,6 +28,14 @@ class MatchWarning:
     stroke_index: int
     code: Literal["no_route", "partial"]
     message: str
+
+
+@dataclass(frozen=True)
+class StartHint:
+    """路線起點想落在的圓（自動搜尋，spec §4.4）：串接器從圈內離圓心最近的進入點出發。只是提示，不保證。"""
+
+    center: LonLat
+    radius_m: float
 
 
 class MatchRouter(Protocol):

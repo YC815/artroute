@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
-import { proxyMatch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
+import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult, toSse } from "@/lib/engine/fixtures";
+import { SEARCH_TIMEOUT_MS, proxyMatch, proxySearch, proxyStatus, type ProxyDeps } from "@/lib/engine/proxy";
 
 const VALID = { strokes: [{ points: [[121.5, 25.03], [121.51, 25.03]], closed: false }] };
 
@@ -304,5 +304,201 @@ describe("proxyStatus", () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("http://engine:8080/status");
     expect(init.method).toBe("GET");
+  });
+});
+
+describe("proxySearch", () => {
+  const SEARCH = {
+    strokes: [{ points: [[-0.5, 0], [0.5, 0.2]], closed: false }],
+    center: [121.5654, 25.033],
+    radius_m: 3000,
+    min_km: 10,
+    max_km: 25,
+    rotation_min_deg: -15,
+    rotation_max_deg: 15,
+  };
+  const SSE_HEADERS = { "content-type": "text/event-stream; charset=utf-8" };
+  const decoder = new TextDecoder();
+
+  function searchPost(body: string, signal?: AbortSignal): Request {
+    return new Request("http://web/api/search", { method: "POST", body, signal });
+  }
+
+  /** 引擎的 SSE 串流：測試自己決定什麼時候送下一塊、什麼時候結束；cancelled 記錄下游是否取消了它。 */
+  function engineStream() {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const state = { cancelled: false };
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    const encoder = new TextEncoder();
+    return {
+      body,
+      state,
+      send: (text: string) => controller.enqueue(encoder.encode(text)),
+      close: () => controller.close(),
+      fail: (error: unknown) => controller.error(error),
+    };
+  }
+
+  it("搜尋的總逾時涵蓋排隊 120 s ＋ 搜尋 60 s 再留餘裕", () => {
+    expect(SEARCH_TIMEOUT_MS).toBe(200_000);
+  });
+
+  it("不合法的請求（最小公里數大於最大）回 422，不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const res = await proxySearch(searchPost(JSON.stringify({ ...SEARCH, min_km: 30 })), deps(fetchImpl));
+    expect(res.status).toBe(422);
+    const { detail } = await res.json();
+    expect(detail.code).toBe("validation");
+    expect(detail.message).toContain("最小公里數不能大於最大公里數");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("請求太大回 413，不轉發", async () => {
+    const fetchImpl = vi.fn();
+    const request = new Request("http://web/api/search", {
+      method: "POST",
+      body: "{}",
+      headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+    });
+    const res = await proxySearch(request, deps(fetchImpl));
+    expect(res.status).toBe(413);
+    expect((await res.json()).detail.code).toBe("too_large");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("合法請求 POST 到 ENGINE_URL/search，只送 schema 內的欄位", async () => {
+    const fetchImpl = vi.fn(async () => new Response(toSse(sampleResult([])), { headers: SSE_HEADERS }));
+    await proxySearch(searchPost(JSON.stringify({ ...SEARCH, extra: true })), deps(fetchImpl));
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://engine:8080/search");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(SEARCH);
+  });
+
+  it("SSE 邊收邊轉：引擎串流還沒結束，第一個事件就讀得到；標頭關掉快取與緩衝", async () => {
+    const engine = engineStream();
+    const fetchImpl = vi.fn(async () => new Response(engine.body, { headers: SSE_HEADERS }));
+    const res = await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(fetchImpl));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+    expect(res.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(res.headers.get("x-accel-buffering")).toBe("no");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+
+    const reader = res.body!.getReader();
+    const first = toSse({ type: "progress", stage: "coarse", done: 1, total: 10 });
+    engine.send(first);
+    expect(decoder.decode((await reader.read()).value)).toBe(first);
+
+    const best = toSse({ type: "best", candidate: sampleCandidate() });
+    engine.send(best);
+    expect(decoder.decode((await reader.read()).value)).toBe(best);
+
+    const last = toSse(sampleResult([sampleCandidate()]));
+    engine.send(last);
+    engine.close();
+    expect(decoder.decode((await reader.read()).value)).toBe(last);
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("引擎的錯誤（串流開始前的 JSON）狀態碼與 body 原樣轉回", async () => {
+    for (const [status, code] of [
+      [400, "outside_taiwan"],
+      [422, "too_small"],
+      [503, "no_search_data"],
+    ] as const) {
+      const body = { detail: { code, message: "x" } };
+      const res = await proxySearch(
+        searchPost(JSON.stringify(SEARCH)),
+        deps(vi.fn(async () => Response.json(body, { status }))),
+      );
+      expect(res.status).toBe(status);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(await res.json()).toEqual(body);
+    }
+  });
+
+  it("引擎 200 但不是 SSE：整個讀完原樣轉回（不當成串流）", async () => {
+    const res = await proxySearch(
+      searchPost(JSON.stringify(SEARCH)),
+      deps(vi.fn(async () => Response.json({ hello: 1 }))),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ hello: 1 });
+  });
+
+  it("連不上引擎回 503；沒設定 ENGINE_URL 也是 503", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const down = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    expect((await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(down))).status).toBe(503);
+    const unset = await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(vi.fn(), { engineUrl: undefined }));
+    expect(unset.status).toBe(503);
+  });
+
+  it("收到標頭前逾時 → 504 JSON", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchImpl = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    const res = await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(fetchImpl, { timeoutMs: 20 }));
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({ detail: { code: "timeout", message: "引擎回應逾時" } });
+  });
+
+  it("串流中途逾時：已送出的事件照常送達，之後串流正常結束（沒有結果事件，由前端當成中斷）", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const engine = engineStream();
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      init.signal!.addEventListener("abort", () => engine.fail(init.signal!.reason));
+      return new Response(engine.body, { headers: SSE_HEADERS });
+    });
+    const res = await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(fetchImpl, { timeoutMs: 30 }));
+    const reader = res.body!.getReader();
+    const first = toSse({ type: "queued", position: 1 });
+    engine.send(first);
+    expect(decoder.decode((await reader.read()).value)).toBe(first);
+    expect((await reader.read()).done).toBe(true);
+    expect(spy).toHaveBeenCalledWith("[engine proxy]", "/search", expect.anything());
+  });
+
+  it("瀏覽器斷線（request.signal）→ 取消對引擎的請求，不記 log", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const engine = engineStream();
+    let upstream: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      upstream = init.signal!;
+      upstream.addEventListener("abort", () => engine.fail(upstream!.reason));
+      return new Response(engine.body, { headers: SSE_HEADERS });
+    });
+    const browser = new AbortController();
+    const res = await proxySearch(searchPost(JSON.stringify(SEARCH), browser.signal), deps(fetchImpl));
+    const reader = res.body!.getReader();
+    expect(upstream?.aborted).toBe(false);
+    browser.abort();
+    expect(upstream?.aborted).toBe(true);
+    expect((await reader.read()).done).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("下游取消回應串流 → 引擎的串流也被取消", async () => {
+    const engine = engineStream();
+    const fetchImpl = vi.fn(async () => new Response(engine.body, { headers: SSE_HEADERS }));
+    const res = await proxySearch(searchPost(JSON.stringify(SEARCH)), deps(fetchImpl));
+    await res.body!.cancel();
+    expect(engine.state.cancelled).toBe(true);
   });
 });

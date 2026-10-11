@@ -260,7 +260,7 @@ def test_gap_between_segments_is_an_internal_error_not_a_straight_line(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # 吸附或串接若有漏洞留下缺口，輸出一條直線比回 500 更糟：在 _route_points 之前擋下並記錄
-    def gappy(router, parts, deadline, rematch=None) -> Composition:
+    def gappy(router, parts, deadline, rematch=None, start=None) -> Composition:
         a = Segment("stroke", 0, [(121.50, LAT), (121.51, LAT)], 1000.0)
         b = Segment("detour", 0, [(121.5101, LAT), (121.52, LAT)], 1000.0)  # 與 a 相距約 10 m
         return Composition(segments=[a, b], dropped=[])

@@ -27,6 +27,8 @@ type Props = {
   dataVersion: string | null;
   /** GPX 的作品名稱（見 gpxName）。 */
   workName: string;
+  /** 有搜尋範圍且有路線時：路線起點離圓心多遠、是否在圈外（見 startDistance）；否則 null，不顯示這一列。 */
+  startDistance: { distanceM: number; outside: boolean } | null;
 };
 
 /** object URL 保留多久才釋放：iOS Safari 與較慢的下載處理可能在 click 之後一段時間才讀檔。 */
@@ -65,8 +67,8 @@ const LEGEND = [
 ];
 
 export function InfoPanel(props: Props) {
-  const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion, workName } =
-    props;
+  const { targetLengthM, response, error, pending, downloadable, onRetry, warnings, problem, dataVersion } = props;
+  const { workName, startDistance } = props;
   const score = response?.score;
   const headingId = useId();
   return (
@@ -83,6 +85,12 @@ export function InfoPanel(props: Props) {
         <Row label="覆蓋" value={score ? `${score.coverage}%` : "—"} />
         <Row label="乾淨" value={score ? `${score.cleanliness}%` : "—"} />
         <Row label="整體貼合度" value={score ? `${score.overall}%` : "—"} />
+        {startDistance && (
+          <Row
+            label="起點離圓心"
+            value={`${formatDistance(startDistance.distanceM)}${startDistance.outside ? "（圈外）" : ""}`}
+          />
+        )}
         <Row label="路網資料" value={formatDataVersion(response?.data_version ?? dataVersion ?? "—")} />
       </div>
 

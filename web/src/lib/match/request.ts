@@ -1,4 +1,4 @@
-import type { MatchRequest } from "@/lib/engine/contract";
+import type { MatchRequest, StartCircle } from "@/lib/engine/contract";
 import { MAX_STROKE_POINTS, MAX_STROKES, MIN_STROKE_POINTS } from "@/lib/limits";
 import { transformStrokes, type Transform } from "@/lib/shape/transform";
 import type { Shape } from "@/lib/shape/types";
@@ -17,9 +17,13 @@ export function shapeProblem(shape: Shape): string | null {
   return null;
 }
 
-/** 依目前擺放把圖形轉成經緯度，組成 /match 請求（search_radius_m 省略，用引擎預設）。 */
-export function buildMatchRequest(shape: Shape, t: Transform): MatchRequest {
-  return { strokes: transformStrokes(shape.strokes, t) };
+/**
+ * 依目前擺放把圖形轉成經緯度，組成 /match 請求（search_radius_m 省略，用引擎預設）。
+ * 有自動搜尋的範圍時帶上 start_circle：手動微調時路線起點仍盡量落在圈內；沒有範圍時省略（行為與以前相同）。
+ */
+export function buildMatchRequest(shape: Shape, t: Transform, startCircle: StartCircle | null = null): MatchRequest {
+  const strokes = transformStrokes(shape.strokes, t);
+  return startCircle ? { strokes, start_circle: startCircle } : { strokes };
 }
 
 /**

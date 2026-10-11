@@ -1,10 +1,11 @@
-"""建置一個 build：修補自行車 tag（快速道路、樓梯禁行，人行道 dismount）→ 建 tiles → 留下被禁行的 way 清單供驗證。"""
+"""建置一個 build：修補自行車 tag（快速道路、樓梯禁行，人行道 dismount）→ 萃取可騎道路索引 → 建 tiles → 留下被禁行的 way 清單供驗證。"""
 
 import json
 from dataclasses import asdict
 from pathlib import Path
 
 from engine.data.bike_patch import DeniedWay, load_overrides, patch_pbf
+from engine.data.rideable import extract_rideable
 from engine.routing.tiles import build_tiles
 
 DENIED_FILE = "bicycle_denied_ways.json"
@@ -16,6 +17,7 @@ def build_with_patch(pbf: Path, build_dir: Path) -> Path:
     try:
         denied = patch_pbf(pbf, patched, load_overrides(OVERRIDES_FILE))
         (build_dir / DENIED_FILE).write_text(json.dumps([asdict(d) for d in denied], ensure_ascii=False))
+        extract_rideable(patched, build_dir)  # 與 tiles 讀同一份修補後的 pbf：禁行規則只有一處
         return build_tiles(patched, build_dir)
     finally:
         patched.unlink(missing_ok=True)

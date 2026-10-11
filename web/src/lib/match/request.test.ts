@@ -49,6 +49,23 @@ describe("buildMatchRequest", () => {
   });
 });
 
+describe("buildMatchRequest 的 start_circle", () => {
+  const t: Transform = { center: [121.5654, 25.033], sizeM: 1000, rotationDeg: 0 };
+
+  it("沒有搜尋範圍時不帶 start_circle（與沒有自動搜尋時完全相同）", () => {
+    expect(buildMatchRequest(shape([line]), t)).not.toHaveProperty("start_circle");
+    expect(buildMatchRequest(shape([line]), t, null)).not.toHaveProperty("start_circle");
+  });
+
+  it("有搜尋範圍時帶上 start_circle；範圍不同 key 就不同（要重新吸附）", () => {
+    const area = { center: [121.56, 25.04] as [number, number], radius_m: 3000 };
+    const request = buildMatchRequest(shape([line]), t, area);
+    expect(request.start_circle).toEqual(area);
+    expect(requestKey(request)).not.toBe(requestKey(buildMatchRequest(shape([line]), t)));
+    expect(requestKey(request)).not.toBe(requestKey(buildMatchRequest(shape([line]), t, { ...area, radius_m: 4000 })));
+  });
+});
+
 describe("requestKey", () => {
   const t: Transform = { center: [121.5654, 25.033], sizeM: 1000, rotationDeg: 30 };
 

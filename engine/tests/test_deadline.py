@@ -67,3 +67,28 @@ def test_cancel_from_another_thread_is_seen_by_check() -> None:
     worker.join()
     with pytest.raises(MatchCancelled):
         deadline.check()
+
+
+def test_child_deadline_follows_parent_cancel_and_timeout() -> None:
+    now = [0.0]
+    parent = Deadline(10, clock=lambda: now[0])
+    child = Deadline(100, clock=lambda: now[0], parent=parent)
+    child.check()
+    assert child.remaining() == 10  # 外層較早到期
+    now[0] = 11
+    with pytest.raises(MatchTimeout):
+        child.check()
+    other = Deadline(100, clock=lambda: now[0], parent=Deadline(100, clock=lambda: now[0]))
+    other._parent.cancel()
+    assert other.cancelled
+    with pytest.raises(MatchCancelled):
+        other.check()
+
+
+def test_child_deadline_times_out_on_its_own() -> None:
+    now = [0.0]
+    child = Deadline(1, clock=lambda: now[0], parent=Deadline(100, clock=lambda: now[0]))
+    now[0] = 2
+    with pytest.raises(MatchTimeout):
+        child.check()
+    assert not child.cancelled

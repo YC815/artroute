@@ -49,7 +49,7 @@ def post_with_match_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error
     layout = DataLayout(tmp_path)
     run_build(layout, tmp_path / "x.pbf", "abc", "20261010T000000Z", lambda pbf, d: None, lambda d: [])
 
-    def failing(router, strokes, *, search_radius_m, deadline):
+    def failing(router, strokes, *, search_radius_m, deadline, start=None):
         raise error
 
     monkeypatch.setattr("engine.app.match_shape", failing)

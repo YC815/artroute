@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 from engine.matching.deadline import Deadline
 from engine.matching.join import connect
-from engine.matching.types import MatchRouter, Segment
+from engine.matching.types import MatchRouter, Segment, StartHint
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 
@@ -134,10 +134,10 @@ def _plan(options: list[list[_Option]], order: list[int]) -> tuple[float, dict[i
     return cost, chosen
 
 
-def _greedy(options: list[list[_Option]], deadline: Deadline) -> list[int]:
-    """從第 0 個部件出發，每次接上離目前位置最近的部件。"""
-    order, remaining = [0], list(range(1, len(options)))
-    position = options[0][0].exit
+def _greedy(options: list[list[_Option]], deadline: Deadline, first: int = 0) -> list[int]:
+    """從第 first 個部件（預設第 0 個）出發，每次接上離目前位置最近的部件。"""
+    order, remaining = [first], [i for i in range(len(options)) if i != first]
+    position = options[first][0].exit
     while remaining:
         deadline.check()
         nxt = min(remaining, key=lambda i: haversine_m(position, _nearest(position, options[i]).entry))
@@ -148,7 +148,7 @@ def _greedy(options: list[list[_Option]], deadline: Deadline) -> list[int]:
 
 
 def _reversals(size: int, deadline: Deadline) -> Iterator[tuple[int, int]]:
-    """2-opt 要試的反轉區間 (i, j)，反轉 order[i..j]；第 0 個部件固定。每一列 i 開始前檢查一次期限。"""
+    """2-opt 要試的反轉區間 (i, j)，反轉 order[i..j]；排第一的部件（規劃的起點）固定。每一列 i 開始前檢查一次期限。"""
     for i in range(1, size - 1):
         deadline.check()
         for j in range(i + 1, size):
@@ -248,7 +248,33 @@ def _body(part: Part, option: _Option, rematch: Rematch, index: int) -> list[Seg
     return part.segments
 
 
-def compose(router: MatchRouter, parts: list[Part], deadline: Deadline, rematch: Rematch = _no_rematch) -> Composition:
+def _start_first(options: list[list[_Option]], start: StartHint) -> tuple[int, list[list[_Option]]]:
+    """起點提示：挑一個進入點當規劃的起點，回傳 (部件索引, 調整後的 options)。
+
+    圈內有進入點就取圈內離圓心最近的，沒有就取整體離圓心最近的（結果由呼叫端檢查）。
+    選到的進出方式移到該部件 options 的第一個：_plan 對排第一的部件一律取第一個選項；
+    排在其他位置時 _nearest 會看所有選項，順序不影響。"""
+    best: tuple[bool, float, int, int] | None = None
+    for i, part_options in enumerate(options):
+        for k, option in enumerate(part_options):
+            distance = haversine_m(start.center, option.entry)
+            key = (distance > start.radius_m, distance, i, k)
+            if best is None or key < best:
+                best = key
+    assert best is not None
+    _, _, part, k = best
+    reordered = list(options)
+    reordered[part] = [options[part][k], *options[part][:k], *options[part][k + 1 :]]
+    return part, reordered
+
+
+def compose(
+    router: MatchRouter,
+    parts: list[Part],
+    deadline: Deadline,
+    rematch: Rematch = _no_rematch,
+    start: StartHint | None = None,
+) -> Composition:
     """依規劃的順序串起各部件；順序與封閉圈進出點的規劃不變。
 
     組裝從錨點（stroke 長度最長的部件，繞路不算）開始往兩端接（_assemble），兩端都接不上的部件丟棄。
@@ -256,11 +282,17 @@ def compose(router: MatchRouter, parts: list[Part], deadline: Deadline, rematch:
     所有部件都接上原定那一端時，每個接點都是同樣的前後兩段、同樣的 join，輸出與舊版相同；
     有部件被擱置後才補接上、或被丟掉時，輸出就和舊版不同。
     開放部件可能反向走（見 Part.reversible）：規劃的進出點本來就從各部件的選項挑最近的，反向選項自動被考慮。
+    start（自動搜尋的起點圈）：規劃從圈內離圓心最近的進入點出發（_start_first），2-opt 固定它；
+    組裝照舊從錨點往兩端接，排第一的部件最後接在開頭，所以路線從它開始（它被擱置、改接另一端時例外，由呼叫端檢查）。
+    start=None 時與沒有這個參數的版本完全相同。
     """
     if not parts:
         return Composition(segments=[], dropped=[])
     options = [_options(part) for part in parts]
-    order = _two_opt(options, _greedy(options, deadline), deadline)
+    first = 0
+    if start is not None:
+        first, options = _start_first(options, start)
+    order = _two_opt(options, _greedy(options, deadline, first), deadline)
     _, chosen = _plan(options, order)
     bodies = {i: _body(parts[i], chosen[i], rematch, i) for i in order}
     return _assemble(router, deadline, bodies, order, _anchor(parts))

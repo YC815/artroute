@@ -28,18 +28,27 @@ const DEFAULT_MESSAGES: Record<number, string> = {
   504: "吸附超過時間上限，請縮小圖形或減少筆畫",
 };
 
-/** detail 的三種形狀：領域錯誤物件 → 取 message 與 warnings；字串 → 直接當訊息；其他（pydantic 陣列等）→ 沒有訊息。 */
-function readDetail(detail: unknown): { message: string | undefined; warnings: MatchWarning[] } {
+type ReadDetail = { code: string | undefined; message: string | undefined; warnings: MatchWarning[] };
+
+/**
+ * 錯誤 body 的 detail 有三種形狀：領域錯誤物件 → 取 code、message 與 warnings；字串 → 直接當訊息；
+ * 其他（pydantic 陣列、body 根本不是物件等）→ 沒有訊息。/match 與 /search 共用。
+ */
+export function readErrorBody(body: unknown): ReadDetail {
+  const parsed = errorBodySchema.safeParse(body);
+  const detail = parsed.success ? parsed.data.detail : undefined;
   const structured = errorDetailSchema.safeParse(detail);
-  if (structured.success) return { message: structured.data.message, warnings: structured.data.warnings ?? [] };
-  if (typeof detail === "string") return { message: detail, warnings: [] };
-  return { message: undefined, warnings: [] };
+  if (structured.success) {
+    const { code, message, warnings } = structured.data;
+    return { code, message, warnings: warnings ?? [] };
+  }
+  if (typeof detail === "string") return { code: undefined, message: detail, warnings: [] };
+  return { code: undefined, message: undefined, warnings: [] };
 }
 
 /** 狀態碼＋錯誤 body → MatchError。detail 沒有可用的訊息時用依狀態碼的預設訊息。 */
 export function toMatchError(status: number, body: unknown): MatchError {
-  const parsed = errorBodySchema.safeParse(body);
-  const { message, warnings } = readDetail(parsed.success ? parsed.data.detail : undefined);
+  const { message, warnings } = readErrorBody(body);
   return {
     status,
     message: message || (DEFAULT_MESSAGES[status] ?? `吸附失敗（HTTP ${status}）`),
@@ -80,12 +89,16 @@ export async function fetchMatch(
   return parsed.success ? { ok: true, response: parsed.data } : { ok: false, error: toMatchError(502, null) };
 }
 
-/** GET /api/status → 目前路網的 build id；引擎連不上或沒有路網時回傳 null。 */
-export async function fetchStatus(fetchImpl: FetchLike = fetch): Promise<string | null> {
+/** 引擎可用時的狀態：路網的 build id，以及這份路網能不能自動搜尋。 */
+export type EngineInfo = { dataVersion: string; searchReady: boolean };
+
+/** GET /api/status → 目前路網的資訊；引擎連不上或沒有路網時回傳 null。 */
+export async function fetchStatus(fetchImpl: FetchLike = fetch): Promise<EngineInfo | null> {
   try {
     const res = await fetchImpl("/api/status", { cache: "no-store" });
     const parsed = statusResponseSchema.safeParse(await res.json());
-    return res.ok && parsed.success ? (parsed.data.data?.build_id ?? null) : null;
+    if (!res.ok || !parsed.success || !parsed.data.data) return null;
+    return { dataVersion: parsed.data.data.build_id, searchReady: parsed.data.search_ready };
   } catch {
     return null;
   }

@@ -1,6 +1,7 @@
 """完整建置一次台灣路網：python -m engine.data.cli（在引擎容器裡執行）。"""
 
 import json
+import logging
 import os
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from engine.data.pipeline import run_build
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")  # 建圖紀錄（例如可騎道路的路段數）
     layout = DataLayout(Path(os.environ.get("DATA_DIR", "/data")))
     layout.osm_dir.mkdir(parents=True, exist_ok=True)
     pbf = layout.osm_dir / "taiwan-latest.osm.pbf"

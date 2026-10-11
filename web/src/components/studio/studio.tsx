@@ -1,6 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
+import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useState } from "react";
 import { MapView } from "@/components/map/map-view";
 import { ShapeOverlay } from "@/components/map/shape-overlay";
@@ -8,11 +9,22 @@ import { ImageSource } from "@/components/source/image-source";
 import { TextSource } from "@/components/source/text-source";
 import { EngineBanner } from "@/components/studio/engine-banner";
 import { InfoPanel } from "@/components/studio/info-panel";
+import { SearchPanel } from "@/components/studio/search-panel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEngineStatus } from "@/hooks/use-engine-status";
 import { useLiveMatch } from "@/hooks/use-live-match";
+import { useSearch } from "@/hooks/use-search";
+import type { SearchCandidate } from "@/lib/engine/contract";
 import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
+import {
+  buildSearchRequest,
+  placementToTransform,
+  searchBlocker,
+  startDistance,
+  type KmRange,
+  type SearchArea,
+} from "@/lib/search/params";
 import { shapeLengthM, type Transform } from "@/lib/shape/transform";
 import type { Shape, Stroke } from "@/lib/shape/types";
 import { browserStore, loadWork, saveWork, type SavedSource } from "@/lib/storage/work";
@@ -42,6 +54,9 @@ export function Studio() {
   const [transform, setTransform] = useState<Transform>(saved?.transform ?? DEFAULT_TRANSFORM);
   const [dragging, setDragging] = useState(false);
   const [mapNotice, setMapNotice] = useState(false);
+  // 自動搜尋的範圍：設定後，即時吸附的每個請求都帶 start_circle（手動微調時起點仍盡量在圈內）
+  const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
+  const [map, setMap] = useState<MapLibreMap | null>(null);
   const engine = useEngineStatus();
 
   const source = useMemo<SavedSource>(
@@ -55,10 +70,11 @@ export function Studio() {
   const currentShapeKey = useMemo(() => shapeKey(shape), [shape]);
   // 長邊 1 m 時的目標長度：大圖片有上萬點，拖曳中每次 pointermove 重算太浪費
   const unitLengthM = useMemo(() => (shape ? shapeLengthM(shape.strokes, 1) : null), [shape]);
+  const targetLengthM = unitLengthM === null ? null : unitLengthM * transform.sizeM;
   const problem = shape ? shapeProblem(shape) : null;
   const request = useMemo(
-    () => (shape && !problem ? buildMatchRequest(shape, transform) : null),
-    [shape, problem, transform],
+    () => (shape && !problem ? buildMatchRequest(shape, transform, searchArea) : null),
+    [shape, problem, transform, searchArea],
   );
   // 每個請求送出時帶著圖形的 key：結果只在屬於目前圖形時顯示（圖形換了、新結果回來前不顯示舊圖形的路線）
   const { response, error, pending, appliedTag, appliedKey, currentKey, retry } = useLiveMatch(
@@ -76,6 +92,16 @@ export function Studio() {
   const downloadable = canDownloadGpx(visible.response, appliedKey, currentKey);
   const warnings = outcomeWarnings(visible);
   const warned = useMemo(() => new Set(warnings.map((w) => w.stroke_index)), [warnings]);
+  // 搜尋結果屬於搜尋當時的圖形（候選的擺放只對它有意義）：圖形換了就不顯示、進行中的取消
+  const search = useSearch(currentShapeKey, engine.markDown);
+  const blocker = searchBlocker({
+    hasShape: shape !== null,
+    problem,
+    engineStatus: engine.status,
+    searchReady: engine.searchReady,
+  });
+  const routeStart = visible.response?.route.points[0];
+  const startFromCenter = searchArea && routeStart ? startDistance(searchArea, routeStart) : null;
 
   // 拖曳中圖形變成 null 時編輯器會卸載、收不到放開事件：在這裡結束拖曳，否則自動存檔會一直停著
   if (dragging && !shape) setDragging(false);
@@ -90,6 +116,21 @@ export function Studio() {
     setTransform(next);
     setDragging(isDragging);
   };
+
+  const startSearch = (km: KmRange, rotationSpan: number) => {
+    if (!shape || problem || !searchArea || currentShapeKey === null) return;
+    search.start(buildSearchRequest(shape, searchArea, km, rotationSpan), currentShapeKey);
+  };
+
+  // 套用候選＝把圖形擺到那裡（等同放開拖曳）：即時吸附立刻重送，之後照常手動編輯、下載
+  const applyCandidate = (candidate: SearchCandidate) => onTransform(placementToTransform(candidate.placement), false);
+
+  const getMapCenter = map
+    ? () => {
+        const { lng, lat } = map.getCenter();
+        return [lng, lat] as [number, number];
+      }
+    : null;
 
   return (
     <div className="flex h-dvh flex-col md:flex-row">
@@ -116,8 +157,20 @@ export function Studio() {
             <ImageSource hasShape={imageStrokes.length > 0} onStrokes={setImageStrokes} />
           </TabsContent>
         </Tabs>
+        <SearchPanel
+          area={searchArea}
+          onAreaChange={setSearchArea}
+          shapeCenter={transform.center}
+          getMapCenter={getMapCenter}
+          shapeKind={shape?.kind ?? null}
+          targetLengthM={targetLengthM}
+          blocker={blocker}
+          search={search}
+          onStart={startSearch}
+          onApply={applyCandidate}
+        />
         <InfoPanel
-          targetLengthM={unitLengthM === null ? null : unitLengthM * transform.sizeM}
+          targetLengthM={targetLengthM}
           response={visible.response}
           error={visible.error}
           pending={pending}
@@ -127,10 +180,18 @@ export function Studio() {
           problem={problem}
           dataVersion={engine.dataVersion}
           workName={gpxName(source)}
+          startDistance={startFromCenter}
         />
       </aside>
       <main className="relative order-1 min-h-0 flex-1 md:order-2">
-        <MapView initialCenter={transform.center} response={visible.response} onError={() => setMapNotice(true)}>
+        <MapView
+          initialCenter={transform.center}
+          response={visible.response}
+          searchArea={searchArea}
+          preview={search.active ? (search.best?.match ?? null) : null}
+          onMapChange={setMap}
+          onError={() => setMapNotice(true)}
+        >
           {(map) =>
             shape && (
               <ShapeOverlay map={map} shape={shape} transform={transform} warned={warned} onChange={onTransform} />

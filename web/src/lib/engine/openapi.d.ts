@@ -55,6 +55,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Endpoint
+         * @description 自動搜尋（SSE）。事件依序：queued（排隊時）→ progress／best（多次）→ result 或 error（最後一個）。
+         *     呼叫端離開（連線中斷）時，排隊中的立刻離開，搜尋中的在下一次檢查時停下。
+         */
+        post: operations["search_endpoint_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/status": {
         parameters: {
             query?: never;
@@ -94,7 +115,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "outside_taiwan" | "too_small" | "no_route" | "no_data" | "timeout";
+            code: "outside_taiwan" | "too_small" | "no_route" | "no_data" | "timeout" | "no_search_data";
             /** Message */
             message: string;
             /** Warnings */
@@ -108,6 +129,7 @@ export interface components {
         MatchRequest: {
             /** Search Radius M */
             search_radius_m?: number | null;
+            start_circle?: components["schemas"]["StartCircle"] | null;
             /** Strokes */
             strokes: components["schemas"]["StrokeIn"][];
         };
@@ -123,6 +145,37 @@ export interface components {
             target_length_m: number;
             /** Warnings */
             warnings: components["schemas"]["WarningOut"][];
+        };
+        /**
+         * NormStrokeIn
+         * @description 圖形的正規化座標（web 的 normalizeStrokes：x 向右、y 向上，外框中心為原點、長邊 = 1）。
+         */
+        NormStrokeIn: {
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
+            /** Points */
+            points: [
+                number,
+                number
+            ][];
+        };
+        /**
+         * PlacementOut
+         * @description 圖形的擺放，與 web 的 Transform 相同：size_m 是正規化座標 1 單位的公尺數，rotation_deg 順時針、介於 [0, 360)。
+         */
+        PlacementOut: {
+            /** Center */
+            center: [
+                number,
+                number
+            ];
+            /** Rotation Deg */
+            rotation_deg: number;
+            /** Size M */
+            size_m: number;
         };
         /** RouteOut */
         RouteOut: {
@@ -143,6 +196,113 @@ export interface components {
             /** Overall */
             overall: number;
         };
+        /**
+         * SearchBest
+         * @description 到目前為止最好的候選（即時預覽）。
+         */
+        SearchBest: {
+            candidate: components["schemas"]["SearchCandidate"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "best";
+        };
+        /** SearchCandidate */
+        SearchCandidate: {
+            /** Length Ok */
+            length_ok: boolean;
+            match: components["schemas"]["MatchResponse"];
+            placement: components["schemas"]["PlacementOut"];
+            /** Start Distance M */
+            start_distance_m: number;
+        };
+        /**
+         * SearchFailed
+         * @description 最後一個事件（失敗）。
+         */
+        SearchFailed: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "timeout" | "busy" | "no_data" | "internal";
+            /** Message */
+            message: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "error";
+        };
+        /** SearchProgress */
+        SearchProgress: {
+            /** Done */
+            done: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "coarse" | "refine" | "match";
+            /** Total */
+            total: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "progress";
+        };
+        /** SearchQueued */
+        SearchQueued: {
+            /** Position */
+            position: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "queued";
+        };
+        /** SearchRequest */
+        SearchRequest: {
+            /** Center */
+            center: [
+                number,
+                number
+            ];
+            /** Max Km */
+            max_km: number;
+            /** Min Km */
+            min_km: number;
+            /** Radius M */
+            radius_m: number;
+            /** Rotation Max Deg */
+            rotation_max_deg: number;
+            /** Rotation Min Deg */
+            rotation_min_deg: number;
+            /** Strokes */
+            strokes: components["schemas"]["NormStrokeIn"][];
+        };
+        /**
+         * SearchResult
+         * @description 最後一個事件（成功）：前 5 名，依符合條件、貼合度排序；沒有符合公里數的就列出最接近的並附 notice。
+         */
+        SearchResult: {
+            /** Candidates */
+            candidates: components["schemas"]["SearchCandidate"][];
+            /** Coarse Candidates */
+            coarse_candidates: number;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Evaluated */
+            evaluated: number;
+            /** Notice */
+            notice?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "result";
+        };
         /** SegmentOut */
         SegmentOut: {
             /**
@@ -160,9 +320,27 @@ export interface components {
             /** Stroke Index */
             stroke_index: number | null;
         };
+        /**
+         * StartCircle
+         * @description 路線起點想落在的圓（自動搜尋的範圍）。只是提示：串接器優先從圈內、離圓心最近的進入點出發，不保證做得到。
+         */
+        StartCircle: {
+            /** Center */
+            center: [
+                number,
+                number
+            ];
+            /** Radius M */
+            radius_m: number;
+        };
         /** StatusResponse */
         StatusResponse: {
             data: components["schemas"]["BuildInfo"] | null;
+            /**
+             * Search Ready
+             * @default false
+             */
+            search_ready: boolean;
         };
         /** StrokeIn */
         StrokeIn: {
@@ -310,6 +488,57 @@ export interface operations {
             };
             /** @description 吸附超過時間上限（timeout） */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    search_endpoint_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description 圓心不在台灣範圍內（outside_taiwan） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 圖形太小（too_small），或請求格式錯誤 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 路網資料尚未就緒（no_data），或目前的路網沒有搜尋用的道路資料（no_search_data） */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
