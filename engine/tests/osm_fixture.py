@@ -374,6 +374,11 @@ PRUNE_SPUR_ROW = 0  # 主街旁一條約 55 m 的死巷
 PRUNE_BLOCK_ROW = 2  # 主街旁一個約 50 m × 27 m 的街廓（南邊就是主街）
 PRUNE_RING_ROW = 4  # 主街走到底，只有一個小環可以迴轉
 PRUNE_BRIDGE_ROW = 6  # 橋跨過下面那條路（平面上相距 0.3 m，不相通），只能繞一小圈下橋
+PRUNE_UTURN_ROW = 8  # 剪了會在路口旁 5 m 的路中間迴轉（兩側的頂點不同）
+UTURN_N_COL = 13  # 路口 N（往東錯開，不與立體交叉那條南北向的路重疊）
+UTURN_J_COL = UTURN_N_COL + 5 / 201.7  # J 在路口 N 東邊 5 m
+UTURN_E1_COL = UTURN_J_COL + 20 / 201.7
+UTURN_LOOP_ROWS = 12 / 222.4
 PRUNE_MOTORWAY_WAY_ID = 899
 BRIDGE_GAP_COL = 0.3 / 201.7  # 橋上的節點在下面那條路東邊 0.3 m：不共用節點，剪小刺找得到這一對
 
@@ -409,6 +414,24 @@ PRUNE_MAP: list[GridWay] = [
     ),
     GridWay(831, [(X5 + 3.1, PRUNE_BRIDGE_ROW), (X5 + 3.1, PRUNE_BRIDGE_ROW - 0.1), (X5 + 3, PRUNE_BRIDGE_ROW - 0.1)], RESIDENTIAL),
     GridWay(832, [(X5 + 3, PRUNE_BRIDGE_ROW - 0.1), (X5 + 3, PRUNE_BRIDGE_ROW), (X5 + 3, PRUNE_BRIDGE_ROW + 3)], RESIDENTIAL),
+    # 路中間迴轉（審查 B1）：主街 W = (X5 + 10, 8) → 路口 N = (X5 + 13, 8) → 東 5 m 的 J → 再東 20 m 的 E1；
+    # J 接一個往南的小圈 E1 → SE → S → J（約 64 m）；N 往北一條街到 (X5 + 13, 10)
+    GridWay(
+        840,
+        [(X5 + c, PRUNE_UTURN_ROW) for c in (UTURN_N_COL - 3, UTURN_N_COL, UTURN_J_COL, UTURN_E1_COL)],
+        RESIDENTIAL,
+    ),
+    GridWay(
+        841,
+        [
+            (X5 + UTURN_E1_COL, PRUNE_UTURN_ROW),
+            (X5 + UTURN_E1_COL, PRUNE_UTURN_ROW - UTURN_LOOP_ROWS),
+            (X5 + UTURN_J_COL, PRUNE_UTURN_ROW - UTURN_LOOP_ROWS),
+            (X5 + UTURN_J_COL, PRUNE_UTURN_ROW),
+        ],
+        RESIDENTIAL,
+    ),
+    GridWay(842, [(X5 + UTURN_N_COL, PRUNE_UTURN_ROW), (X5 + UTURN_N_COL, PRUNE_UTURN_ROW + 2)], RESIDENTIAL),
     # 禁行的快速道路（bench 安全斷言用），離所有場景都遠
     GridWay(PRUNE_MOTORWAY_WAY_ID, [(X5 + c, -3) for c in range(7)], {"highway": "motorway"}),
 ]

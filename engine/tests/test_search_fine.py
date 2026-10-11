@@ -257,3 +257,21 @@ def test_rescale_is_not_lost_when_another_router_drains_the_queue() -> None:
     result = s.run([placement(size=1000)])  # 4 km：不合格，要依比例重算
     assert s.done == 2
     assert result[0].length_ok
+
+
+def test_match_options_reach_match_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    import engine.search.fine as fine_module
+
+    seen: list[dict] = []
+    real = fine_module.match_shape
+
+    def spy(*args, **kwargs):
+        seen.append({k: v for k, v in kwargs.items() if k == "prune"})
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fine_module, "match_shape", spy)
+    stage(params(min_km=1.0, max_km=10.0), match_options={"prune": False}).run([placement()])
+    assert seen == [{"prune": False}]
+    seen.clear()
+    stage(params(min_km=1.0, max_km=10.0)).run([placement()])
+    assert seen == [{}]  # /search 不帶：與正式環境相同

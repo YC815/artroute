@@ -256,6 +256,7 @@ class FakeRun:
         self.crash = False
         self.router_kwargs: list[dict] = []
         self.svg_dirs: list[Path | None] = []
+        self.match_options: list[dict | None] = []
         monkeypatch.setattr(bench_cli, "Router", SimpleNamespace(from_build=self._from_build))
         monkeypatch.setattr(bench_cli, "run_cases", self._run_cases)
         (layout.current() / DENIED_FILE).write_text("[]")
@@ -264,8 +265,11 @@ class FakeRun:
         self.router_kwargs.append(kwargs)
         return object()
 
-    def _run_cases(self, router, cases, timeout_s=30.0, *, denied_ids, warm_up=True, on_result=None, svg_dir=None):
+    def _run_cases(
+        self, router, cases, timeout_s=30.0, *, denied_ids, warm_up=True, on_result=None, svg_dir=None, match_options=None
+    ):
         self.svg_dirs.append(svg_dir)
+        self.match_options.append(match_options)
         for r in self.results:
             on_result(r)
         if self.crash:
@@ -914,10 +918,11 @@ def test_cli_update_baseline_writes_the_current_version_with_direction_and_v2(fa
 def test_cli_passes_router_options_to_the_router_and_prints_them_first(
     fake_run: FakeRun, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fake_run([result("a", 80)], "--update-baseline", "--turn-penalty-factor", "none", "--sigma-z", "6")
+    fake_run.baseline.write_text("{}")  # 非正式參數不能 --update-baseline（只比對、不寫入）
+    fake_run([result("a", 80)], "--turn-penalty-factor", "none", "--sigma-z", "6")
     assert fake_run.router_kwargs == [{"turn_penalty_factor": None, "sigma_z": 6.0}]
     assert capsys.readouterr().out.splitlines()[0] == "吸附參數：turn_penalty_factor none（不帶，由 meili 設定決定）、sigma_z 6"
-    fake_run([result("a", 80)], "--update-baseline", "--turn-penalty-factor", "140")
+    fake_run([result("a", 80)], "--turn-penalty-factor", "140")
     assert fake_run.router_kwargs[-1] == {"turn_penalty_factor": 140.0, "sigma_z": None}
 
 
@@ -938,3 +943,40 @@ def test_cli_bad_router_option_is_a_usage_error(fake_run: FakeRun, flags: list[s
 def test_cli_passes_the_svg_dir(fake_run: FakeRun, tmp_path: Path) -> None:
     fake_run([result("a", 80)], "--update-baseline", "--svg-dir", str(tmp_path / "s"))
     assert fake_run.svg_dirs == [tmp_path / "s"]
+
+
+# ---- --no-prune：改前的路線（不剪小刺與小圈），給本機比較改前／改後 ----
+
+
+def test_run_cases_passes_match_options_to_every_match_including_warm_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+
+    def fake_match(router, strokes, *, search_radius_m, deadline, **kwargs):
+        seen.append(kwargs)
+        return fake_match_result()
+
+    monkeypatch.setattr(runner, "match_shape", fake_match)
+    cases = [Case("a1", LINE, (121.50, 25.05), 1000.0, 0.0)]
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), match_options={"prune": False})
+    assert seen == [{"prune": False}, {"prune": False}]  # 預熱一次＋正式一次
+    seen.clear()
+    run_cases(EdgesRouter(), cases, denied_ids=frozenset(), warm_up=False)
+    assert seen == [{}]  # 預設與正式環境相同：不帶額外參數
+
+
+def test_cli_no_prune_reaches_run_cases(fake_run: FakeRun, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_run.baseline.write_text("{}")
+    fake_run([], "--no-prune", "--turn-penalty-factor", "none")
+    assert fake_run.match_options == [{"prune": False}]
+    assert fake_run.router_kwargs == [{"turn_penalty_factor": None, "sigma_z": None}]
+    assert "剪小刺與小圈：關" in capsys.readouterr().out
+    fake_run([])
+    assert fake_run.match_options[-1] == {}
+
+
+@pytest.mark.parametrize("flags", [["--no-prune"], ["--turn-penalty-factor", "none"], ["--sigma-z", "15"]])
+def test_cli_update_baseline_only_with_production_settings(fake_run: FakeRun, flags: list[str]) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fake_run([result("a", 80)], "--update-baseline", *flags)
+    assert refused.value.code == 2
+    assert not fake_run.baseline.exists()

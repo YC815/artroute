@@ -23,7 +23,14 @@ from pathlib import Path
 
 import numpy as np
 
-from engine.bench.options import add_router_options, describe_router_options, router_options
+from engine.bench.options import (
+    add_match_options,
+    add_router_options,
+    describe_match_options,
+    describe_router_options,
+    match_options,
+    router_options,
+)
 from engine.bench.runner import BenchRouter, bad_turns, safety_problem, stroke_targets, use_meters
 from engine.bench.search_cases import SEARCH_CASES, SearchCase
 from engine.bench.svg import case_svg, safe_name
@@ -132,6 +139,7 @@ def run_case(
     routers: int,
     cold: bool,
     svg_dir: Path | None = None,
+    matching: dict | None = None,
 ) -> SearchCaseResult:
     """svg_dir 有值時前 TOP_N 名各寫一張 `<safe_name(案例)>_<名次>.svg`（疊圖＋縮圖），目錄不存在就建立。"""
     if svg_dir is not None:
@@ -147,7 +155,9 @@ def run_case(
             first_match.append(time.monotonic())
 
     try:
-        outcome = run_search(params, [make_router() for _ in range(routers)], roads, Deadline(HARD_TIMEOUT_S), emit)
+        outcome = run_search(
+            params, [make_router() for _ in range(routers)], roads, Deadline(HARD_TIMEOUT_S), emit, match_options=matching
+        )
     except Exception as error:  # noqa: BLE001  一個案例失敗不擋住其他案例
         elapsed = round(time.monotonic() - started, 2)
         result = SearchCaseResult(case.name, elapsed, elapsed, 0, 0, [], None, cold, error=type(error).__name__)
@@ -250,6 +260,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--json", type=Path, help="把逐案例結果寫成 JSON（給 findings 文件用）")
     parser.add_argument("--svg-dir", type=Path, help=f"每個案例前 {TOP_N} 名各寫一張 SVG（疊圖＋縮圖）到這個目錄，不存在就建立")
     add_router_options(parser)
+    add_match_options(parser)
     args = parser.parse_args(argv)
     options = router_options(args)
     build = DataLayout(args.data_dir).current()
@@ -264,7 +275,9 @@ def main(argv: list[str] | None = None) -> None:
     except (OSError, ValueError, KeyError, TypeError) as error:
         sys.exit(f"讀不到 {build / DENIED_FILE}，無法檢查安全：{error}")
     cases = [c for c in SEARCH_CASES if not args.case or any(s in c.name for s in args.case)]
+    matching = match_options(args)
     print(describe_router_options(options), flush=True)
+    print(describe_match_options(matching), flush=True)
     print(f"build {build.name}、{len(roads)} 條可騎路段、Router × {args.routers}；完成條件 ≤ {TARGET_S:.0f} s 且 {TOP_N} 個候選", flush=True)
     print(HEADER, flush=True)
     results, seen = [], set()
@@ -272,7 +285,8 @@ def main(argv: list[str] | None = None) -> None:
         cold = case.center not in seen
         seen.add(case.center)
         result = run_case(
-            case, lambda: Router.from_build(build, **options), roads, denied_ids, args.routers, cold, args.svg_dir
+            case, lambda: Router.from_build(build, **options), roads, denied_ids, args.routers, cold, args.svg_dir,
+            matching,
         )
         results.append(result)
         print(format_row(result), flush=True)

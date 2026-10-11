@@ -5,8 +5,8 @@ route(p, q)（shortest）的起訖要落在 p、q 的 JOIN_TOLERANCE_M 內，長
 繞一大圈代表這個轉彎不能直接騎（轉向限制、立體交叉在平面上剛好是同一點……），接點視同沒接上。
 兩個探針落在同一處（原地迴轉）沒辦法用 route 量，不檢查；可量的路線不到 JOIN_TOLERANCE_M 也不檢查。
 rideable_strict（剪小刺與小圈用，主 spec §8 第 37 列）把這兩種「量不出來」改成不放行，探針看不出來的原地迴轉也不放行：
-接點前後第一個離接點超過 JOIN_TOLERANCE_M 的頂點落在同一處（沿原路折回；來回不到 TURN_PROBE_M 時探針會繞過尖端、
-落在不同處）。其餘與 rideable 相同。
+沿一條臂走 RETRACE_PROBE_M 的點落在另一條臂的折線 JOIN_TOLERANCE_M 內（沿原路折回；來回不到 TURN_PROBE_M 時
+探針會繞過尖端、落在不同處）。其餘與 rideable 相同。
 探針折回接點（走了 TURN_PROBE_M 以內的路，終點卻落回接點 JOIN_TOLERANCE_M 內，走的路比直線距離多出超過
 JOIN_TOLERANCE_M）時量不出通過接點的方向，但這不是迴轉，所以不放行：視同不能騎；兩邊都折回更是。
 彎曲但很短的臂（走的路只比直線多一點）不算折回，照一般轉角量。
@@ -73,17 +73,31 @@ def _folds_back(walked_m: float, chord_m: float) -> bool:
     return chord_m <= JOIN_TOLERANCE_M and walked_m - chord_m > JOIN_TOLERANCE_M
 
 
-def _vertex_beyond(points: list[LonLat], at: LonLat) -> LonLat | None:
-    """points 裡第一個離 at 超過 JOIN_TOLERANCE_M 的頂點；沒有就 None。"""
-    return next((p for p in points if haversine_m(p, at) > JOIN_TOLERANCE_M), None)
+RETRACE_PROBE_M = 2 * JOIN_TOLERANCE_M  # rideable_strict 的原地迴轉判斷：從接點沿兩條臂各走這麼遠
+
+
+def _distance_to_polyline_m(point: LonLat, line: list[LonLat]) -> float:
+    """point 到折線 line 的最短距離（以 point 為中心的局部平面）。"""
+    kx, ky = 111_320.0 * math.cos(math.radians(point[1])), 110_574.0
+    xy = [((lon - point[0]) * kx, (lat - point[1]) * ky) for lon, lat in line]
+    best = math.hypot(*xy[0])
+    for (ax, ay), (bx, by) in zip(xy, xy[1:]):
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
+        best = min(best, math.hypot(ax + t * dx, ay + t * dy))
+    return best
 
 
 def _retraces(incoming: list[LonLat], outgoing: list[LonLat]) -> bool:
-    """接點前後第一個離接點超過 JOIN_TOLERANCE_M 的頂點落在同一處：出了接點沿原路折回（死巷尖端的原地迴轉）。
-    尖端離探針不到 TURN_PROBE_M 時兩個探針會繞過尖端、落在不同處，只看探針看不出來。"""
-    before = _vertex_beyond(incoming[::-1], incoming[-1])
-    after = _vertex_beyond(outgoing, outgoing[0])
-    return before is not None and after is not None and haversine_m(before, after) <= JOIN_TOLERANCE_M
+    """出了接點沿原路折回：沿 outgoing 走 RETRACE_PROBE_M 的點落在 incoming 折線 JOIN_TOLERANCE_M 內，或反過來。
+    來回不到 TURN_PROBE_M 時 p、q 兩個探針會繞過尖端、落在不同處，只看探針看不出來；量的是點到折線，
+    所以兩側的頂點不必相同（段落邊界、內插點只在一側也一樣）。一般轉彎要超過約 150° 才會被當成折回。"""
+    p, back_m = _walk(incoming[::-1], RETRACE_PROBE_M)
+    q, ahead_m = _walk(outgoing, RETRACE_PROBE_M)
+    return (ahead_m >= RETRACE_PROBE_M and _distance_to_polyline_m(q, incoming) <= JOIN_TOLERANCE_M) or (
+        back_m >= RETRACE_PROBE_M and _distance_to_polyline_m(p, outgoing) <= JOIN_TOLERANCE_M
+    )
 
 
 def _probe_verdict(incoming: list[LonLat], outgoing: list[LonLat], *, strict: bool) -> bool | tuple[LonLat, LonLat, float]:

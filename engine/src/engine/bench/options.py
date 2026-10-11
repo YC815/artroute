@@ -2,6 +2,8 @@
 
 - `--turn-penalty-factor`：數字（≥ 0）或 `none`（不帶，由 meili 設定決定）；不給 = Router 預設 FAST_TURN_PENALTY_FACTOR。
 - `--sigma-z`：數字（> 0）；不給 = 設定檔預設（建圖時的設定，Valhalla 預設 4.07 m）。
+- `--no-prune`：不剪小刺與小圈（match_shape 的 prune=False）。和 `--turn-penalty-factor none` 一起用就是 P2.5 之前的吸附，
+  給本機產生改前的數字與縮圖。
 規則與 app 讀環境變數（TRACE_TURN_PENALTY_FACTOR、MEILI_SIGMA_Z）相同；壞值是 argparse 的錯誤（結束碼 2）。
 """
 
@@ -45,6 +47,19 @@ def add_router_options(parser: argparse.ArgumentParser) -> None:
         help=f"吸附的轉彎懲罰：數字或 none（不帶，由 meili 設定決定）；預設 {FAST_TURN_PENALTY_FACTOR:g}",
     )
     parser.add_argument("--sigma-z", type=sigma_z_arg, default=None, help="meili 的 sigma_z（m）；預設用設定檔的值")
+
+
+def add_match_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--no-prune", action="store_true", help="不剪小刺與小圈（產生改前的路線用）")
+
+
+def match_options(args: argparse.Namespace) -> dict[str, bool]:
+    """match_shape 的額外關鍵字參數；預設（剪）時是空的，與正式環境完全相同。"""
+    return {"prune": False} if args.no_prune else {}
+
+
+def describe_match_options(options: dict[str, bool]) -> str:
+    return "剪小刺與小圈：關（改前）" if options.get("prune") is False else "剪小刺與小圈：開"
 
 
 def router_options(args: argparse.Namespace) -> dict[str, float | None]:

@@ -199,3 +199,23 @@ def test_strict_rejects_a_short_dead_end_u_turn_the_probes_wrap_around() -> None
     assert not rideable_strict(router, Deadline(10), incoming, outgoing)
     assert strict_needs_no_route_to_reject(incoming, outgoing)
     assert router.route_calls == []
+
+
+def test_strict_rejects_a_u_turn_whose_two_sides_have_different_vertices() -> None:
+    # 審查 B1：J 西邊 5 m 是路口 N、3 m 是段落邊界 M（只有往回那一側有這個頂點）。出了 J 沿原路往西折回，
+    # 再在 N 往北：兩側第一個超過 1 m 的頂點（N、M）相距 2 m，探針繞過 J、落在 N 西 3 m 與 N 北 3 m，
+    # route 量到 N 的合法轉彎就放行了。嚴格版在 1 m、2 m 的尺度看得出兩條臂重疊：原地迴轉
+    n, m = east(J, -5), east(J, -3)
+    incoming, outgoing = [east(J, -200), n, J], [J, m, n, north(n, 400)]
+    router = TurnBlockRouter(blocked=None)
+    assert rideable(router, Deadline(10), incoming, outgoing)  # 非嚴格版照舊
+    assert not rideable_strict(router, Deadline(10), incoming, outgoing)
+    assert strict_needs_no_route_to_reject(incoming, outgoing)
+
+
+def test_strict_still_measures_sharp_turns_that_are_not_u_turns() -> None:
+    # 對照：120° 的急轉（不是沿原路折回）照樣交給 route 量，不當成原地迴轉
+    sharp = [J, (J[0] - 100 * 0.5 / 100_900, J[1] + 100 * 0.866 / 110_574)]
+    assert not strict_needs_no_route_to_reject(INCOMING, sharp)
+    assert rideable_strict(TurnBlockRouter(blocked=None), Deadline(10), INCOMING, sharp)
+    assert not rideable_strict(TurnBlockRouter(blocked=J), Deadline(10), INCOMING, sharp)
