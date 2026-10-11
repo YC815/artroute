@@ -34,6 +34,19 @@ def test_load_config_overrides_tile_dir_and_cache(tmp_path: Path) -> None:
     assert config["mjolnir"]["max_cache_size"] == CACHE_SIZE_BYTES
 
 
+def _write_meili_config(build_dir: Path) -> None:
+    config_path(build_dir).write_text(
+        json.dumps({"mjolnir": {"tile_dir": "/old"}, "meili": {"default": {"sigma_z": 4.07, "search_radius": 50}}})
+    )
+
+
+def test_load_config_overrides_sigma_z_only_when_given(tmp_path: Path) -> None:
+    _write_meili_config(tmp_path)
+    assert load_config(tmp_path, sigma_z=15.0)["meili"]["default"] == {"sigma_z": 15.0, "search_radius": 50}
+    assert load_config(tmp_path, sigma_z=None)["meili"]["default"] == {"sigma_z": 4.07, "search_radius": 50}
+    assert load_config(tmp_path)["meili"]["default"]["sigma_z"] == 4.07
+
+
 def test_load_config_missing_raises_routing_error(tmp_path: Path) -> None:
     with pytest.raises(RoutingError, match="讀不到路網設定"):
         load_config(tmp_path)

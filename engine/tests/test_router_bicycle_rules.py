@@ -37,6 +37,18 @@ def test_trace_along_oneway_in_legal_direction(router: Router) -> None:
     assert all(abs(lat - grid_point(0, 0)[1]) < 1e-4 for _, lat in result.points)
 
 
+def test_trace_with_turn_penalty_factor_matches_and_still_respects_oneway(grid_config: Path) -> None:
+    # Valhalla 3.9.1 接受 trace_options.turn_penalty_factor（meili 的 customizable 清單裡有），帶了照樣吸附得到；
+    # 單行道仍由 Valhalla 擋下：轉彎懲罰只改變偏好，不改變通行規則
+    router = Router(grid_config, turn_penalty_factor=500.0)
+    l_shape = densify(grid_point(0, 1), grid_point(2, 1)) + densify(grid_point(2, 1), grid_point(2, 0))[1:]
+    result = router.trace(l_shape)
+    assert result.length_km == pytest.approx(0.62, abs=0.05)
+    assert result.points[-1] == pytest.approx(grid_point(2, 0), abs=1e-4)
+    with pytest.raises(RoutingError):
+        router.trace(densify(grid_point(2, 0), grid_point(0, 0)))
+
+
 def test_route_against_oneway_detours(router: Router) -> None:
     result = router.route(grid_point(2, 0), grid_point(0, 0))
     assert not rides_westward_on_row(result.points, row=0, col_min=0, col_max=2)
