@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import {
+  EDIT_BAD_SOURCE,
   EDIT_PICKS_SOURCE,
   ENDPOINTS_SOURCE,
   SEARCH_AREA_SOURCE,
@@ -13,7 +14,7 @@ import {
   setSourceData,
 } from "@/components/map/route-layers";
 import type { MatchResponse } from "@/lib/engine/contract";
-import { picksGeoJson } from "@/lib/map/edit-marks";
+import { badSegmentsGeoJson, picksGeoJson } from "@/lib/map/edit-marks";
 import { routeGeoJson, type RouteSegments } from "@/lib/map/route-geojson";
 import { previewGeoJson, searchAreaGeoJson } from "@/lib/map/search-geojson";
 import type { SearchArea } from "@/lib/search/params";
@@ -30,6 +31,8 @@ type Props = {
   response: RouteSegments | null;
   /** 微調中選到的點（重畫的兩個點、剪掉與拖曳的那一個）；沒有就是空陣列。 */
   editPicks: readonly LonLat[];
+  /** 重新驗證沒過的段落序號（0 起算，對應 response.segments）：用紅色標出來；沒有就是空陣列。 */
+  badSegments: readonly number[];
   /** 自動搜尋的範圍（圓）；null 時不畫。 */
   searchArea: SearchArea | null;
   /** 搜尋中目前最佳候選的吸附結果（即時預覽）；null 時不畫。 */
@@ -62,7 +65,7 @@ function watchErrors(map: MapLibreMap, alive: () => boolean, report: (message: s
   });
 }
 
-export function MapView({ initialCenter, response, editPicks, searchArea, preview, onMapChange, onError, children }: Props) {
+export function MapView({ initialCenter, response, editPicks, badSegments, searchArea, preview, onMapChange, onError, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [center] = useState(initialCenter);
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -121,6 +124,10 @@ export function MapView({ initialCenter, response, editPicks, searchArea, previe
     setSourceData(map, SEGMENTS_SOURCE, data.segments);
     setSourceData(map, ENDPOINTS_SOURCE, data.endpoints);
   }, [map, response]);
+
+  useEffect(() => {
+    if (map) setSourceData(map, EDIT_BAD_SOURCE, badSegmentsGeoJson(response, badSegments));
+  }, [map, response, badSegments]);
 
   useEffect(() => {
     if (map) setSourceData(map, EDIT_PICKS_SOURCE, picksGeoJson(editPicks));

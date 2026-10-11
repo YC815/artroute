@@ -1,6 +1,6 @@
 import type { GeoJSON } from "geojson";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
-import { dragPreviewGeoJson, picksGeoJson } from "@/lib/map/edit-marks";
+import { badSegmentsGeoJson, dragPreviewGeoJson, picksGeoJson } from "@/lib/map/edit-marks";
 import { routeGeoJson } from "@/lib/map/route-geojson";
 import { previewGeoJson, searchAreaGeoJson } from "@/lib/map/search-geojson";
 import type { LonLat } from "@/lib/shape/types";
@@ -11,6 +11,7 @@ export const SEARCH_AREA_SOURCE = "search-area";
 export const SEARCH_PREVIEW_SOURCE = "search-preview";
 export const EDIT_PICKS_SOURCE = "edit-picks";
 export const EDIT_DRAG_SOURCE = "edit-drag";
+export const EDIT_BAD_SOURCE = "edit-bad";
 const ARROW_IMAGE = "route-arrow";
 
 /** 路線方向箭頭：往右的「>」（沿線放置時 x 軸對齊行進方向）。畫兩次：深色外框＋白色內線。 */
@@ -71,8 +72,23 @@ export function setDragPreview(map: MapLibreMap, grab: LonLat | null, to: LonLat
   setSourceData(map, EDIT_DRAG_SOURCE, dragPreviewGeoJson(grab, to));
 }
 
-/** 微調的標示，畫在最上面：拖曳中的提示線與抓點、選到的點（第一個琥珀色、第二個橘紅色，白色外框）。 */
+/** 微調的標示，畫在最上面：重新驗證沒過的段（紅）、拖曳中的提示線與抓點、選到的點（第一個琥珀色、第二個橘紅色，白色外框）。 */
 function addEditLayers(map: MapLibreMap): void {
+  map.addSource(EDIT_BAD_SOURCE, { type: "geojson", data: badSegmentsGeoJson(null, []) });
+  map.addLayer({
+    id: "edit-bad-casing",
+    type: "line",
+    source: EDIT_BAD_SOURCE,
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ffffff", "line-width": 11 },
+  });
+  map.addLayer({
+    id: "edit-bad",
+    type: "line",
+    source: EDIT_BAD_SOURCE,
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#dc2626", "line-width": 7 },
+  });
   map.addSource(EDIT_DRAG_SOURCE, { type: "geojson", data: dragPreviewGeoJson(null, null) });
   map.addSource(EDIT_PICKS_SOURCE, { type: "geojson", data: picksGeoJson([]) });
   map.addLayer({

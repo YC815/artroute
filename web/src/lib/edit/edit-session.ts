@@ -24,7 +24,14 @@ export function createEditSession(deps: {
   notifyChanged: () => void;
   onStatus: (status: DraftSaveStatus) => void;
   post?: (...args: Parameters<typeof postEditRequest>) => Promise<ClientEditOutcome>;
-}): { begin: (session: EditSession) => void; base: () => EditBase | null; postEdit: PostEdit; saveDraft: SaveDraft } {
+}): {
+  begin: (session: EditSession) => void;
+  base: () => EditBase | null;
+  /** 這次微調使用者放的原圖（/edit、/verify 要帶）；還沒 begin 是 null。 */
+  strokes: () => MatchRequest["strokes"] | null;
+  postEdit: PostEdit;
+  saveDraft: SaveDraft;
+} {
   const { post = postEditRequest } = deps;
   let current: EditSession | null = null;
   // 資料庫只開一次；打不開就下一次再試
@@ -57,6 +64,7 @@ export function createEditSession(deps: {
       current = session;
     },
     base: () => current?.base ?? null,
+    strokes: () => current?.strokes ?? null,
     postEdit,
     saveDraft,
   };

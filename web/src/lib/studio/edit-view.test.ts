@@ -4,7 +4,7 @@ import { editReducer, startEdit, type EditedRoute } from "@/lib/edit/edit-state"
 import { buildGpx } from "@/lib/export/gpx";
 import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import type { Transform } from "@/lib/shape/transform";
-import { canEnterEdit, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
+import { canEnterEdit, currentBuildVersion, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
 
 const LIVE = { response: SAMPLE_MATCH_RESPONSE, downloadable: true };
 const T: Transform = { center: [121.5, 25.03], sizeM: 2000, rotationDeg: 0 };
@@ -95,5 +95,20 @@ describe("canEnterEdit", () => {
     expect(canEnterEdit({ ...ok, downloadable: false })).toBe(false);
     expect(canEnterEdit({ ...ok, pending: true })).toBe(false);
     expect(canEnterEdit({ ...ok, edit: editing() })).toBe(false);
+  });
+});
+
+describe("currentBuildVersion", () => {
+  it("沒有重新驗證過：用 /status 的版本", () => {
+    expect(currentBuildVersion("v1", null)).toBe("v1");
+    expect(currentBuildVersion(null, null)).toBeNull();
+  });
+
+  it("重新驗證通過後、/status 還沒重新讀：用驗證通過的版本（不會又被當成舊路網）", () => {
+    expect(currentBuildVersion("v1", { seenEngineVersion: "v1", version: "v2" })).toBe("v2");
+  });
+
+  it("/status 重新讀到別的版本：以它為準", () => {
+    expect(currentBuildVersion("v3", { seenEngineVersion: "v1", version: "v2" })).toBe("v3");
   });
 });

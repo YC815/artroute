@@ -55,3 +55,14 @@ export function resolveDisplayedRoute(
   const response = responseFromRoute(edited, targetLengthM);
   return { response, downloadable: response.route.points.length >= 2, edited: true };
 }
+
+/** 重新驗證通過的版本，連同當時 /status 回報的版本（engine 的 /status 還沒重新讀之前，用它判斷路線是不是最新）。 */
+export type VerifiedBuild = { seenEngineVersion: string | null; version: string };
+
+/**
+ * 目前路網的版本：頁面載入時讀到的 /status 在引擎重建路網之後就過時了，重新驗證通過的版本才是真的；
+ * /status 重新讀到不同的版本之後（seenEngineVersion 不再相等），以它為準。
+ */
+export function currentBuildVersion(engineVersion: string | null, verified: VerifiedBuild | null): string | null {
+  return verified && verified.seenEngineVersion === engineVersion ? verified.version : engineVersion;
+}

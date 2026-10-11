@@ -3,7 +3,7 @@ import type { MatchResponse, MatchWarning } from "@/lib/engine/contract";
 import { shapeProblem } from "@/lib/match/request";
 import type { Shape } from "@/lib/shape/types";
 import type { SavedSource } from "@/lib/storage/work";
-import { normalizeText, validateText } from "@/lib/text/layout";
+import { normalizeText, textShape, validateText } from "@/lib/text/layout";
 
 /** 圖片來源的 GPX 名稱。 */
 export const IMAGE_ROUTE_NAME = "圖片路線";
@@ -11,6 +11,12 @@ export const IMAGE_ROUTE_NAME = "圖片路線";
 /** GPX 的作品名稱：文字來源用文字本身（與畫出來的一致），圖片來源用「圖片路線」。控制字元與換行由 buildGpx 處理。 */
 export function gpxName(source: SavedSource): string {
   return source.kind === "text" ? normalizeText(source.text) : IMAGE_ROUTE_NAME;
+}
+
+/** 圖形來源 → 圖形；來源不合法（文字不合規、圖片沒有筆畫）時是 null。 */
+export function shapeOfSource(source: SavedSource): Shape | null {
+  if (source.kind === "image") return source.strokes.length > 0 ? { kind: "image", strokes: source.strokes } : null;
+  return validateText(source.text) === null ? textShape(source.text, source.font) : null;
 }
 
 /**

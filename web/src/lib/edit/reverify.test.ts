@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
-import { reverifyRoute } from "@/lib/edit/reverify";
+import { IDLE_REVERIFY, reverifyFor, reverifyRoute, stateAfterReverify, verifyingState } from "@/lib/edit/reverify";
 import type { EditError, EditOutcome, FetchLike } from "@/lib/engine/client";
 import { postVerify } from "@/lib/engine/client";
 import type { VerifyRequest } from "@/lib/engine/contract";
@@ -55,5 +55,26 @@ describe("reverifyRoute", () => {
       new Response(JSON.stringify({ detail: { code: "verify_failed", message: "不能騎", segments: [0] } }), { status: 422 });
     const result = await reverifyRoute(OLD, STROKES, signal(), (req, sig) => postVerify(req, sig, fetchImpl));
     expect(result).toEqual({ kind: "failed", segments: [0], message: "不能騎" });
+  });
+});
+
+describe("reverify 狀態", () => {
+  it("結果對應的狀態：通過回 idle；沒過帶說明與標紅的段；其他錯誤只有說明", () => {
+    expect(stateAfterReverify("s", { kind: "ok", route: OLD })).toEqual(IDLE_REVERIFY);
+    expect(stateAfterReverify("s", { kind: "failed", segments: [2], message: "不能騎" })).toEqual({
+      sig: "s",
+      status: "idle",
+      message: "不能騎",
+      bad: [2],
+    });
+    expect(stateAfterReverify("s", { kind: "error", message: "逾時" })).toEqual({ sig: "s", status: "idle", message: "逾時", bad: [] });
+  });
+
+  it("狀態只對它驗證的那條路線有效：路線換了（打開別的草稿、通過後換成新版）就看不到", () => {
+    const failed = stateAfterReverify("s", { kind: "failed", segments: [2], message: "不能騎" });
+    expect(reverifyFor(failed, "s")).toBe(failed);
+    expect(reverifyFor(failed, "other")).toBe(IDLE_REVERIFY);
+    expect(reverifyFor(failed, null)).toBe(IDLE_REVERIFY);
+    expect(reverifyFor(verifyingState("s"), "s").status).toBe("verifying");
   });
 });

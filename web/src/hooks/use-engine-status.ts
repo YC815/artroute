@@ -14,8 +14,8 @@ export type EngineStatus = {
   plannerReady: boolean;
 };
 
-/** 開頁時查一次 /api/status；retry 重查；吸附遇到 503 或連不上時呼叫 markDown。 */
-export function useEngineStatus(): EngineStatus & { retry: () => void; markDown: () => void } {
+/** 開頁時查一次 /api/status；retry 重查（顯示檢查中）、refresh 靜默重查；吸附遇到 503 或連不上時呼叫 markDown。 */
+export function useEngineStatus(): EngineStatus & { retry: () => void; refresh: () => void; markDown: () => void } {
   const [state, setState] = useState<EngineStatus>({
     status: "checking",
     dataVersion: null,
@@ -48,10 +48,13 @@ export function useEngineStatus(): EngineStatus & { retry: () => void; markDown:
     setAttempt((n) => n + 1);
   }, []);
 
+  /** 重新查一次，不經過 checking（引擎重建路網之後，讀新的版本；畫面上的狀態不閃）。 */
+  const refresh = useCallback(() => setAttempt((n) => n + 1), []);
+
   const markDown = useCallback(() => {
     downCountRef.current += 1;
     setState((s) => ({ ...s, status: "down" }));
   }, []);
 
-  return { ...state, retry, markDown };
+  return { ...state, retry, refresh, markDown };
 }

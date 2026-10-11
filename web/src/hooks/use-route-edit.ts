@@ -36,9 +36,10 @@ export type RouteEditActions = {
   reset(): void;
   /**
    * 重新驗證通過：換成新版路網的路線、歷史重新開始，並存進草稿（已經有草稿，或這次微調已經存過才存；
-   * 還沒存過草稿的微調不會因為驗證而建立草稿）。
+   * 還沒存過草稿的微調不會因為驗證而建立草稿）。from 是送去驗證的那條路線的簽章：目前的路線已經不是它
+   * （使用者在等待中打開了別的草稿、回到自動吸附）就不套用。
    */
-  replaceRoute(route: EditedRoute): void;
+  replaceRoute(route: EditedRoute, from: string): void;
   selectTool(tool: EditTool | null): void;
   pick(pos: RoutePos): void;
   chooseMode(mode: RerouteMode): void;
@@ -156,8 +157,8 @@ export function createRouteEditController(deps: {
       draft = null;
       set(null);
     },
-    replaceRoute(route) {
-      if (!state?.active) return;
+    replaceRoute(route, from) {
+      if (!state?.active || state.history.present.routeSig !== from) return;
       abortInflight();
       dispatch({ type: "replaceRoute", route });
       if (draft && (draft.id !== null || draft.saved)) save(route);
@@ -226,7 +227,7 @@ export function useRouteEdit(deps: { postEdit: PostEdit; saveDraft: SaveDraft })
       resume: () => controllerRef.current?.resume(),
       finish: () => controllerRef.current?.finish(),
       reset: () => controllerRef.current?.reset(),
-      replaceRoute: (route) => controllerRef.current?.replaceRoute(route),
+      replaceRoute: (route, from) => controllerRef.current?.replaceRoute(route, from),
       selectTool: (tool) => controllerRef.current?.selectTool(tool),
       pick: (pos) => controllerRef.current?.pick(pos),
       chooseMode: (mode) => controllerRef.current?.chooseMode(mode),
