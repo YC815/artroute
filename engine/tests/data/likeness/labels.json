@@ -1,0 +1,257 @@
+{
+ "collected_at": "2026-10-11",
+ "pairs": [
+  {
+   "n": 1,
+   "case": "heart@taipei_riverside",
+   "left": "V00",
+   "right": "V20",
+   "choice": "same"
+  },
+  {
+   "n": 2,
+   "case": "heart@taichung_west",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 3,
+   "case": "heart@kaohsiung_lingya",
+   "left": "V02",
+   "right": "V00",
+   "choice": "R"
+  },
+  {
+   "n": 4,
+   "case": "heart@taipei_daan",
+   "left": "V00",
+   "right": "V30",
+   "choice": "R"
+  },
+  {
+   "n": 5,
+   "case": "default_text@taipei_daan",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 6,
+   "case": "hi@taichung_west",
+   "left": "V00",
+   "right": "V02",
+   "choice": "L"
+  },
+  {
+   "n": 7,
+   "case": "heart@taipei_daan",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 8,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "V30",
+   "right": "V00",
+   "choice": "R"
+  },
+  {
+   "n": 9,
+   "case": "hi@kaohsiung_lingya",
+   "left": "V02",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 10,
+   "case": "hi@taipei_riverside",
+   "left": "V02",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 11,
+   "case": "hi@taipei_daan",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 12,
+   "case": "hi@taipei_daan",
+   "left": "V02",
+   "right": "V00",
+   "choice": "R"
+  },
+  {
+   "n": 13,
+   "case": "heart@taichung_west",
+   "left": "V00",
+   "right": "V30",
+   "choice": "same"
+  },
+  {
+   "n": 14,
+   "case": "default_text@taipei_daan",
+   "left": "V30",
+   "right": "V00",
+   "choice": "R"
+  },
+  {
+   "n": 15,
+   "case": "heart@kaohsiung_lingya",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 16,
+   "case": "hi@taipei_riverside",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 17,
+   "case": "heart@taichung_west",
+   "left": "V02",
+   "right": "V00",
+   "choice": "R"
+  },
+  {
+   "n": 18,
+   "case": "default_text@taichung_west",
+   "left": "V30",
+   "right": "V00",
+   "choice": "L"
+  },
+  {
+   "n": 19,
+   "case": "hi@taichung_west",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 20,
+   "case": "hi@taichung_west",
+   "left": "V00",
+   "right": "V30",
+   "choice": "L"
+  },
+  {
+   "n": 21,
+   "case": "heart@taipei_riverside",
+   "left": "V30",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 22,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "V00",
+   "right": "V20",
+   "choice": "R"
+  },
+  {
+   "n": 23,
+   "case": "default_text@taipei_daan",
+   "left": "V00",
+   "right": "V02",
+   "choice": "L"
+  },
+  {
+   "n": 24,
+   "case": "default_text@taipei_riverside",
+   "left": "V30",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 25,
+   "case": "hi@kaohsiung_lingya",
+   "left": "V20",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 26,
+   "case": "heart@kaohsiung_lingya",
+   "left": "V00",
+   "right": "V30",
+   "choice": "same"
+  },
+  {
+   "n": 27,
+   "case": "heart@taipei_daan",
+   "left": "V02",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 28,
+   "case": "hi@kaohsiung_lingya",
+   "left": "V30",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 29,
+   "case": "hi@taipei_daan",
+   "left": "V00",
+   "right": "V30",
+   "choice": "same"
+  },
+  {
+   "n": 30,
+   "case": "default_text@taichung_west",
+   "left": "V20",
+   "right": "V00",
+   "choice": "L"
+  },
+  {
+   "n": 31,
+   "case": "default_text@taichung_west",
+   "left": "V02",
+   "right": "V00",
+   "choice": "same"
+  },
+  {
+   "n": 32,
+   "case": "heart@taipei_riverside",
+   "left": "V00",
+   "right": "V02",
+   "choice": "same"
+  },
+  {
+   "n": 33,
+   "case": "default_text@taipei_riverside",
+   "left": "V00",
+   "right": "V02",
+   "choice": "L"
+  },
+  {
+   "n": 34,
+   "case": "default_text@kaohsiung_lingya",
+   "left": "V00",
+   "right": "V02",
+   "choice": "R"
+  },
+  {
+   "n": 35,
+   "case": "default_text@taipei_riverside",
+   "left": "V00",
+   "right": "V20",
+   "choice": "same"
+  },
+  {
+   "n": 36,
+   "case": "hi@taipei_riverside",
+   "left": "V30",
+   "right": "V00",
+   "choice": "R"
+  }
+ ]
+}

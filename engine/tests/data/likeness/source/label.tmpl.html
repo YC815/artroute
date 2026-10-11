@@ -1,0 +1,144 @@
+<title>路線相似度標註</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* 一次一組：原圖在上，兩張縮圖並排，下面三個大按鈕；底部是 36 格進度 */
+:root {
+  --bg: #eef0ec; --panel: #fbfbf8; --ink: #20251f; --muted: #646b62; --line: #d5d9d1;
+  --route: #fc4c02; --ref: #3b4a5a; --pick: #fc4c02; --done: #3b4a5a;
+  --body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #171a17; --panel: #212521; --ink: #e8ebe5; --muted: #9aa294; --line: #353a34;
+  --route: #ff6a2b; --ref: #a9bccd; --pick: #ff6a2b; --done: #a9bccd; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #171a17; --panel: #212521; --ink: #e8ebe5; --muted: #9aa294; --line: #353a34;
+  --route: #ff6a2b; --ref: #a9bccd; --pick: #ff6a2b; --done: #a9bccd; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; }
+.wrap { max-width: 640px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 40px; display: grid; gap: 16px; }
+header { display: grid; gap: 6px; }
+h1 { font-size: 20px; margin: 0; font-weight: 700; text-wrap: balance; }
+.hint { margin: 0; color: var(--muted); line-height: 1.6; }
+.count { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 14px; }
+.ref { display: grid; justify-items: center; gap: 4px; }
+.ref svg { width: 110px; height: 110px; }
+.label { font-size: 12px; letter-spacing: .06em; color: var(--muted); }
+.duo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.side { display: grid; gap: 4px; justify-items: center; min-width: 0; }
+.side svg { width: 100%; max-width: 240px; aspect-ratio: 1; background: var(--bg); border-radius: 6px; border: 2px solid transparent; }
+.side.on svg { border-color: var(--pick); }
+svg path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.r path { stroke: var(--route); stroke-width: 2.2; }
+.ref path { stroke: var(--ref); stroke-width: 2.4; }
+.btns { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; padding: 12px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible { outline: 2px solid var(--pick); outline-offset: 2px; }
+button.on { background: var(--pick); border-color: var(--pick); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.nav { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.nav button { padding: 6px 12px; font-size: 13px; }
+.dots { display: grid; grid-template-columns: repeat(12, 1fr); gap: 6px; }
+.dot { aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); background: transparent; padding: 0; }
+.dot.done { background: var(--done); border-color: var(--done); }
+.dot.cur { outline: 2px solid var(--pick); outline-offset: 1px; }
+.status { font-size: 13px; color: var(--muted); min-height: 1.4em; }
+.finish { margin: 0; padding: 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--pick); }
+@media (prefers-reduced-motion: no-preference) { button, .side svg { transition: border-color .12s, background .12s; } }
+</style>
+<div class="wrap">
+  <header>
+    <h1>哪一條路線比較像原圖？</h1>
+    <p class="hint">用手機動態牆縮圖的感覺看。兩條路線都是北朝上、各自縮放到框內。快捷鍵：← 左邊、↓ 差不多、→ 右邊。</p>
+    <span class="count" id="count"></span>
+  </header>
+  <section class="card" aria-live="polite">
+    <div class="ref"><span class="label">原圖</span><svg id="ref" viewBox="0 0 110 110" role="img" aria-label="原圖"><path></path></svg></div>
+    <div class="duo">
+      <div class="side r" id="sideL"><svg viewBox="0 0 240 240" role="img" aria-label="左邊的路線"><path></path></svg><span class="label">左</span></div>
+      <div class="side r" id="sideR"><svg viewBox="0 0 240 240" role="img" aria-label="右邊的路線"><path></path></svg><span class="label">右</span></div>
+    </div>
+    <div class="btns">
+      <button id="bL" data-c="L">左邊比較像</button>
+      <button id="bS" data-c="same">差不多</button>
+      <button id="bR" data-c="R">右邊比較像</button>
+    </div>
+    <div class="nav"><button id="prev">上一組</button><span class="status" id="status"></span><button id="next">下一組</button></div>
+  </section>
+  <div class="dots" id="dots"></div>
+  <p class="finish" id="finish" hidden>36 組都標完了。回到終端跟 Claude 說一聲就好，結果已經存好。</p>
+</div>
+<script>
+const PAIRS = __PAIRS__;
+const votes = {};
+let i = 0, db = null, loaded = false;
+const $ = (id) => document.getElementById(id);
+const docId = (p) => "p" + String(p.n).padStart(2, "0");
+
+function render() {
+  const p = PAIRS[i], v = votes[docId(p)];
+  $("count").textContent = `第 ${p.n} / ${PAIRS.length} 組 · 已標 ${Object.keys(votes).length}`;
+  $("ref").querySelector("path").setAttribute("d", p.ref);
+  $("sideL").querySelector("path").setAttribute("d", p.l);
+  $("sideR").querySelector("path").setAttribute("d", p.r);
+  for (const b of [$("bL"), $("bS"), $("bR")]) b.classList.toggle("on", v === b.dataset.c);
+  $("sideL").classList.toggle("on", v === "L");
+  $("sideR").classList.toggle("on", v === "R");
+  $("prev").disabled = i === 0;
+  $("next").disabled = i === PAIRS.length - 1;
+  renderDots();
+}
+function renderDots() {
+  const box = $("dots");
+  if (!box.children.length) {
+    PAIRS.forEach((p, k) => {
+      const b = document.createElement("button");
+      b.className = "dot"; b.setAttribute("aria-label", `第 ${p.n} 組`);
+      b.addEventListener("click", () => { i = k; render(); });
+      box.appendChild(b);
+    });
+  }
+  [...box.children].forEach((b, k) => {
+    b.classList.toggle("done", !!votes[docId(PAIRS[k])]);
+    b.classList.toggle("cur", k === i);
+  });
+  $("finish").hidden = Object.keys(votes).length < PAIRS.length;
+}
+async function choose(c) {
+  const p = PAIRS[i], id = docId(p);
+  if (!db) { $("status").textContent = "存不了：請登入 claude.ai 後重新開啟這一頁"; return; }
+  votes[id] = c; render();
+  try {
+    await db.collection("votes").doc(id).set({ pair: p.id, n: p.n, choice: c, at: new Date().toISOString() });
+    $("status").textContent = "已儲存";
+  } catch (e) {
+    delete votes[id]; render();
+    $("status").textContent = "沒有存到（" + (e && e.code || "錯誤") + "），再按一次";
+    return;
+  }
+  const next = PAIRS.findIndex((q, k) => k > i && !votes[docId(q)]);
+  if (next >= 0) { i = next; render(); }
+}
+for (const b of [$("bL"), $("bS"), $("bR")]) b.addEventListener("click", () => choose(b.dataset.c));
+$("prev").addEventListener("click", () => { if (i > 0) { i--; render(); } });
+$("next").addEventListener("click", () => { if (i < PAIRS.length - 1) { i++; render(); } });
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest && e.target.closest("input,textarea")) return;
+  if (e.key === "ArrowLeft") choose("L");
+  else if (e.key === "ArrowRight") choose("R");
+  else if (e.key === "ArrowDown") { e.preventDefault(); choose("same"); }
+});
+render();
+(async () => {
+  try { db = await window.claude?.use("db"); } catch { db = null; }
+  if (!db) { $("status").textContent = "存不了：請登入 claude.ai 後重新開啟這一頁"; return; }
+  $("status").textContent = "";
+  db.collection("votes").onSnapshot((snap) => {
+    for (const d of snap.docs) { const v = d.data(); if (v && v.choice) votes[d.id] = v.choice; }
+    if (!loaded) { loaded = true; const first = PAIRS.findIndex((q) => !votes[docId(q)]); if (first >= 0) i = first; }
+    render();
+  }, (e) => { $("status").textContent = "讀不到已存的標註（" + e.code + "）"; });
+})();
+</script>
