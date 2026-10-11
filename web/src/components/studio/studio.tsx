@@ -22,7 +22,7 @@ import { useLiveMatch } from "@/hooks/use-live-match";
 import { useReverify } from "@/hooks/use-reverify";
 import { useRouteEdit } from "@/hooks/use-route-edit";
 import { useSearch } from "@/hooks/use-search";
-import { isOutdatedRoute, outdatedLabel } from "@/lib/drafts/draft-info";
+import { isNewerBuild, isOutdatedRoute, newestBuild, outdatedLabel } from "@/lib/drafts/draft-info";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
 import type { DraftNotice } from "@/lib/edit/edit-hint";
 import { createEditSession, placementOf, sessionFromDraft } from "@/lib/edit/edit-session";
@@ -189,6 +189,12 @@ export function Studio() {
     () => (editing && edit.state ? edit.state.picks.map((p) => p.point) : NO_PICKS),
     [editing, edit.state],
   );
+  // 引擎回應（吸附、微調、打開的草稿）的路網比 /status 已知的新：引擎在頁面開著時重建了，重新讀 /status。
+  // 版本沒變就不會再觸發（依賴的是版本字串）；不讀的話，新路網的路線會被當成舊路網要求多餘的重新驗證。
+  const seenBuild = newestBuild([response?.data_version, fineResponse?.data_version, editedRoute?.dataVersion]);
+  useEffect(() => {
+    if (engine.status === "ok" && isNewerBuild(seenBuild, engine.dataVersion)) refreshEngineStatus();
+  }, [seenBuild, engine.status, engine.dataVersion, refreshEngineStatus]);
   // 搜尋結果屬於搜尋當時的圖形（候選的擺放只對它有意義）：圖形換了就不顯示、進行中的取消
   const search = useSearch(currentShapeKey, engine.markDown);
   const blocker = searchBlocker({
