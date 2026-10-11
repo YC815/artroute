@@ -365,7 +365,7 @@ Claude-Session: https://claude.ai/code/session_01Kg6bv9JV9xTSx6n6doWzzc"
 - [ ] **Step 1：建立專案**
 
 ```bash
-cd /Users/yushunchen/.z/pr/StravaArt
+cd <repo>
 mkdir engine && cd engine
 uv init --package --name engine --python 3.13 --vcs none .
 uv add fastapi 'uvicorn[standard]' httpx pyvalhalla==3.9.1
@@ -545,7 +545,7 @@ Dockerfile
 - [ ] **Step 8：Commit**
 
 ```bash
-cd /Users/yushunchen/.z/pr/StravaArt
+cd <repo>
 git add .gitignore engine docs/p0-findings.md
 git commit -m "feat: 引擎專案骨架（FastAPI、pyvalhalla、Dockerfile）
 
@@ -1739,7 +1739,7 @@ Claude-Session: https://claude.ai/code/session_01Kg6bv9JV9xTSx6n6doWzzc"
 - [ ] **Step 1：部署**
 
 ```bash
-cd /Users/yushunchen/.z/pr/StravaArt/engine && hl deploy artroute-engine --internal
+cd <repo>/engine && hl deploy artroute-engine --internal
 ```
 Expected：最後一行是 `完成：http://artroute-engine:8080 （內網：只有 hl 網路上的 app 連得到）`。
 
@@ -1800,7 +1800,7 @@ Expected：`{"data":{"build_id":"…"…}}`，build_id 和 Step 3 一致；並�
 - [ ] **Step 6：Commit**
 
 ```bash
-cd /Users/yushunchen/.z/pr/StravaArt
+cd <repo>
 git add docs/p0-findings.md
 git commit -m "docs: P0 驗證結果
 
