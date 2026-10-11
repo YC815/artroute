@@ -85,6 +85,11 @@ def test_cases_cover_completion_condition() -> None:
         assert (min(xs) + max(xs)) / 2 == pytest.approx(0, abs=1e-9) and (min(ys) + max(ys)) / 2 == pytest.approx(0, abs=1e-9)
 
 
+def test_cases_use_the_web_default_rotation() -> None:
+    # P2.5：網站的文字與圖片預設都是 ±15°（搜尋排名扣旋轉的分，見 score.rank）；heart 以前是 ±180°
+    assert {c.rotation for c in SEARCH_CASES} == {(-15.0, 15.0)}
+
+
 @pytest.mark.valhalla
 def test_cli_runs_on_a_real_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     pbf = tmp_path / "city.osm.pbf"
