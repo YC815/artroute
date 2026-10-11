@@ -25,7 +25,7 @@ import { useSearch } from "@/hooks/use-search";
 import { isOutdatedRoute, outdatedLabel } from "@/lib/drafts/draft-info";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
 import type { DraftNotice } from "@/lib/edit/edit-hint";
-import { createEditSession } from "@/lib/edit/edit-session";
+import { createEditSession, sessionFromDraft } from "@/lib/edit/edit-session";
 import type { MatchWarning, SearchCandidate } from "@/lib/engine/contract";
 import { buildMatchRequest, shapeProblem } from "@/lib/match/request";
 import {
@@ -246,8 +246,8 @@ export function Studio() {
   // 打開草稿：還原來源、擺放與路線，進入微調。先 begin 再 enter：基準要是草稿的圖形與擺放，
   // 否則「圖形被移動」的判斷會拿舊的基準、馬上把微調結束。
   const openDraft = (draft: Draft) => {
-    const draftShape = shapeOfSource(draft.source);
-    if (!draftShape) return;
+    const session = sessionFromDraft(draft);
+    if (!session) return;
     reverify.cancel();
     if (draft.source.kind === "text") {
       setMode("text");
@@ -258,12 +258,7 @@ export function Studio() {
     }
     setTransform(draft.transform);
     setDragging(false);
-    editSession.begin({
-      source: draft.source,
-      transform: draft.transform,
-      strokes: buildMatchRequest(draftShape, draft.transform).strokes,
-      base: { shapeKey: shapeKey(draftShape), transform: draft.transform },
-    });
+    editSession.begin(session);
     setDraftNotice(null);
     edit.enter(draft.route, draft.id);
     void drafts.markOpened(draft.id);

@@ -1,12 +1,15 @@
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
-import { createEditSession, type EditSession } from "@/lib/edit/edit-session";
+import { createEditSession, sessionFromDraft, type EditSession } from "@/lib/edit/edit-session";
 import type { EditOp } from "@/lib/edit/edit-state";
 import type { EditOutcome } from "@/lib/engine/client";
 import type { EditRequest } from "@/lib/engine/contract";
 import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 import { openDraftDb } from "@/lib/storage/drafts";
+import { editSupersededBy } from "@/lib/studio/edit-view";
+import { shapeKey, shapeOfSource } from "@/lib/studio/state";
+import { transformStrokes } from "@/lib/shape/transform";
 
 const R0 = routeFromResponse(SAMPLE_MATCH_RESPONSE);
 const OP: EditOp = { type: "cut", at: { segment: 0, offset_m: 10 } };
@@ -70,5 +73,25 @@ describe("createEditSession", () => {
     expect(session.base()).toBeNull();
     session.begin(SESSION);
     expect(session.base()).toBe(SESSION.base);
+  });
+});
+
+describe("sessionFromDraft", () => {
+  const draft = { source: SESSION.source, transform: SESSION.transform };
+
+  it("基準與 Studio 開著這個來源、擺放時算出來的一致：打開草稿不會被「圖形被移動」的判斷結束", () => {
+    const session = sessionFromDraft(draft)!;
+    const shape = shapeOfSource(draft.source)!;
+    expect(editSupersededBy(session.base, { shapeKey: shapeKey(shape), transform: { ...draft.transform } })).toBe(false);
+    expect(editSupersededBy(session.base, { shapeKey: shapeKey(shape), transform: { ...draft.transform, sizeM: 2100 } })).toBe(true);
+  });
+
+  it("原圖是草稿的圖形依草稿的擺放轉成經緯度（/edit 的「貼圖形」與分數用）", () => {
+    const shape = shapeOfSource(draft.source)!;
+    expect(sessionFromDraft(draft)!.strokes).toEqual(transformStrokes(shape.strokes, draft.transform));
+  });
+
+  it("來源不能成圖形：null", () => {
+    expect(sessionFromDraft({ ...draft, source: { kind: "image", strokes: [] } })).toBeNull();
   });
 });

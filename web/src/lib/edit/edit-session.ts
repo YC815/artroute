@@ -3,10 +3,12 @@ import { createDraftSaver, type DraftSaveStatus } from "@/lib/edit/draft-saver";
 import { toEditOutcome, toEditRequest } from "@/lib/edit/edit-bridge";
 import { postEdit as postEditRequest, type EditOutcome as ClientEditOutcome } from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
-import type { DraftDb } from "@/lib/storage/drafts";
+import { buildMatchRequest } from "@/lib/match/request";
+import type { Draft, DraftDb } from "@/lib/storage/drafts";
 import type { SavedSource } from "@/lib/storage/work";
 import type { Transform } from "@/lib/shape/transform";
 import type { EditBase } from "@/lib/studio/edit-view";
+import { shapeKey, shapeOfSource } from "@/lib/studio/state";
 
 /** 一次微調：進入時的圖形來源、擺放與原圖，以及判斷圖形有沒有被移動的基準。 */
 export type EditSession = { source: SavedSource; transform: Transform; strokes: MatchRequest["strokes"]; base: EditBase };
@@ -67,5 +69,21 @@ export function createEditSession(deps: {
     strokes: () => current?.strokes ?? null,
     postEdit,
     saveDraft,
+  };
+}
+
+/**
+ * 打開草稿時的微調基準：圖形來源與擺放取自草稿，原圖用草稿的來源與擺放重新算，base 是它們的 shapeKey 與擺放。
+ * Studio 要先 begin 這個再 enter：base 若還是前一次的，「圖形被移動」的判斷會馬上把剛打開的微調結束。
+ * 草稿的來源不能成圖形（讀取時已驗證，只剩版本不符之類的意外）時是 null。
+ */
+export function sessionFromDraft(draft: Pick<Draft, "source" | "transform">): EditSession | null {
+  const shape = shapeOfSource(draft.source);
+  if (!shape) return null;
+  return {
+    source: draft.source,
+    transform: draft.transform,
+    strokes: buildMatchRequest(shape, draft.transform).strokes,
+    base: { shapeKey: shapeKey(shape), transform: draft.transform },
   };
 }
