@@ -1,6 +1,7 @@
 "use client";
 
 import { Trash2 } from "lucide-react";
+import { memo, useMemo } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,6 +36,23 @@ type Props = {
 const THUMB_W = 72;
 const THUMB_H = 54;
 
+/** 縮圖（路線有上萬點，算一次不便宜）：Studio 拖曳圖形時每個 pointermove 都會 render，只有路線本身變了才重算。 */
+const Thumbnail = memo(function Thumbnail({ segments, name }: { segments: Draft["route"]["segments"]; name: string }) {
+  const path = useMemo(() => thumbnailPath(segments, THUMB_W, THUMB_H), [segments]);
+  return (
+    <svg
+      viewBox={`0 0 ${THUMB_W} ${THUMB_H}`}
+      width={THUMB_W}
+      height={THUMB_H}
+      className="shrink-0 rounded bg-muted text-blue-600"
+      role="img"
+      aria-label={`${name} 的路線縮圖`}
+    >
+      <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+});
+
 function DraftItem({ draft, open, engineVersion, onOpen, onRemove }: {
   draft: Draft;
   open: boolean;
@@ -46,23 +64,7 @@ function DraftItem({ draft, open, engineVersion, onOpen, onRemove }: {
   const outdated = isOutdatedRoute(draft.route.dataVersion, engineVersion);
   return (
     <li className="flex items-center gap-3 rounded-lg border p-2">
-      <svg
-        viewBox={`0 0 ${THUMB_W} ${THUMB_H}`}
-        width={THUMB_W}
-        height={THUMB_H}
-        className="shrink-0 rounded bg-muted text-blue-600"
-        role="img"
-        aria-label={`${name} 的路線縮圖`}
-      >
-        <path
-          d={thumbnailPath(draft.route.segments, THUMB_W, THUMB_H)}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+      <Thumbnail segments={draft.route.segments} name={name} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">{name}</span>
@@ -77,7 +79,7 @@ function DraftItem({ draft, open, engineVersion, onOpen, onRemove }: {
         </span>
       </div>
       <div className="flex shrink-0 flex-col gap-1">
-        <Button size="xs" variant="outline" disabled={open} onClick={onOpen}>
+        <Button size="xs" variant="outline" disabled={open} aria-label={`打開 ${name}`} onClick={onOpen}>
           打開
         </Button>
         <AlertDialog>

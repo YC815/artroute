@@ -247,6 +247,12 @@ export function Studio() {
     edit.enter(routeFromResponse(signed), null, placementOf(session));
   };
 
+  const resumeEdit = () => {
+    edit.resume();
+    // 完成之後地圖可能被移到別處
+    if (map && editedRoute) fitMapToRoute(map, editedRoute.segments);
+  };
+
   const startReverify = () => {
     const strokes = editSession.strokes();
     if (editedRoute && strokes) reverify.run(editedRoute, strokes);
@@ -389,7 +395,7 @@ export function Studio() {
           editAction={
             display.edited
               ? chrome.resume
-                ? { label: "繼續微調", disabled: false, onClick: edit.resume }
+                ? { label: "繼續微調", disabled: false, onClick: resumeEdit }
                 : null
               : {
                   label: "微調路線",
@@ -412,7 +418,8 @@ export function Studio() {
         />
         <DraftsPanel
           view={drafts.view}
-          openId={edit.state?.draftId ?? null}
+          // 按了「完成」之後這份草稿又可以「打開」：地圖可能已經被移到別處，打開會把鏡頭帶回來
+          openId={editing ? (edit.state?.draftId ?? null) : null}
           engineVersion={buildVersion}
           onOpen={openDraft}
           onRemove={removeDraft}

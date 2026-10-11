@@ -47,6 +47,8 @@ type FakeEngine = {
   /** 回傳 null 就用預設的成功回應。 */
   editReply: ((request: EditRequest, n: number) => Reply | null) | null;
   verifyReply: ((request: VerifyRequest) => Reply | null) | null;
+  /** 有值時 /verify 等它 resolve 才回應（測驗證進行中的畫面）。 */
+  verifyGate: Promise<void> | null;
 };
 
 const editedSegment = (request: EditRequest): number =>
@@ -96,6 +98,7 @@ async function mockEditEngine(page: Page, status: object = statusOf(BUILD)): Pro
     edited: 0,
     editReply: null,
     verifyReply: null,
+    verifyGate: null,
   };
   await mockMapAndStatus(page, status);
   await page.route("**/api/match", async (route) => {
@@ -117,6 +120,7 @@ async function mockEditEngine(page: Page, status: object = statusOf(BUILD)): Pro
   await page.route("**/api/verify", async (route) => {
     const request = verifyRequestSchema.parse(route.request().postDataJSON());
     engine.verifies.push(request);
+    if (engine.verifyGate) await engine.verifyGate;
     const reply = engine.verifyReply?.(request) ?? { json: verifiedResponseFor(request, NEW_BUILD) };
     await route.fulfill(reply).catch(() => {});
   });
@@ -353,7 +357,7 @@ test("進入微調 → 剪掉 → 復原 → 重做 → 完成 → 移動圖形 
 
   // 打開：來源、擺放、微調後的路線都還原，進入微調（草稿的圖形與擺放就是基準，不會馬上被當成「圖形被移動」而結束）
   const matchesBeforeOpen = engine.matches.length;
-  await item.getByRole("button", { name: "打開" }).click();
+  await item.getByRole("button", { name: "打開 HI" }).click();
   await expect(toolbar(page)).toBeVisible();
   await expect(textbox).toHaveValue("HI");
   await expect(page.getByTestId("target-stroke")).toHaveCount(HI_STROKES);
@@ -571,7 +575,10 @@ const OLD_BUILD_LABEL = "這是 10 月 10 日路網上的路線";
 /** route-layers.ts 的 edit-bad 圖層線色 #dc2626（終點圓點也是這個顏色，所以比較前後的差）。 */
 const RED_RGB = [0xdc, 0x26, 0x26] as const;
 
-async function countRedPixels(page: Page, decoder: Page): Promise<number> {
+const countRedPixels = (page: Page, decoder: Page) => countPixels(page, decoder, RED_RGB);
+
+/** 地圖畫面裡與 rgb 相近的像素數（螢幕截圖丟給另一個分頁解碼；測試用來看路線、紅色標段畫在哪）。 */
+async function countPixels(page: Page, decoder: Page, color: readonly [number, number, number]): Promise<number> {
   const png = await mapEl(page).screenshot();
   return decoder.evaluate(
     async ({ base64, rgb }) => {
@@ -590,7 +597,7 @@ async function countRedPixels(page: Page, decoder: Page): Promise<number> {
       }
       return count;
     },
-    { base64: png.toString("base64"), rgb: [...RED_RGB] },
+    { base64: png.toString("base64"), rgb: [...color] },
   );
 }
 
@@ -619,7 +626,7 @@ async function reloadOnNewBuild(page: Page) {
 async function openOldDraft(page: Page) {
   const item = draftsPanel(page).getByRole("listitem");
   await expect(item.getByText("舊路網")).toBeVisible();
-  await item.getByRole("button", { name: "打開" }).click();
+  await item.getByRole("button", { name: "打開 HI" }).click();
   await expect(page.getByTestId("reverify-notice")).toBeVisible();
 }
 
@@ -908,4 +915,96 @@ test("草稿存不了（瀏覽器不允許儲存）：微調照常、工具列�
   await expect(draftsPanel(page).getByText("這個瀏覽器不能儲存草稿，微調過的路線不會保留。")).toBeVisible();
   // 沒有草稿，但 GPX 仍是微調後的路線
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+});
+
+// ---- 修正波次：審查發現的情境 ----
+
+/** route-layers.ts 的路線線色 #2563eb（圖形段與微調換上的段）。 */
+const ROUTE_BLUE = [0x25, 0x63, 0xeb] as const;
+
+test("打開草稿時，路線不在畫面裡就把地圖移過去（鎖住的圖形沒有「移到畫面中央」可用）", async ({ page }) => {
+  const engine = await mockEditEngine(page);
+  await makeDraft(page, engine);
+  const decoder = await page.context().newPage();
+  expect(await countPixels(page, decoder, ROUTE_BLUE)).toBeGreaterThan(300);
+
+  // 把地圖拖到別處（從圖形外的左下角拖到右上；右下角是 MapLibre 的版權圖示）：路線離開畫面
+  const box = await mapEl(page).boundingBox();
+  if (!box) throw new Error("找不到地圖");
+  for (let i = 0; i < 2; i++) {
+    await page.mouse.move(box.x + 15, box.y + box.height - 15);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 15 + 600, box.y + box.height - 15 - 450, { steps: 8 });
+    await page.mouse.up();
+  }
+  await expect.poll(() => countPixels(page, decoder, ROUTE_BLUE), { message: "地圖沒有被拖走" }).toBeLessThan(30);
+
+  await draftsPanel(page).getByRole("button", { name: "打開 HI" }).click();
+  await expect(toolbar(page)).toBeVisible();
+  await expect.poll(() => countPixels(page, decoder, ROUTE_BLUE), { message: "打開草稿後路線不在畫面裡" }).toBeGreaterThan(300);
+});
+
+test("路網比 /status 新（引擎在頁面開著時重建）：新的路線不被當成舊路網，並重新讀 /status", async ({ page }) => {
+  const engine = await mockEditEngine(page);
+  let statusCalls = 0;
+  // /status 還是開頁時的舊版本（20260101），吸附結果已經是 20261010
+  await page.route("**/api/status", (route) => {
+    statusCalls += 1;
+    return route.fulfill({ json: statusOf("20260101T000000Z") });
+  });
+  await loadHi(page);
+  await expect.poll(() => statusCalls, { message: "看到比 /status 新的版本沒有重新讀" }).toBeGreaterThanOrEqual(2);
+  const settled = statusCalls;
+  const view = await mapView(page);
+  await enterEdit(page);
+  await expect(page.getByTestId("reverify-notice")).toHaveCount(0);
+  await cutOnRoute(page, engine, pickOnRoute(view, engine.lastMatch!));
+  await expect(page.getByText(EDITED_KM, { exact: true })).toBeVisible();
+  await expect(toolbar(page)).toBeVisible();
+  await expect(page.getByTestId("reverify-notice")).toHaveCount(0);
+  await expect(draftsPanel(page).getByRole("listitem")).toHaveCount(1);
+  await expect(draftsPanel(page).getByText("舊路網")).toHaveCount(0);
+  // 版本字串沒變就不會一直重新讀
+  await page.waitForTimeout(800);
+  expect(statusCalls).toBe(settled);
+});
+
+test("驗證進行中改了圖形（結束微調）：在途的 /verify 被取消、提示消失", async ({ page }) => {
+  const engine = await mockEditEngine(page);
+  await makeDraft(page, engine);
+  await reloadOnNewBuild(page);
+  await openOldDraft(page);
+  const failed: string[] = [];
+  page.on("requestfailed", (request) => failed.push(request.url()));
+  let open = () => {};
+  engine.verifyGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  await page.getByTestId("reverify-notice").getByRole("button", { name: "重新驗證" }).click();
+  await expect.poll(() => engine.verifies.length).toBe(1);
+
+  // 改文字 = 移動圖形：結束微調、回到即時吸附，/verify 取消
+  const textbox = page.getByRole("textbox", { name: "文字" });
+  await textbox.fill("L");
+  await textbox.blur();
+  await expect(page.getByTestId("reverify-notice")).toHaveCount(0);
+  await expect.poll(() => failed.some((url) => url.includes("/api/verify")), { message: "/verify 沒有被取消" }).toBe(true);
+  open();
+});
+
+test("引擎沒有回 route_sig（舊版引擎）：路線與 GPX 照常，只是不能微調並說明原因", async ({ page }) => {
+  const engine = await mockEditEngine(page);
+  await page.route("**/api/match", async (route) => {
+    const request = matchRequestSchema.parse(route.request().postDataJSON());
+    engine.matches.push(request);
+    engine.lastMatch = { ...matchResponseFor(request), route_sig: undefined };
+    await route.fulfill({ json: engine.lastMatch });
+  });
+  await loadHi(page);
+  await expect(page.getByRole("button", { name: "微調路線" })).toBeDisabled();
+  await expect(page.getByText("這份吸附結果沒有簽章（引擎版本較舊），不能微調；仍可下載 GPX。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+  // 假引擎的 route.points 就是 GPX 的點
+  const expected = engine.lastMatch!.route.points.map(([x, y]) => `<trkpt lat="${y.toFixed(6)}" lon="${x.toFixed(6)}"/>`);
+  expect(await downloadGpxPoints(page)).toEqual(expected);
 });
