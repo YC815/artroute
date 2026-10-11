@@ -238,6 +238,7 @@ export function Studio() {
         <MapView
           initialCenter={transform.center}
           response={visible.response}
+          editPicks={[]}
           searchArea={searchArea}
           preview={search.active ? (search.best?.match ?? null) : null}
           onMapChange={setMap}
@@ -252,6 +253,7 @@ export function Studio() {
                 warned={warned}
                 targetHidden={targetHidden}
                 onToggleTarget={() => setTargetHidden((hidden) => !hidden)}
+                locked={false}
                 onChange={onTransform}
               />
             )

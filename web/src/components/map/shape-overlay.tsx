@@ -24,6 +24,8 @@ type Props = {
   /** 隱藏原圖：目標線（含標紅的失敗筆畫）不畫，只看路線；外框與把手照常，仍可拖曳、縮放、旋轉。 */
   targetHidden: boolean;
   onToggleTarget: () => void;
+  /** 微調路線中：圖形鎖住，隱藏把手、不收拖曳與方向鍵，地圖的拖曳只移動畫面；目標線與外框照常畫。 */
+  locked: boolean;
   /** dragging 為 true 代表還在拖曳（即時吸附會節流），false 代表放開（立刻吸附）。 */
   onChange: (transform: Transform, dragging: boolean) => void;
 };
@@ -44,7 +46,7 @@ const CORNER_CURSORS = ["cursor-nesw-resize", "cursor-nwse-resize", "cursor-nesw
  * Pointer Events 讓滑鼠與觸控共用；圖形取得焦點後可以用方向鍵微調。
  * 「隱藏原圖」只拿掉目標線：路線、起終點、方向箭頭在 MapLibre 圖層上，不受影響。
  */
-export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onToggleTarget, onChange }: Props) {
+export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onToggleTarget, locked, onChange }: Props) {
   const [, setFrame] = useState(0);
   const dragRef = useRef<Drag | null>(null);
   const nudgingRef = useRef(false);
@@ -111,7 +113,7 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
   };
 
   const onKeyDown = (e: KeyboardEvent<SVGGElement>) => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (locked || e.ctrlKey || e.metaKey || e.altKey) return;
     const next = nudge(transform, e.key, e.shiftKey);
     if (!next) return;
     e.preventDefault();
@@ -148,10 +150,10 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
       >
         <g
           ref={groupRef}
-          tabIndex={0}
+          tabIndex={locked ? undefined : 0}
           role="group"
-          aria-label="目標圖形，方向鍵微調位置"
-          aria-roledescription="可拖曳圖形"
+          aria-label={locked ? "目標圖形（微調路線中，已鎖住）" : "目標圖形，方向鍵微調位置"}
+          aria-roledescription={locked ? undefined : "可拖曳圖形"}
           style={{ touchAction: "none" }}
           className="outline-none [&:focus>polygon]:[stroke-opacity:1] [&:focus>polygon]:[stroke-width:3]"
           onKeyDown={onKeyDown}
@@ -168,9 +170,9 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
             fillOpacity={0.06}
             stroke={ACCENT}
             strokeOpacity={0.5}
-            className="cursor-move"
-            style={INTERACTIVE}
-            onPointerDown={(e) => begin("move", e)}
+            className={locked ? undefined : "cursor-move"}
+            style={locked ? undefined : INTERACTIVE}
+            onPointerDown={locked ? undefined : (e) => begin("move", e)}
           />
           {!targetHidden &&
             shape.strokes.map((stroke, i) => (
@@ -186,49 +188,57 @@ export function ShapeOverlay({ map, shape, transform, warned, targetHidden, onTo
                 strokeDasharray="6 4"
               />
             ))}
-          <polyline
-            points={[topCenter, handles.rotate].map(toScreen).join(" ")}
-            fill="none"
-            stroke={ACCENT}
-            strokeWidth={1.5}
-          />
-          <g aria-hidden="true">
-            <circle
-              data-testid="handle-rotate"
-              cx={rotateScreen.x}
-              cy={rotateScreen.y}
-              r={HIT_RADIUS}
-              fill="transparent"
-              className="cursor-grab"
-              style={INTERACTIVE}
-              onPointerDown={(e) => begin("rotate", e)}
+          {!locked && (
+            <polyline
+              points={[topCenter, handles.rotate].map(toScreen).join(" ")}
+              fill="none"
+              stroke={ACCENT}
+              strokeWidth={1.5}
             />
-            <circle cx={rotateScreen.x} cy={rotateScreen.y} r={9} fill="white" stroke={ACCENT} strokeWidth={2} />
-          </g>
-          {handles.corners.map((corner, i) => {
-            const { x, y } = map.project(corner);
-            return (
-              <g key={i} aria-hidden="true">
+          )}
+          {!locked && (
+            <>
+              <g aria-hidden="true">
                 <circle
-                  data-testid="handle-scale"
-                  cx={x}
-                  cy={y}
+                  data-testid="handle-rotate"
+                  cx={rotateScreen.x}
+                  cy={rotateScreen.y}
                   r={HIT_RADIUS}
                   fill="transparent"
-                  className={CORNER_CURSORS[i]}
+                  className="cursor-grab"
                   style={INTERACTIVE}
-                  onPointerDown={(e) => begin("scale", e)}
+                  onPointerDown={(e) => begin("rotate", e)}
                 />
-                <rect x={x - 7} y={y - 7} width={14} height={14} fill="white" stroke={ACCENT} strokeWidth={2} />
+                <circle cx={rotateScreen.x} cy={rotateScreen.y} r={9} fill="white" stroke={ACCENT} strokeWidth={2} />
               </g>
-            );
-          })}
+              {handles.corners.map((corner, i) => {
+                const { x, y } = map.project(corner);
+                return (
+                  <g key={i} aria-hidden="true">
+                    <circle
+                      data-testid="handle-scale"
+                      cx={x}
+                      cy={y}
+                      r={HIT_RADIUS}
+                      fill="transparent"
+                      className={CORNER_CURSORS[i]}
+                      style={INTERACTIVE}
+                      onPointerDown={(e) => begin("scale", e)}
+                    />
+                    <rect x={x - 7} y={y - 7} width={14} height={14} fill="white" stroke={ACCENT} strokeWidth={2} />
+                  </g>
+                );
+              })}
+            </>
+          )}
         </g>
       </svg>
       <div className="absolute top-3 left-3 flex flex-wrap gap-2">
-        <Button size="sm" variant="secondary" className="shadow" onClick={recenter}>
-          圖形移到畫面中央
-        </Button>
+        {!locked && (
+          <Button size="sm" variant="secondary" className="shadow" onClick={recenter}>
+            圖形移到畫面中央
+          </Button>
+        )}
         {/* 快捷鍵 H 在 studio 處理（焦點不在圖形上也能用）。切換按鈕的名稱固定、狀態由 aria-pressed 表達（WAI-ARIA toggle button） */}
         <Button
           size="sm"

@@ -1,11 +1,16 @@
-import type { Map as MapLibreMap } from "maplibre-gl";
+import type { GeoJSON } from "geojson";
+import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+import { dragPreviewGeoJson, picksGeoJson } from "@/lib/map/edit-marks";
 import { routeGeoJson } from "@/lib/map/route-geojson";
 import { previewGeoJson, searchAreaGeoJson } from "@/lib/map/search-geojson";
+import type { LonLat } from "@/lib/shape/types";
 
 export const SEGMENTS_SOURCE = "route-segments";
 export const ENDPOINTS_SOURCE = "route-endpoints";
 export const SEARCH_AREA_SOURCE = "search-area";
 export const SEARCH_PREVIEW_SOURCE = "search-preview";
+export const EDIT_PICKS_SOURCE = "edit-picks";
+export const EDIT_DRAG_SOURCE = "edit-drag";
 const ARROW_IMAGE = "route-arrow";
 
 /** 路線方向箭頭：往右的「>」（沿線放置時 x 軸對齊行進方向）。畫兩次：深色外框＋白色內線。 */
@@ -56,9 +61,56 @@ function addSearchLayers(map: MapLibreMap): void {
   });
 }
 
+/** setData 失敗時 MapLibre 會自己發 error 事件，這裡只避免未處理的 rejection。 */
+export function setSourceData(map: MapLibreMap, id: string, data: GeoJSON): void {
+  void map.getSource<GeoJSONSource>(id)?.setData(data).catch(() => {});
+}
+
+/** 拖曳中的提示（抓點、目前位置、提示線）；兩個都給 null 清掉。 */
+export function setDragPreview(map: MapLibreMap, grab: LonLat | null, to: LonLat | null): void {
+  setSourceData(map, EDIT_DRAG_SOURCE, dragPreviewGeoJson(grab, to));
+}
+
+/** 微調的標示，畫在最上面：拖曳中的提示線與抓點、選到的點（第一個琥珀色、第二個橘紅色，白色外框）。 */
+function addEditLayers(map: MapLibreMap): void {
+  map.addSource(EDIT_DRAG_SOURCE, { type: "geojson", data: dragPreviewGeoJson(null, null) });
+  map.addSource(EDIT_PICKS_SOURCE, { type: "geojson", data: picksGeoJson([]) });
+  map.addLayer({
+    id: "edit-drag-line",
+    type: "line",
+    source: EDIT_DRAG_SOURCE,
+    filter: ["==", ["geometry-type"], "LineString"],
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#1e293b", "line-width": 3, "line-dasharray": [1, 1.5] },
+  });
+  map.addLayer({
+    id: "edit-drag-points",
+    type: "circle",
+    source: EDIT_DRAG_SOURCE,
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-radius": ["match", ["get", "role"], "to", 8, 5],
+      "circle-color": ["match", ["get", "role"], "to", "#f59e0b", "#1e293b"],
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
+    },
+  });
+  map.addLayer({
+    id: "edit-picks",
+    type: "circle",
+    source: EDIT_PICKS_SOURCE,
+    paint: {
+      "circle-radius": 9,
+      "circle-color": ["match", ["get", "order"], 1, "#f59e0b", "#ea580c"],
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 3,
+    },
+  });
+}
+
 /**
  * 加上路線圖層：連接線（淡、虛線）、圖形段（藍）、繞路段（橘、粗，醒目標示）、微調換上的段（藍＋深色虛線外框）、
- * 方向箭頭、起點（綠）終點（紅）。
+ * 方向箭頭、起點（綠）終點（紅）、微調的標示（選到的點、拖曳的提示）。
  * 自動搜尋的範圍與預覽先加，所以在路線底下。
  * 只用 icon、不用文字，所以不需要 style 的 glyphs（e2e 用空白 style 也能跑）。
  */
@@ -133,4 +185,5 @@ export function addRouteLayers(map: MapLibreMap): void {
       "circle-stroke-width": 2,
     },
   });
+  addEditLayers(map);
 }

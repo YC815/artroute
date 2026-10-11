@@ -1,18 +1,20 @@
 "use client";
 
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { GeoJSON } from "geojson";
-import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import {
+  EDIT_PICKS_SOURCE,
   ENDPOINTS_SOURCE,
   SEARCH_AREA_SOURCE,
   SEARCH_PREVIEW_SOURCE,
   SEGMENTS_SOURCE,
   addRouteLayers,
+  setSourceData,
 } from "@/components/map/route-layers";
 import type { MatchResponse } from "@/lib/engine/contract";
-import { routeGeoJson } from "@/lib/map/route-geojson";
+import { picksGeoJson } from "@/lib/map/edit-marks";
+import { routeGeoJson, type RouteSegments } from "@/lib/map/route-geojson";
 import { previewGeoJson, searchAreaGeoJson } from "@/lib/map/search-geojson";
 import type { SearchArea } from "@/lib/search/params";
 import type { LonLat } from "@/lib/shape/types";
@@ -24,7 +26,10 @@ const LOAD_ERROR_MESSAGE = "地圖載入失敗，請稍後重試";
 type Props = {
   /** 只在建立地圖時使用。 */
   initialCenter: LonLat;
-  response: MatchResponse | null;
+  /** 要畫的路線：即時吸附的結果，或微調後的路線（只需要 segments）。 */
+  response: RouteSegments | null;
+  /** 微調中選到的點（重畫的兩個點、剪掉與拖曳的那一個）；沒有就是空陣列。 */
+  editPicks: readonly LonLat[];
   /** 自動搜尋的範圍（圓）；null 時不畫。 */
   searchArea: SearchArea | null;
   /** 搜尋中目前最佳候選的吸附結果（即時預覽）；null 時不畫。 */
@@ -57,12 +62,7 @@ function watchErrors(map: MapLibreMap, alive: () => boolean, report: (message: s
   });
 }
 
-/** setData 失敗時 MapLibre 會自己發 error 事件，這裡只避免未處理的 rejection。 */
-function setSourceData(map: MapLibreMap, id: string, data: GeoJSON): void {
-  void map.getSource<GeoJSONSource>(id)?.setData(data).catch(() => {});
-}
-
-export function MapView({ initialCenter, response, searchArea, preview, onMapChange, onError, children }: Props) {
+export function MapView({ initialCenter, response, editPicks, searchArea, preview, onMapChange, onError, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [center] = useState(initialCenter);
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -121,6 +121,10 @@ export function MapView({ initialCenter, response, searchArea, preview, onMapCha
     setSourceData(map, SEGMENTS_SOURCE, data.segments);
     setSourceData(map, ENDPOINTS_SOURCE, data.endpoints);
   }, [map, response]);
+
+  useEffect(() => {
+    if (map) setSourceData(map, EDIT_PICKS_SOURCE, picksGeoJson(editPicks));
+  }, [map, editPicks]);
 
   useEffect(() => {
     if (map) setSourceData(map, SEARCH_AREA_SOURCE, searchAreaGeoJson(searchArea));

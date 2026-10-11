@@ -53,3 +53,12 @@ export function pickRoutePosition(
 export function metersPerPixel(lat: number, zoom: number): number {
   return (2 * Math.PI * EARTH_RADIUS_M * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom);
 }
+
+/** 地圖上點一下（或按下）的位置 → 路線上的位置；離路線超過 PICK_TOLERANCE_PX 個螢幕像素就回 null。 */
+export function pickRouteOnMap(
+  segments: readonly { points: readonly LonLat[] }[],
+  lonLat: LonLat,
+  zoom: number,
+): RouteHit | null {
+  return pickRoutePosition(segments, lonLat, PICK_TOLERANCE_PX * metersPerPixel(lonLat[1], zoom));
+}

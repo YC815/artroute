@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { haversineM } from "@/lib/geo/haversine";
 import { fromLocal } from "@/lib/geo/local-plane";
-import { metersPerPixel, pickRoutePosition } from "@/lib/map/route-pick";
+import { metersPerPixel, pickRouteOnMap, pickRoutePosition, PICK_TOLERANCE_PX } from "@/lib/map/route-pick";
 import type { LonLat } from "@/lib/shape/types";
 
 const O: LonLat = [121.5, 25.03];
@@ -92,5 +92,17 @@ describe("metersPerPixel", () => {
     expect(metersPerPixel(60, 10)).toBeCloseTo(equatorZoom0 / 2 ** 10 / 2, 6);
     // 台北 zoom 16：12 px 約 13 m
     expect(12 * metersPerPixel(25.03, 16)).toBeCloseTo(12.97, 2);
+  });
+});
+
+describe("pickRouteOnMap", () => {
+  const route = [{ points: [A, at(500, 0)] }];
+
+  it("12 px 內算點到、超過不算，而且公尺數隨縮放等級換算（放大時同樣的像素是更小的距離）", () => {
+    for (const zoom of [12, 16]) {
+      const px = metersPerPixel(O[1], zoom);
+      expect(pickRouteOnMap(route, at(100, (PICK_TOLERANCE_PX - 1) * px), zoom)).not.toBeNull();
+      expect(pickRouteOnMap(route, at(100, (PICK_TOLERANCE_PX + 1) * px), zoom)).toBeNull();
+    }
   });
 });
