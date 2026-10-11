@@ -1,7 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { expect, test as base, type Page } from "@playwright/test";
-import { matchRequestSchema, type MatchRequest, type MatchResponse } from "@/lib/engine/contract";
-import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import {
+  matchRequestSchema,
+  searchRequestSchema,
+  type MatchRequest,
+  type MatchResponse,
+  type SearchCandidate,
+  type SearchEvent,
+} from "@/lib/engine/contract";
+import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult, toSse } from "@/lib/engine/fixtures";
+import { defaultKmRange, placementToTransform } from "@/lib/search/params";
+import { shapeLengthM, transformStrokes, type Transform } from "@/lib/shape/transform";
 
 const LOCAL_HOST = "127.0.0.1";
 
@@ -116,15 +125,19 @@ async function countRoutePixels(decoder: Page, png: Buffer): Promise<number> {
   );
 }
 
-/** 地圖 style 與 /api/status 換成固定內容；不連外、不需要引擎。 */
-async function mockMapAndStatus(page: Page) {
+/** 地圖 style 與 /api/status 換成固定內容；不連外、不需要引擎。status 預設是舊版引擎（沒有 search_ready）。 */
+async function mockMapAndStatus(page: Page, status: object = STATUS) {
   await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ json: BLANK_STYLE }));
-  await page.route("**/api/status", (route) => route.fulfill({ json: STATUS }));
+  await page.route("**/api/status", (route) => route.fulfill({ json: status }));
 }
 
 /** 再加上 /api/match：依請求的筆畫產生回應，順便驗證 app 送出的請求符合契約。 */
-async function mockEngine(page: Page, onMatch?: (request: MatchRequest, response: MatchResponse) => void) {
-  await mockMapAndStatus(page);
+async function mockEngine(
+  page: Page,
+  onMatch?: (request: MatchRequest, response: MatchResponse) => void,
+  status: object = STATUS,
+) {
+  await mockMapAndStatus(page, status);
   await page.route("**/api/match", async (route) => {
     const request = matchRequestSchema.parse(route.request().postDataJSON());
     const response = matchResponseFor(request);
@@ -311,4 +324,120 @@ test("引擎離線：顯示橫幅、停用吸附，不送 /api/match", async ({ 
   await page.waitForLoadState("networkidle");
   expect(matchRequests).toEqual([]);
   await expect(page.getByRole("button", { name: "下載 GPX" })).toBeDisabled();
+});
+
+/** studio.tsx 的預設擺放（台北 101、長邊 2 km）；新的瀏覽器 context 沒有存檔，一定從這裡開始。 */
+const DEFAULT_TRANSFORM: Transform = { center: [121.5654, 25.033], sizeM: 2000, rotationDeg: 0 };
+/** 搜尋結果的第 2 名：擺在預設位置的西北方、轉 20°、比預設小，公里數不符。 */
+const SECOND: SearchCandidate = sampleCandidate({
+  placement: { center: [121.55, 25.045], size_m: 1500, rotation_deg: 20 },
+  start_distance_m: 1830,
+  length_ok: false,
+});
+const NOTICE = "沒有完全符合公里數的候選，列出最接近的幾個";
+
+function closeTo(actual: number[][][], expected: number[][][], tolerance: number): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every(
+      (stroke, i) =>
+        stroke.length === expected[i].length &&
+        stroke.every(([x, y], k) => Math.abs(x - expected[i][k][0]) < tolerance && Math.abs(y - expected[i][k][1]) < tolerance),
+    )
+  );
+}
+
+test("自動搜尋：設定範圍 → 搜尋（SSE）→ 套用第 2 名 → 吸附帶 start_circle → 下載 GPX", async ({ page }) => {
+  const matches: MatchRequest[] = [];
+  await mockEngine(page, (request) => matches.push(request), { ...STATUS, search_ready: true });
+  const events: SearchEvent[] = [
+    { type: "queued", position: 1 },
+    { type: "progress", stage: "coarse", done: 10, total: 10 },
+    { type: "best", candidate: sampleCandidate() },
+    { type: "progress", stage: "match", done: 4, total: 10 },
+    sampleResult([sampleCandidate(), SECOND], NOTICE),
+  ];
+  // 引擎每 15 秒的 keepalive 註解行也夾在裡面
+  const body = events.map(toSse).join(": ping\n\n");
+  const searches: unknown[] = [];
+  await page.route("**/api/search", async (route) => {
+    searches.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body });
+  });
+
+  await page.goto("/");
+  // 開頁時的第一次吸附（預設文字）還沒有範圍：不帶 start_circle
+  await expect.poll(() => matches.length).toBeGreaterThan(0);
+  expect(matches[0].start_circle).toBeUndefined();
+
+  // 設定範圍：圓心是目前圖形的中心、半徑 3 km；地圖畫出圓，即時吸附改帶 start_circle 重送
+  const circleMatch = page.waitForRequest((r) => r.url().endsWith("/api/match") && r.postDataJSON()?.start_circle);
+  await page.getByRole("button", { name: "設定搜尋範圍" }).click();
+  const area = { center: DEFAULT_TRANSFORM.center, radius_m: 3000 };
+  await expect(page.getByTestId("map")).toHaveAttribute("data-search-area", "121.5654,25.033,3000");
+  const before = matchRequestSchema.parse((await circleMatch).postDataJSON());
+  expect(before.start_circle).toEqual(area);
+
+  const searchRequest = page.waitForRequest((r) => r.url().endsWith("/api/search"));
+  await page.getByRole("button", { name: "開始搜尋" }).click();
+  const sent = searchRequestSchema.parse((await searchRequest).postDataJSON());
+  // 圖形用正規化座標：照預設擺放轉成經緯度，必須和剛才送去吸附的筆畫一模一樣
+  const placed = transformStrokes(sent.strokes, DEFAULT_TRANSFORM);
+  expect(closeTo(placed.map((s) => s.points), before.strokes.map((s) => s.points), 1e-9)).toBe(true);
+  expect(sent.strokes.map((s) => s.closed)).toEqual(before.strokes.map((s) => s.closed));
+  expect(sent.strokes.flatMap((s) => s.points.flat()).every((v) => Math.abs(v) <= 0.5)).toBe(true);
+  expect(sent.center).toEqual(area.center);
+  expect(sent.radius_m).toBe(3000);
+  // 公里數預設：目前目標長度的 1.2–2.5 倍；文字的旋轉範圍預設 ±15°
+  const km = defaultKmRange(shapeLengthM(sent.strokes, DEFAULT_TRANSFORM.sizeM));
+  expect([sent.min_km, sent.max_km]).toEqual([km.min, km.max]);
+  expect([sent.rotation_min_deg, sent.rotation_max_deg]).toEqual([-15, 15]);
+
+  // 結果：前 2 名、notice、公里數不符的標記；預覽在結束後清掉
+  const list = page.getByRole("list", { name: "搜尋結果" });
+  await expect(list.getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByText(NOTICE)).toBeVisible();
+  await expect(list.getByRole("listitem").nth(1).getByText("公里數不符")).toBeVisible();
+  await expect(list.getByRole("listitem").nth(0).getByText("公里數不符")).toHaveCount(0);
+  await expect(page.getByTestId("map")).toHaveAttribute("data-search-preview", "0");
+  expect(searches).toHaveLength(1);
+
+  // 套用第 2 名：圖形擺到候選的位置，即時吸附帶著 start_circle 重送
+  const applied = placementToTransform(SECOND.placement);
+  const expectedStrokes = transformStrokes(sent.strokes, applied).map((s) => s.points);
+  const appliedMatch = page.waitForRequest((r) => {
+    if (!r.url().endsWith("/api/match")) return false;
+    const strokes = (r.postDataJSON() as MatchRequest).strokes.map((s) => s.points);
+    return closeTo(strokes, expectedStrokes, 1e-9);
+  });
+  await page.getByRole("button", { name: /第 2 名/ }).click();
+  const after = matchRequestSchema.parse((await appliedMatch).postDataJSON());
+  expect(after.start_circle).toEqual(area);
+  await expect(page.getByRole("button", { name: /第 2 名/ })).toHaveAttribute("aria-pressed", "true");
+
+  // 吸附結果套用後：起點離圓心一列出現（模擬的路線起點在圈內），可以下載
+  await expect(page.getByText("起點離圓心", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+
+  // 清除範圍：圓消失，之後的吸附不再帶 start_circle
+  const plainMatch = page.waitForRequest((r) => r.url().endsWith("/api/match") && !r.postDataJSON()?.start_circle);
+  await page.getByRole("button", { name: "清除範圍" }).click();
+  await expect(page.getByTestId("map")).toHaveAttribute("data-search-area", "");
+  expect(matchRequestSchema.parse((await plainMatch).postDataJSON()).start_circle).toBeUndefined();
+  await expect(page.getByText("起點離圓心", { exact: true })).toHaveCount(0);
+});
+
+test("引擎沒有回報 search_ready（舊版引擎）：自動搜尋停用並說明，吸附照常", async ({ page }) => {
+  const searches: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/search")) searches.push(r.url());
+  });
+  await mockEngine(page);
+  await page.goto("/");
+  await expect(page.getByText("目前的路網沒有自動搜尋需要的資料（要重建路網），仍可手動擺放")).toBeVisible();
+  await expect(page.getByRole("button", { name: "設定搜尋範圍" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "開始搜尋" })).toHaveCount(0);
+  // 吸附不受影響
+  await expect(page.getByRole("button", { name: "下載 GPX" })).toBeEnabled();
+  expect(searches).toEqual([]);
 });

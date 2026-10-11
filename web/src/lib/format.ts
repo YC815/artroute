@@ -9,3 +9,13 @@ export function formatDataVersion(buildId: string): string {
   const match = /^(\d{4})(\d{2})(\d{2})T/.exec(buildId);
   return match ? `${match[1]}-${match[2]}-${match[3]}` : buildId;
 }
+
+/** 毫秒 → 「18.3 秒」（一位小數）。 */
+export function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)} 秒`;
+}
+
+/** 整數加千分位：270000 →「270,000」。 */
+export function formatCount(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchMatch, fetchStatus, toMatchError, type FetchLike } from "@/lib/engine/client";
+import { fetchMatch, fetchStatus, readErrorBody, toMatchError, type FetchLike } from "@/lib/engine/client";
 import type { MatchRequest } from "@/lib/engine/contract";
 import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
 
@@ -153,6 +153,22 @@ describe("fetchMatch", () => {
   });
 });
 
+describe("readErrorBody", () => {
+  it("領域錯誤物件帶出 code、message、warnings", () => {
+    expect(readErrorBody({ detail: { code: "no_search_data", message: "要重建路網" } })).toEqual({
+      code: "no_search_data",
+      message: "要重建路網",
+      warnings: [],
+    });
+  });
+
+  it("字串 detail 只有訊息；其他形狀什麼都沒有", () => {
+    expect(readErrorBody({ detail: "壞了" })).toEqual({ code: undefined, message: "壞了", warnings: [] });
+    expect(readErrorBody({ detail: [{ msg: "x" }] })).toEqual({ code: undefined, message: undefined, warnings: [] });
+    expect(readErrorBody(null)).toEqual({ code: undefined, message: undefined, warnings: [] });
+  });
+});
+
 describe("toMatchError", () => {
   it("detail 是字串（舊式 FastAPI HTTPException）也直接顯示", () => {
     expect(toMatchError(400, { detail: "圖形超出台灣" })).toEqual({
@@ -193,9 +209,21 @@ describe("toMatchError", () => {
 });
 
 describe("fetchStatus", () => {
-  it("有路網 → build id", async () => {
-    const body = { data: { build_id: "20261010T145928Z", osm_md5: "abc", created_at: "2026-10-10T15:00:09Z" } };
-    expect(await fetchStatus(respond(200, body))).toBe("20261010T145928Z");
+  const data = { build_id: "20261010T145928Z", osm_md5: "abc", created_at: "2026-10-10T15:00:09Z" };
+
+  it("有路網 → build id 與 search_ready", async () => {
+    expect(await fetchStatus(respond(200, { data, search_ready: true }))).toEqual({
+      dataVersion: "20261010T145928Z",
+      searchReady: true,
+    });
+    expect(await fetchStatus(respond(200, { data, search_ready: false }))).toEqual({
+      dataVersion: "20261010T145928Z",
+      searchReady: false,
+    });
+  });
+
+  it("舊版引擎沒有 search_ready → 不能搜尋，但吸附照常", async () => {
+    expect(await fetchStatus(respond(200, { data }))).toEqual({ dataVersion: "20261010T145928Z", searchReady: false });
   });
 
   it("沒有路網、503、連不上都回傳 null", async () => {

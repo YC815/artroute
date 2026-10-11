@@ -5,9 +5,12 @@ import {
   errorDetailSchema,
   matchRequestSchema,
   matchResponseSchema,
+  searchEventSchema,
+  searchFailedEventSchema,
+  searchRequestSchema,
   statusResponseSchema,
 } from "@/lib/engine/contract";
-import { SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import { SAMPLE_MATCH_RESPONSE, sampleCandidate, sampleResult } from "@/lib/engine/fixtures";
 import type { components } from "@/lib/engine/openapi";
 
 const stroke = (n: number) => ({
@@ -42,6 +45,100 @@ describe("matchRequestSchema", () => {
     const bad = { strokes: [{ points: [[121.5, Number.NaN], [121.6, 25]], closed: false }] };
     expect(matchRequestSchema.safeParse(bad).success).toBe(false);
   });
+
+  it("start_circle 可省略、可為 null；半徑 300–10000 m", () => {
+    const circle = (radius_m: number) => ({ strokes: [stroke(2)], start_circle: { center: [121.5, 25.03], radius_m } });
+    expect(matchRequestSchema.safeParse({ strokes: [stroke(2)], start_circle: null }).success).toBe(true);
+    expect(matchRequestSchema.safeParse(circle(3000)).success).toBe(true);
+    expect(matchRequestSchema.safeParse(circle(299)).success).toBe(false);
+    expect(matchRequestSchema.safeParse(circle(10_001)).success).toBe(false);
+  });
+
+  it("start_circle 會被保留（代理只轉發 schema 內的欄位）", () => {
+    const request = { strokes: [stroke(2)], start_circle: { center: [121.5, 25.03], radius_m: 3000 } };
+    expect(matchRequestSchema.parse(request)).toEqual(request);
+  });
+});
+
+describe("searchRequestSchema", () => {
+  const request = {
+    strokes: [{ points: [[-0.5, 0], [0.5, 0.25]], closed: true }],
+    center: [121.5654, 25.033],
+    radius_m: 3000,
+    min_km: 10,
+    max_km: 25,
+    rotation_min_deg: -15,
+    rotation_max_deg: 15,
+  };
+
+  it("接受合法請求", () => {
+    expect(searchRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it("min > max 時錯誤訊息是繁中、指向 min 欄位", () => {
+    const km = searchRequestSchema.safeParse({ ...request, min_km: 30, max_km: 20 });
+    expect(km.success).toBe(false);
+    expect(km.error?.issues[0]).toMatchObject({ path: ["min_km"], message: "最小公里數不能大於最大公里數" });
+    const rotation = searchRequestSchema.safeParse({ ...request, rotation_min_deg: 20, rotation_max_deg: 10 });
+    expect(rotation.error?.issues[0]).toMatchObject({ path: ["rotation_min_deg"] });
+  });
+
+  it("缺欄位不合法", () => {
+    const rest: Partial<typeof request> = { ...request };
+    delete rest.center;
+    expect(searchRequestSchema.safeParse(rest).success).toBe(false);
+  });
+});
+
+describe("searchEventSchema", () => {
+  it("五種事件都能解析", () => {
+    const events = [
+      { type: "queued", position: 1 },
+      { type: "progress", stage: "coarse", done: 3, total: 10 },
+      { type: "best", candidate: sampleCandidate() },
+      sampleResult([sampleCandidate()], "沒有符合公里數的候選"),
+      { type: "error", code: "busy", message: "排隊太久" },
+    ];
+    for (const event of events) expect(searchEventSchema.parse(event)).toEqual(event);
+  });
+
+  it("result 的 notice 可省略或為 null；候選最多 5 個", () => {
+    expect(searchEventSchema.safeParse(sampleResult([])).success).toBe(true);
+    expect(searchEventSchema.safeParse(sampleResult([], null)).success).toBe(true);
+    const five = Array.from({ length: 5 }, () => sampleCandidate());
+    expect(searchEventSchema.safeParse(sampleResult(five)).success).toBe(true);
+    expect(searchEventSchema.safeParse(sampleResult([...five, sampleCandidate()])).success).toBe(false);
+  });
+
+  it("擺放：size_m > 0、rotation_deg 在 [0, 360)", () => {
+    const placement = (size_m: number, rotation_deg: number) => ({
+      type: "best",
+      candidate: sampleCandidate({ placement: { center: [121.5, 25], size_m, rotation_deg } }),
+    });
+    expect(searchEventSchema.safeParse(placement(1000, 0)).success).toBe(true);
+    expect(searchEventSchema.safeParse(placement(1000, 359.9)).success).toBe(true);
+    expect(searchEventSchema.safeParse(placement(1000, 360)).success).toBe(false);
+    expect(searchEventSchema.safeParse(placement(0, 0)).success).toBe(false);
+  });
+
+  it("排隊位置至少是 1；進度是非負整數；階段只有三種", () => {
+    expect(searchEventSchema.safeParse({ type: "queued", position: 0 }).success).toBe(false);
+    expect(searchEventSchema.safeParse({ type: "progress", stage: "coarse", done: 1.5, total: 2 }).success).toBe(false);
+    expect(searchEventSchema.safeParse({ type: "progress", stage: "polish", done: 1, total: 2 }).success).toBe(false);
+  });
+
+  it("候選的 match 必須是合法的 /match 回應", () => {
+    const bad = { type: "best", candidate: { ...sampleCandidate(), match: { route: null } } };
+    expect(searchEventSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("失敗事件的 code 限定四種", () => {
+    expect(searchFailedEventSchema.safeParse({ type: "error", code: "oops", message: "x" }).success).toBe(false);
+  });
+
+  it("不認得的 type 不合法（呼叫端依 SSE 事件名稱先略過不認得的事件）", () => {
+    expect(searchEventSchema.safeParse({ type: "hello" }).success).toBe(false);
+  });
 });
 
 describe("matchResponseSchema", () => {
@@ -60,7 +157,16 @@ describe("matchResponseSchema", () => {
 
 describe("statusResponseSchema", () => {
   it("data 可以是 null", () => {
-    expect(statusResponseSchema.parse({ data: null })).toEqual({ data: null });
+    expect(statusResponseSchema.parse({ data: null, search_ready: false })).toEqual({ data: null, search_ready: false });
+  });
+
+  it("舊版引擎沒有 search_ready：當成 false，不是格式錯誤", () => {
+    expect(statusResponseSchema.parse({ data: null })).toEqual({ data: null, search_ready: false });
+  });
+
+  it("search_ready 原樣讀出；不是布林值就不合法", () => {
+    expect(statusResponseSchema.parse({ data: null, search_ready: true }).search_ready).toBe(true);
+    expect(statusResponseSchema.safeParse({ data: null, search_ready: "yes" }).success).toBe(false);
   });
 });
 
@@ -105,6 +211,16 @@ describe("引擎回應型別 → zod 解析結果", () => {
   it("MatchResponse、StatusResponse 可指派", () => {
     expectTypeOf<components["schemas"]["MatchResponse"]>().toExtend<z.infer<typeof matchResponseSchema>>();
     expectTypeOf<components["schemas"]["StatusResponse"]>().toExtend<z.infer<typeof statusResponseSchema>>();
+  });
+
+  it("/search 的每一種事件可指派", () => {
+    type Schemas = components["schemas"];
+    type Event = z.infer<typeof searchEventSchema>;
+    expectTypeOf<Schemas["SearchQueued"]>().toExtend<Event>();
+    expectTypeOf<Schemas["SearchProgress"]>().toExtend<Event>();
+    expectTypeOf<Schemas["SearchBest"]>().toExtend<Event>();
+    expectTypeOf<Schemas["SearchResult"]>().toExtend<Event>();
+    expectTypeOf<Schemas["SearchFailed"]>().toExtend<Event>();
   });
 
   it("ErrorDetail 可被 errorDetailSchema（超集）接受；不綁 code enum", () => {

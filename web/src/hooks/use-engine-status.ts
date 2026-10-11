@@ -8,11 +8,13 @@ export type EngineStatus = {
   status: "checking" | "ok" | "down";
   /** 目前路網的 build id，例如 20261010T145928Z。 */
   dataVersion: string | null;
+  /** 目前路網有沒有自動搜尋需要的資料（舊版引擎或舊 build 為 false）。查詢中或離線時沿用上一次的值，要搭配 status 判斷。 */
+  searchReady: boolean;
 };
 
 /** 開頁時查一次 /api/status；retry 重查；吸附遇到 503 或連不上時呼叫 markDown。 */
 export function useEngineStatus(): EngineStatus & { retry: () => void; markDown: () => void } {
-  const [state, setState] = useState<EngineStatus>({ status: "checking", dataVersion: null });
+  const [state, setState] = useState<EngineStatus>({ status: "checking", dataVersion: null, searchReady: false });
   const [attempt, setAttempt] = useState(0);
   // markDown 的次數：查詢開始後才回報離線，這次查詢的結果可能是離線前的狀態
   const downCountRef = useRef(0);
@@ -20,10 +22,14 @@ export function useEngineStatus(): EngineStatus & { retry: () => void; markDown:
   useEffect(() => {
     let cancelled = false;
     const downCount = downCountRef.current;
-    void fetchStatus().then((dataVersion) => {
+    void fetchStatus().then((info) => {
       // 不能讓過時的結果把 down 翻回 ok、重新啟用吸附；要等使用者按「重試」重新查
       if (cancelled || downCount !== downCountRef.current) return;
-      setState({ status: dataVersion ? "ok" : "down", dataVersion });
+      setState(
+        info
+          ? { status: "ok", dataVersion: info.dataVersion, searchReady: info.searchReady }
+          : { status: "down", dataVersion: null, searchReady: false },
+      );
     });
     return () => {
       cancelled = true;

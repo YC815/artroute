@@ -1,11 +1,20 @@
 "use client";
 
 import "maplibre-gl/dist/maplibre-gl.css";
+import type { GeoJSON } from "geojson";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
-import { ENDPOINTS_SOURCE, SEGMENTS_SOURCE, addRouteLayers } from "@/components/map/route-layers";
+import {
+  ENDPOINTS_SOURCE,
+  SEARCH_AREA_SOURCE,
+  SEARCH_PREVIEW_SOURCE,
+  SEGMENTS_SOURCE,
+  addRouteLayers,
+} from "@/components/map/route-layers";
 import type { MatchResponse } from "@/lib/engine/contract";
 import { routeGeoJson } from "@/lib/map/route-geojson";
+import { previewGeoJson, searchAreaGeoJson } from "@/lib/map/search-geojson";
+import type { SearchArea } from "@/lib/search/params";
 import type { LonLat } from "@/lib/shape/types";
 
 export const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
@@ -16,6 +25,12 @@ type Props = {
   /** 只在建立地圖時使用。 */
   initialCenter: LonLat;
   response: MatchResponse | null;
+  /** 自動搜尋的範圍（圓）；null 時不畫。 */
+  searchArea: SearchArea | null;
+  /** 搜尋中目前最佳候選的吸附結果（即時預覽）；null 時不畫。 */
+  preview: MatchResponse | null;
+  /** 地圖建立好（可以加圖層、讀中心點）時傳出地圖，卸載時傳 null。 */
+  onMapChange?: (map: MapLibreMap | null) => void;
   /** 地圖樣式或資料來源載入失敗時通知一次（圖磚個別失敗不算）。 */
   onError?: (message: string) => void;
   /** 地圖載入後才呼叫，用來疊上編輯器。 */
@@ -42,12 +57,18 @@ function watchErrors(map: MapLibreMap, alive: () => boolean, report: (message: s
   });
 }
 
-export function MapView({ initialCenter, response, onError, children }: Props) {
+/** setData 失敗時 MapLibre 會自己發 error 事件，這裡只避免未處理的 rejection。 */
+function setSourceData(map: MapLibreMap, id: string, data: GeoJSON): void {
+  void map.getSource<GeoJSONSource>(id)?.setData(data).catch(() => {});
+}
+
+export function MapView({ initialCenter, response, searchArea, preview, onMapChange, onError, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [center] = useState(initialCenter);
   const [map, setMap] = useState<MapLibreMap | null>(null);
   // onError 每次 render 都可能是新函式，包成 effect event 才不會因此重建地圖
   const notifyError = useEffectEvent((message: string) => onError?.(message));
+  const notifyMap = useEffectEvent((instance: MapLibreMap | null) => onMapChange?.(instance));
 
   useEffect(() => {
     let disposed = false;
@@ -91,18 +112,31 @@ export function MapView({ initialCenter, response, onError, children }: Props) {
   }, [center]);
 
   useEffect(() => {
+    notifyMap(map);
+  }, [map]);
+
+  useEffect(() => {
     if (!map) return;
     const data = routeGeoJson(response);
-    // setData 失敗時 MapLibre 會自己發 error 事件，這裡只避免未處理的 rejection
-    void map.getSource<GeoJSONSource>(SEGMENTS_SOURCE)?.setData(data.segments).catch(() => {});
-    void map.getSource<GeoJSONSource>(ENDPOINTS_SOURCE)?.setData(data.endpoints).catch(() => {});
+    setSourceData(map, SEGMENTS_SOURCE, data.segments);
+    setSourceData(map, ENDPOINTS_SOURCE, data.endpoints);
   }, [map, response]);
+
+  useEffect(() => {
+    if (map) setSourceData(map, SEARCH_AREA_SOURCE, searchAreaGeoJson(searchArea));
+  }, [map, searchArea]);
+
+  useEffect(() => {
+    if (map) setSourceData(map, SEARCH_PREVIEW_SOURCE, previewGeoJson(preview));
+  }, [map, preview]);
 
   return (
     <div
       className="relative h-full w-full"
       data-testid="map"
       data-route-segments={response?.segments.length ?? 0}
+      data-search-area={searchArea ? `${searchArea.center.join(",")},${searchArea.radius_m}` : ""}
+      data-search-preview={preview ? preview.route.points.length : 0}
     >
       {/* 用 inline style：maplibre-gl.css 的 .maplibregl-map { position: relative } 沒有包在 @layer，會蓋過 Tailwind 的 absolute */}
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
