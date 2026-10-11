@@ -1,5 +1,6 @@
 """用 pyosmium 產生小型合成地圖 pbf，讓 Valhalla 測試結果固定、可重現。"""
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -185,3 +186,155 @@ def opposite_footway_map(cycleway: str) -> list[GridWay]:
         GridWay(751, [(X4 + 24, 1), (X4 + 25, 1)], RESIDENTIAL),
         GridWay(752, [(X4 + 27, 1), (X4 + 28, 1)], RESIDENTIAL),
     ]
+
+
+# ---- 描形規劃器的場景（P2.5 spec §8）：座標以公尺給（東, 北），原點 PLANNER_ORIGIN（與上面的網格地圖分開）。
+# 每個場景各自的 x 偏移相距 10 km，放進同一個 pbf 也不會互相干擾。目標也用同樣的公尺座標。 ----
+
+PLANNER_ORIGIN = (121.20, 24.90)
+_METERS_PER_DEG_LAT = 6_371_008.8 * math.pi / 180
+
+
+def meter_point(x: float, y: float) -> tuple[float, float]:
+    """(東, 北) 公尺 → (lon, lat)，取到 pbf 的精度（1e-7 度），讀回來的座標與寫入的完全相等。"""
+    lon = PLANNER_ORIGIN[0] + x / (_METERS_PER_DEG_LAT * math.cos(math.radians(PLANNER_ORIGIN[1])))
+    return (round(lon, 7), round(PLANNER_ORIGIN[1] + y / _METERS_PER_DEG_LAT, 7))
+
+
+def to_meters(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """meter_point 的反函數（不含取整）。"""
+    kx = _METERS_PER_DEG_LAT * math.cos(math.radians(PLANNER_ORIGIN[1]))
+    return [((lon - PLANNER_ORIGIN[0]) * kx, (lat - PLANNER_ORIGIN[1]) * _METERS_PER_DEG_LAT) for lon, lat in points]
+
+
+@dataclass(frozen=True)
+class MeterWay:
+    id: int
+    nodes: list[tuple[float, float]]  # (東, 北) 公尺；座標相同（取整後）的點是同一個 OSM 節點
+    tags: dict[str, str] = field(default_factory=dict)
+
+
+def write_meter_pbf(path: Path, ways: list[MeterWay]) -> None:
+    node_ids: dict[tuple[float, float], int] = {}
+    for way in ways:
+        for xy in way.nodes:
+            node_ids.setdefault(meter_point(*xy), len(node_ids) + 1)
+    writer = osmium.SimpleWriter(str(path))
+    try:
+        for location, node_id in sorted(node_ids.items(), key=lambda item: item[1]):
+            writer.add_node(osmium.osm.mutable.Node(id=node_id, location=location, version=1))
+        for way in sorted(ways, key=lambda w: w.id):
+            refs = [node_ids[meter_point(*xy)] for xy in way.nodes]
+            writer.add_way(osmium.osm.mutable.Way(id=way.id, nodes=refs, tags=way.tags, version=1))
+    finally:
+        writer.close()
+
+
+def _shift(points: list[tuple[float, float]], dx: float) -> list[tuple[float, float]]:
+    return [(x + dx, y) for x, y in points]
+
+
+# 平行路：目標是 1600 m 的東西向直線（L = 1600、Δ = 16 m、候選半徑 80 m）。正下方的路在 600–1000 m 斷掉；
+# 40 m 外有完整的平行路，兩者在 0、400、1200、1600 m 有連絡道。斷口北方 300 m 有一條繞過去的路（「繞出去再繞回來」）。
+PARALLEL_X = 0.0
+PARALLEL_TARGET = _shift([(0.0, 0.0), (400.0, 0.0), (800.0, 0.0), (1200.0, 0.0), (1600.0, 0.0)], PARALLEL_X)
+PARALLEL_MAP: list[MeterWay] = [
+    MeterWay(1001, _shift([(0.0, 0.0), (200.0, 0.0), (400.0, 0.0), (600.0, 0.0)], PARALLEL_X), RESIDENTIAL),
+    MeterWay(1002, _shift([(1000.0, 0.0), (1200.0, 0.0), (1400.0, 0.0), (1600.0, 0.0)], PARALLEL_X), RESIDENTIAL),
+    MeterWay(1003, _shift([(float(x), -40.0) for x in range(0, 1601, 200)], PARALLEL_X), RESIDENTIAL),
+    *[MeterWay(1010 + i, _shift([(x, 0.0), (x, -40.0)], PARALLEL_X), RESIDENTIAL)
+      for i, x in enumerate((0.0, 400.0, 1200.0, 1600.0))],
+    MeterWay(1020, _shift([(600.0, 0.0), (600.0, 150.0), (600.0, 300.0), (800.0, 300.0), (1000.0, 300.0),
+                           (1000.0, 150.0), (1000.0, 0.0)], PARALLEL_X), RESIDENTIAL),
+]
+
+# 轉角：目標向東 800 m 後左轉 60° 再走 120 m（像字母的短筆畫；L = 860、Δ = 15 m、候選半徑 43 m、免費平移 8.6 m、
+# 轉角窗 43 m）。東西向的路延伸過轉角。兩種轉法：
+# - 提早 15 m 的 60° 岔路：角度一樣，但與第二段平行、相距約 13 m（超出免費平移）；
+# - 轉角正下方 85° 的路口：往北 20 m 後右轉 25°（不到轉彎門檻）接上與第二段平行、相距約 8.5 m 的路（免費平移內）。
+# 只看位置是第二種比較近；轉角的角度差讓第一種勝出。
+CORNER_X = 10_000.0
+
+
+def _polar(origin: tuple[float, float], degrees: float, distance: float) -> tuple[float, float]:
+    return (origin[0] + distance * math.cos(math.radians(degrees)), origin[1] + distance * math.sin(math.radians(degrees)))
+
+
+CORNER_TARGET = _shift([(0.0, 0.0), (800.0, 0.0), _polar((800.0, 0.0), 60, 120)], CORNER_X)
+CORNER_FORK = _shift([(785.0, 0.0), _polar((785.0, 0.0), 60, 250)], CORNER_X)
+_CORNER_BEND = _polar((800.0, 0.0), 85, 20)
+CORNER_NEAR = _shift([(800.0, 0.0), _CORNER_BEND, _polar(_CORNER_BEND, 60, 200)], CORNER_X)  # 85° 路口那條路
+CORNER_MAP: list[MeterWay] = [
+    MeterWay(2001, _shift([(-100.0, 0.0), (100.0, 0.0), (300.0, 0.0), (500.0, 0.0), (700.0, 0.0), (785.0, 0.0),
+                           (800.0, 0.0), (1000.0, 0.0)], CORNER_X), RESIDENTIAL),
+    MeterWay(2002, CORNER_FORK, RESIDENTIAL),
+    MeterWay(2003, CORNER_NEAR, RESIDENTIAL),
+]
+
+# 斜路：70 m 的棋盤，目標是穿過棋盤節點的 45° 斜線（L = 1960、Δ = 19.6 m、候選半徑 98 m）。斜路與目標平行、往東南偏一個
+# 街廓（約 49.5 m），經過棋盤節點。貼著目標的鋸齒（每 70 m 轉一次）離目標比較近，但方向差 45°、轉彎多。
+DIAGONAL_X = 20_000.0
+DIAGONAL_STEP = 70.0
+DIAGONAL_TARGET = _shift([(0.0, 0.0), (1960.0, 1960.0)], DIAGONAL_X)
+_DIAGONAL_LINES = range(-2, 31)  # 棋盤線：-140 m 到 2100 m
+DIAGONAL_ROAD = _shift([((k + 1) * DIAGONAL_STEP, k * DIAGONAL_STEP) for k in range(-2, 30)], DIAGONAL_X)
+DIAGONAL_MAP: list[MeterWay] = [
+    *[MeterWay(3000 + i, _shift([(c * DIAGONAL_STEP, r * DIAGONAL_STEP) for c in _DIAGONAL_LINES], DIAGONAL_X),
+               RESIDENTIAL) for i, r in enumerate(_DIAGONAL_LINES)],
+    *[MeterWay(3100 + i, _shift([(c * DIAGONAL_STEP, r * DIAGONAL_STEP) for r in _DIAGONAL_LINES], DIAGONAL_X),
+               RESIDENTIAL) for i, c in enumerate(_DIAGONAL_LINES)],
+    MeterWay(3200, DIAGONAL_ROAD, RESIDENTIAL),
+]
+
+# 單行道：目標是向東 1200 m 的直線（L = 1200、Δ = 15 m、候選半徑 60 m）。正下方的路分五種：
+# 200–400 m oneway=yes 但畫成往西（只能往西）；400–600 m oneway=-1 畫成往東（只能往西）；
+# 600–800 m oneway=yes＋oneway:bicycle=no 畫成往西（自行車雙向）；800–1000 m oneway=yes＋cycleway=opposite_lane 畫成往西
+# （自行車可以逆向往東）；1080–1120 m 是一段只有 40 m、畫成往西的 oneway=yes（短到一次轉移就能穿過：Dijkstra
+# 必須有方向）。40 m 外有雙向的平行路，每 200 m 一條連絡道，短單行道兩側 1060、1140 m 也有。
+ONEWAY_X = 30_000.0
+ONEWAY_TARGET = _shift([(0.0, 0.0), (1200.0, 0.0)], ONEWAY_X)
+ONEWAY_MAP: list[MeterWay] = [
+    MeterWay(4001, _shift([(0.0, 0.0), (200.0, 0.0)], ONEWAY_X), RESIDENTIAL),
+    MeterWay(4002, _shift([(400.0, 0.0), (200.0, 0.0)], ONEWAY_X), {**RESIDENTIAL, "oneway": "yes"}),
+    MeterWay(4003, _shift([(400.0, 0.0), (600.0, 0.0)], ONEWAY_X), {**RESIDENTIAL, "oneway": "-1"}),
+    MeterWay(4004, _shift([(800.0, 0.0), (600.0, 0.0)], ONEWAY_X), {**RESIDENTIAL, "oneway": "yes", "oneway:bicycle": "no"}),
+    MeterWay(4005, _shift([(1000.0, 0.0), (800.0, 0.0)], ONEWAY_X),
+             {**RESIDENTIAL, "oneway": "yes", "cycleway": "opposite_lane"}),
+    MeterWay(4006, _shift([(1000.0, 0.0), (1060.0, 0.0), (1080.0, 0.0)], ONEWAY_X), RESIDENTIAL),
+    MeterWay(4008, _shift([(1120.0, 0.0), (1080.0, 0.0)], ONEWAY_X), {**RESIDENTIAL, "oneway": "yes"}),
+    MeterWay(4009, _shift([(1120.0, 0.0), (1140.0, 0.0), (1200.0, 0.0)], ONEWAY_X), RESIDENTIAL),
+    MeterWay(4007, _shift([(float(x), -40.0) for x in (0, 200, 400, 600, 800, 1000, 1060, 1140, 1200)], ONEWAY_X),
+             RESIDENTIAL),
+    *[MeterWay(4010 + i, _shift([(float(x), 0.0), (float(x), -40.0)], ONEWAY_X), RESIDENTIAL)
+      for i, x in enumerate((0, 200, 400, 600, 800, 1000, 1060, 1140, 1200))],
+]
+
+# 小刺：目標向東 600 m、往北 55 m 再原路退回、再向東 600 m（L = 1200、候選半徑 60 m）。目標下方的直路在 600 m 有一條
+# 55 m 的死巷正好沿著目標往北的那一段：照著畫就要在死巷底迴轉（騎進去又退出來）。
+SPIKE_X = 40_000.0
+SPIKE_TARGET = _shift([(0.0, 0.0), (600.0, 0.0), (600.0, 55.0), (600.0, 0.0), (1200.0, 0.0)], SPIKE_X)
+SPIKE_MAP: list[MeterWay] = [
+    MeterWay(5001, _shift([(-100.0, 0.0), (200.0, 0.0), (400.0, 0.0), (600.0, 0.0), (800.0, 0.0), (1000.0, 0.0),
+                           (1300.0, 0.0)], SPIKE_X), RESIDENTIAL),
+    MeterWay(5002, _shift([(600.0, 0.0), (600.0, 55.0)], SPIKE_X), RESIDENTIAL),
+]
+
+# 封閉筆畫：100 m 的棋盤上 800 m 見方的正方形目標，往東北偏 10 m（平移免費的範圍內）。
+SQUARE_X = 50_000.0
+SQUARE_TARGET = _shift([(10.0, 10.0), (810.0, 10.0), (810.0, 810.0), (10.0, 810.0)], SQUARE_X)
+SQUARE_MAP: list[MeterWay] = [
+    *[MeterWay(6000 + r, _shift([(c * 100.0, r * 100.0) for c in range(-1, 11)], SQUARE_X), RESIDENTIAL)
+      for r in range(-1, 11)],
+    *[MeterWay(6100 + c, _shift([(c * 100.0, r * 100.0) for r in range(-1, 11)], SQUARE_X), RESIDENTIAL)
+      for c in range(-1, 11)],
+]
+
+# 斷開：目標是向東 1400 m 的直線，每 100 m 一個輸入點（L = 1400、候選半徑 70 m）。下方的路在 500–900 m 之間什麼都沒有
+# （沒有候選）；1030–1060 m 之間兩段路的端點只差 30 m（都有候選，但不相通：轉移不可達）。
+GAP_X = 60_000.0
+GAP_TARGET = _shift([(float(x), 0.0) for x in range(0, 1401, 100)], GAP_X)
+GAP_MAP: list[MeterWay] = [
+    MeterWay(7001, _shift([(0.0, 0.0), (250.0, 0.0), (500.0, 0.0)], GAP_X), RESIDENTIAL),
+    MeterWay(7002, _shift([(900.0, 0.0), (1030.0, 0.0)], GAP_X), RESIDENTIAL),
+    MeterWay(7003, _shift([(1060.0, 0.0), (1250.0, 0.0), (1400.0, 0.0)], GAP_X), RESIDENTIAL),
+]
