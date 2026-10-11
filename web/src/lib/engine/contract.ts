@@ -29,6 +29,9 @@ import {
 
 type Schemas = components["schemas"];
 
+/** 把 route_sig 改成可省略（見 matchResponseSchema）。 */
+type WithOptionalSig<T> = Omit<T, "route_sig"> & { route_sig?: string };
+
 // zod 的錯誤訊息用繁體中文（會顯示給使用者）
 z.config(z.locales.zhTW());
 
@@ -86,7 +89,11 @@ export const scoreSchema = z.object({
   overall: percentSchema,
 }) satisfies z.ZodType<Schemas["ScoreOut"]>;
 
-/** /match、/edit、/verify 的 200 回應共用。route_sig 是整條路線的簽章，下一次 /edit、/verify 原樣帶回。 */
+/**
+ * /match 的 200 回應（/edit、/verify 的見 signedMatchResponseSchema）。route_sig 是整條路線的簽章，下一次 /edit、
+ * /verify 原樣帶回；這裡讀成可省略：引擎回滾到沒有簽章的版本、或網站先於引擎部署時，吸附與 GPX 照常，
+ * 只是沒有簽章就不能微調（見 canEnterEdit）。契約（openapi）仍然是必填，只增加的方向不變。
+ */
 export const matchResponseSchema = z.object({
   route: z.object({ points: z.array(lonLatSchema), length_m: z.number() }),
   segments: z.array(segmentSchema),
@@ -94,6 +101,11 @@ export const matchResponseSchema = z.object({
   target_length_m: z.number(),
   warnings: z.array(matchWarningSchema),
   data_version: z.string(),
+  route_sig: z.string().optional(),
+}) satisfies z.ZodType<WithOptionalSig<Schemas["MatchResponse"]>>;
+
+/** /edit、/verify 的 200 回應：沒有簽章的回應沒有用（下一次操作沒有東西可以帶回），當成格式不符。 */
+export const signedMatchResponseSchema = matchResponseSchema.extend({
   route_sig: z.string(),
 }) satisfies z.ZodType<Schemas["MatchResponse"]>;
 
@@ -229,12 +241,14 @@ export const placementSchema = z.object({
 
 const countSchema = z.number().int().min(0);
 
+type LooseSearchCandidate = Omit<Schemas["SearchCandidate"], "match"> & { match: WithOptionalSig<Schemas["MatchResponse"]> };
+
 export const searchCandidateSchema = z.object({
   placement: placementSchema,
   match: matchResponseSchema,
   start_distance_m: z.number().min(0),
   length_ok: z.boolean(),
-}) satisfies z.ZodType<Schemas["SearchCandidate"]>;
+}) satisfies z.ZodType<LooseSearchCandidate>;
 
 export const searchQueuedEventSchema = z.object({
   type: z.literal("queued"),
@@ -251,7 +265,7 @@ export const searchProgressEventSchema = z.object({
 export const searchBestEventSchema = z.object({
   type: z.literal("best"),
   candidate: searchCandidateSchema,
-}) satisfies z.ZodType<Schemas["SearchBest"]>;
+}) satisfies z.ZodType<Omit<Schemas["SearchBest"], "candidate"> & { candidate: LooseSearchCandidate }>;
 
 export const searchResultEventSchema = z.object({
   type: z.literal("result"),
@@ -260,7 +274,7 @@ export const searchResultEventSchema = z.object({
   evaluated: countSchema,
   elapsed_ms: countSchema,
   notice: z.string().nullish(),
-}) satisfies z.ZodType<Schemas["SearchResult"]>;
+}) satisfies z.ZodType<Omit<Schemas["SearchResult"], "candidates"> & { candidates: LooseSearchCandidate[] }>;
 
 export const searchFailedEventSchema = z.object({
   type: z.literal("error"),
@@ -278,7 +292,9 @@ export const searchEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type MatchRequest = Schemas["MatchRequest"];
-export type MatchResponse = Schemas["MatchResponse"];
+export type MatchResponse = WithOptionalSig<Schemas["MatchResponse"]>;
+/** /edit、/verify 的回應：一定有簽章。 */
+export type SignedMatchResponse = Schemas["MatchResponse"];
 export type MatchSegment = Schemas["SegmentOut"];
 export type Segment = Schemas["SegmentOut"];
 export type Score = Schemas["ScoreOut"];
@@ -293,12 +309,12 @@ export type StatusResponse = Schemas["StatusResponse"];
 export type StartCircle = Schemas["StartCircle"];
 export type SearchRequest = Schemas["SearchRequest"];
 export type Placement = Schemas["PlacementOut"];
-export type SearchCandidate = Schemas["SearchCandidate"];
+export type SearchCandidate = LooseSearchCandidate;
 export type SearchQueued = Schemas["SearchQueued"];
 export type SearchProgress = Schemas["SearchProgress"];
 export type SearchStage = Schemas["SearchProgress"]["stage"];
-export type SearchBest = Schemas["SearchBest"];
-export type SearchResult = Schemas["SearchResult"];
+export type SearchBest = Omit<Schemas["SearchBest"], "candidate"> & { candidate: SearchCandidate };
+export type SearchResult = Omit<Schemas["SearchResult"], "candidates"> & { candidates: SearchCandidate[] };
 export type SearchFailed = Schemas["SearchFailed"];
 export type SearchEvent = SearchQueued | SearchProgress | SearchBest | SearchResult | SearchFailed;
 export type SearchEventType = SearchEvent["type"];

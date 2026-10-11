@@ -1,5 +1,5 @@
 import type { EditOutcome as ClientEditOutcome } from "@/lib/engine/client";
-import type { EditRequest, MatchResponse } from "@/lib/engine/contract";
+import type { EditRequest, MatchResponse, SignedMatchResponse } from "@/lib/engine/contract";
 import type { EditedRoute, EditOp } from "@/lib/edit/edit-state";
 import type { EditOutcome } from "@/hooks/use-route-edit";
 import type { LonLat } from "@/lib/shape/types";
@@ -7,8 +7,13 @@ import type { LonLat } from "@/lib/shape/types";
 /** 409 stale_data 一律用這句：引擎的說明是給 API 使用者看的，這裡要導向「重新驗證」。 */
 export const STALE_DATA_MESSAGE = "路網已更新，這條路線需要重新驗證";
 
+/** 有簽章的回應（微調只能從有簽章的路線開始）；沒有簽章（舊版引擎）是 null。 */
+export function signedOf(response: MatchResponse): SignedMatchResponse | null {
+  return response.route_sig === undefined ? null : { ...response, route_sig: response.route_sig };
+}
+
 /** /match、/edit、/verify 的 200 回應 → 網站留著的部分（草稿存的同一個形狀）。 */
-export function routeFromResponse(response: MatchResponse): EditedRoute {
+export function routeFromResponse(response: SignedMatchResponse): EditedRoute {
   return {
     segments: response.segments,
     dataVersion: response.data_version,

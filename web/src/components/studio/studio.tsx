@@ -24,7 +24,7 @@ import { useReverify } from "@/hooks/use-reverify";
 import { useRouteEdit } from "@/hooks/use-route-edit";
 import { useSearch } from "@/hooks/use-search";
 import { isNewerBuild, isOutdatedRoute, newestBuild, outdatedLabel } from "@/lib/drafts/draft-info";
-import { routeFromResponse } from "@/lib/edit/edit-bridge";
+import { routeFromResponse, signedOf } from "@/lib/edit/edit-bridge";
 import type { DraftNotice } from "@/lib/edit/edit-hint";
 import { createEditSession, placementOf, sessionFromDraft } from "@/lib/edit/edit-session";
 import type { MatchWarning, SearchCandidate } from "@/lib/engine/contract";
@@ -52,6 +52,7 @@ import {
   currentBuildVersion,
   editChrome,
   editSupersededBy,
+  editUnavailableNote,
   liveMatchEnabled,
   resolveDisplayedRoute,
   type VerifiedBuild,
@@ -238,11 +239,12 @@ export function Studio() {
     edit: edit.state,
   });
   const enterEdit = () => {
-    if (!canEnter || !request || !display.response) return;
+    const signed = display.response ? signedOf(display.response) : null;
+    if (!canEnter || !request || !signed) return;
     const session = { source, transform, strokes: request.strokes, base: { shapeKey: currentShapeKey, transform } };
     editSession.begin(session);
     setDraftNotice(null);
-    edit.enter(routeFromResponse(display.response), null, placementOf(session));
+    edit.enter(routeFromResponse(signed), null, placementOf(session));
   };
 
   const startReverify = () => {
@@ -389,7 +391,12 @@ export function Studio() {
               ? chrome.resume
                 ? { label: "繼續微調", disabled: false, onClick: edit.resume }
                 : null
-              : { label: "微調路線", disabled: !canEnter, onClick: enterEdit }
+              : {
+                  label: "微調路線",
+                  disabled: !canEnter,
+                  onClick: enterEdit,
+                  note: editUnavailableNote(display.response, display.downloadable) ?? undefined,
+                }
           }
           plannerReady={engine.plannerReady && !display.edited}
           routeVariant={routeVariant}

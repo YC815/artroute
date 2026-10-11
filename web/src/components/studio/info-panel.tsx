@@ -31,7 +31,7 @@ type Props = {
   /** 畫面上是微調後的路線（微調中，或按了「完成」之後還留著）：response 就是微調後的。 */
   edited: boolean;
   /** 進入微調（或回到微調）的按鈕；微調中（工具列在地圖上）不需要時是 null。 */
-  editAction: { label: string; disabled: boolean; onClick: () => void } | null;
+  editAction: { label: string; disabled: boolean; onClick: () => void; /** 停用的原因（沒有簽章等）。 */ note?: string } | null;
   /** 路線是畫面上這一條、可以下載 GPX（即時吸附的要屬於目前擺放，見 canDownloadGpx；微調後的路線永遠是）。 */
   downloadable: boolean;
   /** 要標紅的部件（來自 response 或 422 的 warnings）。 */
@@ -145,9 +145,12 @@ export function InfoPanel(props: Props) {
         </div>
       )}
       {editAction && (
-        <Button type="button" variant="outline" disabled={editAction.disabled} onClick={editAction.onClick}>
-          {editAction.label}
-        </Button>
+        <div className="flex flex-col gap-1">
+          <Button type="button" variant="outline" disabled={editAction.disabled} onClick={editAction.onClick}>
+            {editAction.label}
+          </Button>
+          {editAction.note && <p className="text-xs text-muted-foreground">{editAction.note}</p>}
+        </div>
       )}
       <div className="flex flex-col gap-1">
         {edited && <Row label="路線" value="已微調" />}

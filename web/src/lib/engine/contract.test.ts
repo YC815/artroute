@@ -8,6 +8,7 @@ import {
   errorDetailSchema,
   matchRequestSchema,
   matchResponseSchema,
+  signedMatchResponseSchema,
   searchEventSchema,
   searchFailedEventSchema,
   searchRequestSchema,
@@ -222,15 +223,20 @@ describe("matchResponseSchema：微調新增的部分", () => {
     expect(parsed.route_sig).toBe(SAMPLE_EDIT_RESPONSE.route_sig);
   });
 
-  it("缺 route_sig 就不合法（沒有簽章的路線不能再送回 /edit）", () => {
+  it("/match 缺 route_sig 照樣合法（引擎回滾或網站先部署：吸附與 GPX 不能壞），但型別不對仍不合法", () => {
     const withoutSig = without(SAMPLE_MATCH_RESPONSE, "route_sig");
-    expect(matchResponseSchema.safeParse(withoutSig).success).toBe(false);
+    expect(matchResponseSchema.parse(withoutSig).route_sig).toBeUndefined();
     expect(matchResponseSchema.safeParse({ ...SAMPLE_MATCH_RESPONSE, route_sig: 1 }).success).toBe(false);
   });
 
-  it("搜尋候選的 match 也要有 route_sig", () => {
+  it("/edit、/verify 的回應一定要有 route_sig（沒有簽章的路線沒辦法再送回引擎）", () => {
+    expect(signedMatchResponseSchema.parse(SAMPLE_EDIT_RESPONSE).route_sig).toBe(SAMPLE_EDIT_RESPONSE.route_sig);
+    expect(signedMatchResponseSchema.safeParse(without(SAMPLE_EDIT_RESPONSE, "route_sig")).success).toBe(false);
+  });
+
+  it("搜尋候選的 match 缺 route_sig 也能顯示（候選只用來預覽與套用擺放）", () => {
     const withoutSig = without(SAMPLE_MATCH_RESPONSE, "route_sig");
-    expect(searchEventSchema.safeParse({ type: "best", candidate: sampleCandidate({ match: withoutSig as never }) }).success).toBe(false);
+    expect(searchEventSchema.safeParse({ type: "best", candidate: sampleCandidate({ match: withoutSig as never }) }).success).toBe(true);
   });
 });
 

@@ -41,6 +41,12 @@ describe("fetchMatch", () => {
     expect(outcome).toEqual({ ok: true, response: SAMPLE_MATCH_RESPONSE });
   });
 
+  it("200 但沒有 route_sig（舊版引擎）→ 照常成功，路線與 GPX 不受影響", async () => {
+    const legacy = without(SAMPLE_MATCH_RESPONSE, "route_sig");
+    const outcome = await fetchMatch(REQUEST, new AbortController().signal, respond(200, legacy));
+    expect(outcome).toEqual({ ok: true, response: legacy });
+  });
+
   it("200 但格式不符 → 502 錯誤", async () => {
     const outcome = await fetchMatch(REQUEST, new AbortController().signal, respond(200, { route: null }));
     expect(outcome).toEqual({

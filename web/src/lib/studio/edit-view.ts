@@ -1,4 +1,4 @@
-import { responseFromRoute } from "@/lib/edit/edit-bridge";
+import { responseFromRoute, signedOf } from "@/lib/edit/edit-bridge";
 import type { EditedRoute, EditState } from "@/lib/edit/edit-state";
 import type { MatchResponse } from "@/lib/engine/contract";
 import type { Transform } from "@/lib/shape/transform";
@@ -23,14 +23,14 @@ export function editSupersededBy(base: EditBase | null, current: EditBase): bool
   return base !== null && (base.shapeKey !== current.shapeKey || !sameTransform(base.transform, current.transform));
 }
 
-/** 能進入微調：有屬於目前擺放的路線、沒有請求在途、也還沒在微調。 */
+/** 能進入微調：有屬於目前擺放的路線、路線有簽章、沒有請求在途、也還沒在微調。 */
 export function canEnterEdit(args: {
   response: MatchResponse | null;
   downloadable: boolean;
   pending: boolean;
   edit: EditState | null;
 }): boolean {
-  return args.response !== null && args.downloadable && !args.pending && args.edit === null;
+  return args.response !== null && signedOf(args.response) !== null && args.downloadable && !args.pending && args.edit === null;
 }
 
 export type DisplayedRoute = {
@@ -80,4 +80,12 @@ export function editChrome(args: { edited: boolean; active: boolean; outdated: b
     notice: args.active && args.outdated,
     resume: args.edited && !args.active,
   };
+}
+
+/** 路線沒有簽章時，「微調路線」停用的原因（引擎沒有回簽章：版本較舊，或網站先於引擎部署）。 */
+export const NO_SIGNATURE_NOTE = "這份吸附結果沒有簽章（引擎版本較舊），不能微調；仍可下載 GPX。";
+
+/** 有可用的即時路線、卻因為沒有簽章而不能微調時回傳說明，否則 null。 */
+export function editUnavailableNote(response: MatchResponse | null, downloadable: boolean): string | null {
+  return response !== null && downloadable && signedOf(response) === null ? NO_SIGNATURE_NOTE : null;
 }

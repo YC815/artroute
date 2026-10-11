@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { routeFromResponse } from "@/lib/edit/edit-bridge";
 import { editReducer, startEdit, type EditedRoute } from "@/lib/edit/edit-state";
 import { buildGpx } from "@/lib/export/gpx";
-import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import { SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE, without } from "@/lib/engine/fixtures";
 import type { Transform } from "@/lib/shape/transform";
-import { canEnterEdit, currentBuildVersion, editChrome, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
+import { canEnterEdit, currentBuildVersion, editChrome, editUnavailableNote, NO_SIGNATURE_NOTE, editSupersededBy, liveMatchEnabled, resolveDisplayedRoute } from "@/lib/studio/edit-view";
 
 const LIVE = { response: SAMPLE_MATCH_RESPONSE, downloadable: true };
 const T: Transform = { center: [121.5, 25.03], sizeM: 2000, rotationDeg: 0 };
@@ -95,6 +95,15 @@ describe("canEnterEdit", () => {
     expect(canEnterEdit({ ...ok, downloadable: false })).toBe(false);
     expect(canEnterEdit({ ...ok, pending: true })).toBe(false);
     expect(canEnterEdit({ ...ok, edit: editing() })).toBe(false);
+  });
+
+  it("路線沒有簽章（舊版引擎）：不能進入微調，說明原因；有簽章或路線不能用時不提", () => {
+    const unsigned = without(SAMPLE_MATCH_RESPONSE, "route_sig");
+    expect(canEnterEdit({ ...ok, response: unsigned })).toBe(false);
+    expect(editUnavailableNote(unsigned, true)).toBe(NO_SIGNATURE_NOTE);
+    expect(editUnavailableNote(SAMPLE_MATCH_RESPONSE, true)).toBeNull();
+    expect(editUnavailableNote(unsigned, false)).toBeNull();
+    expect(editUnavailableNote(null, true)).toBeNull();
   });
 });
 

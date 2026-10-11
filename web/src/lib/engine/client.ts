@@ -2,11 +2,13 @@ import {
   errorBodySchema,
   errorDetailSchema,
   matchResponseSchema,
+  signedMatchResponseSchema,
   statusResponseSchema,
   type EditRequest,
   type MatchRequest,
   type MatchResponse,
   type MatchWarning,
+  type SignedMatchResponse,
   type VerifyRequest,
 } from "@/lib/engine/contract";
 
@@ -120,7 +122,7 @@ export type EditError = {
   engineDown: boolean;
 };
 
-export type EditOutcome = { ok: true; response: MatchResponse } | { ok: false; error: EditError };
+export type EditOutcome = { ok: true; response: SignedMatchResponse } | { ok: false; error: EditError };
 
 const EDIT_DEFAULT_MESSAGES: Record<number, string> = {
   0: "連不上伺服器",
@@ -155,7 +157,7 @@ async function postEditLike(
   }
   if (posted.kind === "network") return { ok: false, error: toEditError(0, null) };
   if (!posted.ok) return { ok: false, error: toEditError(posted.status, posted.body) };
-  const parsed = matchResponseSchema.safeParse(posted.body);
+  const parsed = signedMatchResponseSchema.safeParse(posted.body);
   return parsed.success ? { ok: true, response: parsed.data } : { ok: false, error: toEditError(502, null) };
 }
 

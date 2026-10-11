@@ -1,7 +1,7 @@
-import type { EditRequest, MatchResponse, SearchCandidate, SearchEvent, SearchResult, VerifyRequest } from "@/lib/engine/contract";
+import type { EditRequest, SearchCandidate, SignedMatchResponse, SearchEvent, SearchResult, VerifyRequest } from "@/lib/engine/contract";
 
 /** 測試用的 /match 200 回應（形狀照 spec §4.7）。 */
-export const SAMPLE_MATCH_RESPONSE: MatchResponse = {
+export const SAMPLE_MATCH_RESPONSE: SignedMatchResponse = {
   route: {
     points: [
       [121.5, 25.03],
@@ -24,7 +24,7 @@ export const SAMPLE_MATCH_RESPONSE: MatchResponse = {
 };
 
 /** 測試用的 /edit 200 回應：中間那段被換成 kind: "edit"。 */
-export const SAMPLE_EDIT_RESPONSE: MatchResponse = {
+export const SAMPLE_EDIT_RESPONSE: SignedMatchResponse = {
   ...SAMPLE_MATCH_RESPONSE,
   segments: SAMPLE_MATCH_RESPONSE.segments.map((segment, i) => (i === 1 ? { ...segment, kind: "edit" } : segment)),
   route_sig: "ZWRpdGVk",

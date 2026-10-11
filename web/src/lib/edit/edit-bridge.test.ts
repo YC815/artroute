@@ -3,12 +3,13 @@ import {
   flattenSegments,
   responseFromRoute,
   routeFromResponse,
+  signedOf,
   STALE_DATA_MESSAGE,
   toEditOutcome,
   toEditRequest,
 } from "@/lib/edit/edit-bridge";
 import type { EditError } from "@/lib/engine/client";
-import { SAMPLE_EDIT_REQUEST, SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE } from "@/lib/engine/fixtures";
+import { SAMPLE_EDIT_REQUEST, SAMPLE_EDIT_RESPONSE, SAMPLE_MATCH_RESPONSE, without } from "@/lib/engine/fixtures";
 
 const error = (overrides: Partial<EditError>): EditError => ({
   status: 422,
@@ -95,5 +96,13 @@ describe("toEditOutcome", () => {
   it("沒有 code：連不上與其他 HTTP 錯誤分開", () => {
     expect(toEditOutcome({ ok: false, error: error({ status: 0, engineDown: true }) })).toMatchObject({ code: "engine_down" });
     expect(toEditOutcome({ ok: false, error: error({ status: 504 }) })).toMatchObject({ code: "http_504" });
+  });
+});
+
+describe("signedOf", () => {
+  it("有簽章：原樣；沒有簽章（舊版引擎）：null", () => {
+    expect(signedOf(SAMPLE_MATCH_RESPONSE)).toEqual(SAMPLE_MATCH_RESPONSE);
+    const unsigned = without(SAMPLE_MATCH_RESPONSE, "route_sig");
+    expect(signedOf(unsigned)).toBeNull();
   });
 });
