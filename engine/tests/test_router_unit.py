@@ -148,18 +148,19 @@ def test_edges_request_use_and_length_and_carry_them(monkeypatch: pytest.MonkeyP
 
     def fake_call(method: str, request: dict) -> dict:
         seen.append(request)
-        return {"edges": [{"way_id": 7, "begin_heading": 90.0, "use": "footway", "length": 0.012}]}
+        return {"edges": [{"way_id": 7, "begin_heading": 90.0, "use": "footway", "length": 0.012,
+                           "traversability": "forward", "forward": False}]}
 
     monkeypatch.setattr(router, "_call", fake_call)
     edges = router.edges([A, B, C])
-    assert {"edge.use", "edge.length"} <= set(seen[0]["filters"]["attributes"])
-    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="footway", length_km=0.012)]
+    assert {"edge.use", "edge.length", "edge.traversability", "edge.forward"} <= set(seen[0]["filters"]["attributes"])
+    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="footway", length_km=0.012, wrong_way=True)]
 
 
 def test_edges_without_use_or_length_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 建圖驗證也呼叫 edges()：量測用的欄位缺了不能讓驗證失敗
+    # 建圖驗證也呼叫 edges()：量測用的欄位缺了不能讓驗證失敗；方向欄位缺了是「判斷不了」（None），不是「沒逆向」
     edges, _ = _edges_requests(monkeypatch, [A, B, C])
-    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="", length_km=0.0)]
+    assert edges == [EdgeInfo(way_id=7, begin_heading=90.0, use="", length_km=0.0, wrong_way=None)]
 
 
 def test_route_asks_for_the_shortest_path_only_when_told(monkeypatch: pytest.MonkeyPatch) -> None:

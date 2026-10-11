@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from engine.matching.compose import Part, Rematch, compose, route_points
-from engine.matching.deadline import Deadline
+from engine.matching.deadline import Deadline, MatchCancelled, MatchTimeout
 from engine.matching.join import adjacent, connect
 from engine.matching.prune import prune_loops
 from engine.matching.score import Score, score, target_extent_m
@@ -20,7 +20,7 @@ from engine.matching.stroke import NO_ROUTE_MESSAGE, PARTIAL_MESSAGE, StrokeMatc
 from engine.matching.types import JOIN_TOLERANCE_M, MatchRouter, MatchWarning, Segment, StartHint
 from engine.planner.follow import follow, start_loop_mid_side
 from engine.planner.graph import RideGraph
-from engine.planner.plan import PlannedPiece, StrokePlan, plan_shape, region_bounds
+from engine.planner.plan import PlannedPiece, PlanStep, StrokePlan, plan_shape, region_bounds
 from engine.routing.geo import haversine_m, polyline_length_m
 from engine.routing.router import LonLat
 from engine.routing.tiles import MAX_SEARCH_RADIUS_M, MIN_SEARCH_RADIUS_M
@@ -205,16 +205,30 @@ class _Fine:
 
 def _start_fine(
     router: MatchRouter, graph: RideGraph, strokes: list[StrokeInput], radius: float, deadline: Deadline
-) -> _Fine:
-    """規劃所有筆畫。預算從現在起算 min(PLANNER_BUDGET_S, 期限剩餘 − FINE_RESERVE_S)（不小於 0），規劃與照著走共用：
-    規劃先用（plan_shape 超過預算就把剩下的記成沒規劃），剩下的給照著走。期限本身（逾時、取消）照常丟例外。"""
+) -> _Fine | None:
+    """規劃所有筆畫；回傳 None 表示整張圖改走 fast。
+
+    預算從現在起算 min(PLANNER_BUDGET_S, 期限剩餘 − FINE_RESERVE_S)，規劃與照著走共用：規劃先用（plan_shape 超過預算
+    就把剩下的記成沒規劃），剩下的給照著走。預算 ≤ 0 時直接走 fast，不碰路網圖。
+    期限（逾時、取消）照常丟例外；其他例外（壞掉的路網圖、規劃器的 bug）記下來後走 fast：fine 是選用的改善，
+    不能讓 /match 因此變成 500。
+    """
     started = time.monotonic()
-    stop_at = started + max(0.0, min(PLANNER_BUDGET_S, deadline.remaining() - FINE_RESERVE_S))
+    budget = min(PLANNER_BUDGET_S, deadline.remaining() - FINE_RESERVE_S)
+    if budget <= 0:
+        return None
+    stop_at = started + budget
     points = [s.points for s in strokes]
-    region = graph.region(*region_bounds(points))
-    plans = plan_shape(
-        region, points, [s.closed for s in strokes], deadline=deadline, budget_s=max(0.0, stop_at - time.monotonic())
-    )
+    try:
+        region = graph.region(*region_bounds(points))
+        plans = plan_shape(
+            region, points, [s.closed for s in strokes], deadline=deadline, budget_s=max(0.0, stop_at - time.monotonic())
+        )
+    except (MatchTimeout, MatchCancelled):
+        raise
+    except Exception:
+        logger.exception("fine 規劃失敗，整張圖改走 fast")
+        return None
     deadline.check()
     return _Fine(router, deadline, radius, plans, stop_at, planned_ms=(time.monotonic() - started) * 1000)
 
@@ -230,26 +244,23 @@ class _Fallback:
 type _Item = list[Segment] | _Fallback
 
 
-def _follow_pieces(
-    fine: _Fine, pieces: list[PlannedPiece], gaps: list[tuple[int, int]], index: int, closed: bool
-) -> list[_Item]:
-    """依目標順序（範圍的起點）：照著走收下的 piece 換成那段 Segment 的 list，其餘是 _Fallback。
-    相鄰的 _Fallback 合成一個（規劃器的範圍在交界共用那段輸入線段），所以兩個 _Fallback 之間一定隔著收下的段。
-    封閉筆畫整圈一段時從直路中間開始照著走（start_loop_mid_side），圈才接得回來。"""
-    entries: list[tuple[tuple[int, int], PlannedPiece | None]] = [(p.target_range, p) for p in pieces]
-    entries += [(gap, None) for gap in gaps]
-    entries.sort(key=lambda entry: entry[0])  # 穩定排序：同一個範圍時 piece 在前
+def _follow_pieces(fine: _Fine, steps: list[PlanStep], index: int, loop_points: int | None) -> list[_Item]:
+    """依規劃的先後（StrokePlan.steps，不能拿範圍排序：不同的步驟可能有一樣的範圍）：照著走收下的 piece 換成那段
+    Segment 的 list，其餘是 _Fallback。相鄰的 _Fallback 合成一個（規劃器的範圍在交界共用那段輸入線段），
+    所以兩個 _Fallback 之間一定隔著收下的段。loop_points：封閉筆畫的輸入點數（開放筆畫為 None）；整圈一段時從直路中間
+    開始照著走（start_loop_mid_side）。"""
     items: list[_Item] = []
-    for (start, end), piece in entries:
+    for step in steps:
         followed = None
-        if piece is not None:
+        if isinstance(step, PlannedPiece):
             if time.monotonic() < fine.stop_at:
-                path = start_loop_mid_side(piece) if closed else piece
+                path = step if loop_points is None else start_loop_mid_side(step, loop_points)
                 followed = follow(fine.router, path, fine.deadline, stroke_index=index)
             if followed is None:
                 fine.rejected += 1
             else:
                 fine.followed += 1
+        start, end = step.target_range if isinstance(step, PlannedPiece) else step
         if followed is not None:
             items.append(followed)
         elif items and isinstance(items[-1], _Fallback):
@@ -271,6 +282,14 @@ def _fallback_points(points: list[LonLat], items: list[_Item], k: int, closed: b
     head = before[-1].points[-1] if isinstance(before, list) else points[item.start % n]
     tail = after[0].points[0] if isinstance(after, list) else points[item.end % n]
     return [head, *(points[i % n] for i in range(item.start + 1, item.end)), tail]
+
+
+def _wrap_fallbacks(items: list[_Item], n: int) -> list[_Item]:
+    """封閉筆畫首尾相鄰：第一個與最後一個都是退回範圍時（規劃的起點落在兩個輸入點之間，交界那段兩邊都含），
+    跨過起點合成一個 (最後一個的頭, 第一個的尾 + n)、放到最後，交給 fast 一次；不然那段會被前後兩次 fast 各畫一遍。"""
+    if len(items) > 1 and isinstance(items[0], _Fallback) and isinstance(items[-1], _Fallback):
+        return [*items[1:-1], _Fallback(items[-1].start, items[0].end + n)]
+    return items
 
 
 def _link_blocks(fine: _Fine, blocks: list[tuple[list[list[Segment]], bool]], index: int) -> list[list[Segment]]:
@@ -304,7 +323,9 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
         一條 chain 都沒有是 no_route；有段找不到路、或斷成多條 chain 是 partial。
         整個筆畫都沒規劃時，交給 fast 的就是整個目標，結果與 fast 相同。"""
         stroke, plan = strokes[index], fine.plans[index]
-        items = _follow_pieces(fine, plan.forward, plan.unplanned, index, stroke.closed)
+        items = _follow_pieces(fine, plan.steps, index, len(stroke.points) if stroke.closed else None)
+        if stroke.closed:
+            items = _wrap_fallbacks(items, len(stroke.points))
         blocks: list[tuple[list[list[Segment]], bool]] = []
         for k, item in enumerate(items):
             if not isinstance(item, _Fallback):
@@ -330,18 +351,20 @@ def _fine_matcher(fine: _Fine, strokes: list[StrokeInput]) -> Callable[[int], St
 
 def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: int) -> list[Segment] | None:
     """開放筆畫反向（從終點畫到起點）：規劃器的 backward 照著走，沒照著走的範圍各 trace_whole 一次（同 fast 的反向：
-    只 trace 一次、不對半切、不補繞路，免得反向用繞路換掉乾淨的正向）。任何一段走不通、或串不成一條 chain 回傳 None
-    （部件照畫的方向走）。整個筆畫都沒規劃時就是 fast 的反向（整段倒過來 trace_whole 一次）。"""
-    if plan.backward is None:
+    只 trace 一次、不對半切、不補繞路，免得反向用繞路換掉乾淨的正向）。任何一段走不通、串不成一條 chain、或段與段之間
+    要靠 connect 補一段 route（kind="detour"）才接得上，都回傳 None（部件照畫的方向走）。整個筆畫都沒規劃時就是 fast 的反向（整段倒過來 trace_whole 一次）。"""
+    if plan.backward_steps is None:
         return None
     last = len(stroke.points) - 1
     points = stroke.points[::-1]  # 依反向畫的先後；範圍換成這個點列的索引
 
-    def flip(r: tuple[int, int]) -> tuple[int, int]:
-        return (last - r[0], last - r[1])
+    def flip(step: PlanStep) -> PlanStep:
+        if isinstance(step, PlannedPiece):
+            start, end = step.target_range
+            return PlannedPiece(step.points, step.edges, (last - start, last - end), step.cost)
+        return (last - step[0], last - step[1])
 
-    pieces = [PlannedPiece(p.points, p.edges, flip(p.target_range), p.cost) for p in plan.backward]
-    items = _follow_pieces(fine, pieces, [flip(g) for g in plan.backward_unplanned or []], index, False)
+    items = _follow_pieces(fine, [flip(step) for step in plan.backward_steps], index, None)
     blocks: list[tuple[list[list[Segment]], bool]] = []
     for k, item in enumerate(items):
         if not isinstance(item, _Fallback):
@@ -355,7 +378,9 @@ def _fine_backward(fine: _Fine, stroke: StrokeInput, plan: StrokePlan, index: in
             return None
         blocks.append(([[whole]], False))
     chains = _link_blocks(fine, blocks, index)
-    return chains[0] if len(chains) == 1 else None
+    if len(chains) != 1 or any(segment.kind == "detour" for segment in chains[0]):
+        return None  # 串不成一條，或要靠 connect 補一段 route（kind="detour"）才接得上：反向不補繞路
+    return chains[0]
 
 
 def _fine_rematcher(fine: _Fine, strokes: list[StrokeInput], owners: list[int]) -> Rematch:
@@ -404,7 +429,7 @@ def match_shape(
     """prune：串接之後剪小刺與小圈（prune_loops）。False 時與沒有這一步的版本完全相同（bench 與標註工具產生「改前」用）。
 
     quality="fine" 而且有 graph（current build 的可騎路網圖）時逐部件吸附改用規劃器（見模組說明），否則就是 fast：
-    與沒有這兩個參數的版本完全相同。串接、剪小刺、連續性檢查與評分兩種都一樣。
+    與沒有這兩個參數的版本完全相同。fine 的預算是 0 或規劃失敗（非期限的例外）時也整張圖走 fast（_start_fine）。串接、剪小刺、連續性檢查與評分兩種都一樣。
     """
     _check_inside_taiwan(strokes)
     targets = [_target(s) for s in strokes]
@@ -414,9 +439,8 @@ def match_shape(
     radius = _resolve_radius(search_radius_m, strokes)
 
     rematch: Rematch
-    fine: _Fine | None = None
-    if quality == "fine" and graph is not None:
-        fine = _start_fine(router, graph, strokes, radius, deadline)
+    fine = _start_fine(router, graph, strokes, radius, deadline) if quality == "fine" and graph is not None else None
+    if fine is not None:
         parts, owners, warnings = _match_parts(router, strokes, _fine_matcher(fine, strokes), deadline)
         rematch = _fine_rematcher(fine, strokes, owners)
     else:

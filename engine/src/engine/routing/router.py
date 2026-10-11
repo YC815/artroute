@@ -39,10 +39,28 @@ class EdgeInfo:
     begin_heading: float
     use: str = ""  # Valhalla 的 edge.use，例如 road、cycleway、footway、steps、parking_aisle
     length_km: float = 0.0  # 折線經過這條 edge 的長度
+    # 這次經過的方向自行車不能騎（逆向，見 _wrong_way）；None = Valhalla 沒給方向資訊、判斷不了。
+    # 預設 False 給測試的假 router 用；Router.edges 一律明確填
+    wrong_way: bool | None = False
 
 
 class RoutingError(Exception):
     pass
+
+
+def _wrong_way(edge: dict) -> bool | None:
+    """trace_attributes 的一條 edge 是不是逆向騎：edge.traversability 是自行車能騎的方向，相對 OSM way 的方向
+    （forward／backward／both／none，Valhalla 依這條路的通行權算，含 oneway:bicycle、cycleway=opposite*），
+    edge.forward 是這次是否順著 way 的方向走。兩者不合就是逆向。缺欄位或不認得的值回傳 None（判斷不了，不當成安全）。
+    合成地圖實測（tests/test_wrong_way.py）：oneway=yes、-1、短單行道逆向都抓得到，順向與自行車雙向不誤報。"""
+    traversability, forward = edge.get("traversability"), edge.get("forward")
+    if traversability == "both":
+        return False
+    if traversability == "none":
+        return True
+    if traversability not in ("forward", "backward") or not isinstance(forward, bool):
+        return None
+    return forward != (traversability == "forward")
 
 
 def load_config(build_dir: Path, *, sigma_z: float | None = None) -> dict:
@@ -177,7 +195,8 @@ class Router:
                 "costing": COSTING,
                 "shape_match": "edge_walk",
                 "filters": {
-                    "attributes": ["edge.way_id", "edge.begin_heading", "edge.use", "edge.length"],
+                    "attributes": ["edge.way_id", "edge.begin_heading", "edge.use", "edge.length", "edge.traversability",
+                                   "edge.forward"],
                     "action": "include",
                 },
             },
@@ -189,6 +208,7 @@ class Router:
                     begin_heading=e["begin_heading"],
                     use=e.get("use", ""),  # 量測用的欄位：缺了用預設值，建圖驗證不能因此失敗
                     length_km=e.get("length", 0.0),
+                    wrong_way=_wrong_way(e),
                 )
                 for e in response["edges"]
             ]

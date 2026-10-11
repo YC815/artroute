@@ -4,7 +4,9 @@
 """
 
 import math
+import time
 
+import numpy as np
 import pytest
 
 from engine.matching.deadline import Deadline, MatchTimeout
@@ -52,10 +54,10 @@ def test_hausdorff_of_identical_lines_is_at_most_half_a_step() -> None:
 
 
 def test_hausdorff_measures_to_segments_not_vertices() -> None:
-    """結果只有頭尾兩點、規劃中間多了頂點：量到線段的距離是 0，不是到最近頂點的 150 m。"""
+    """結果只有頭尾兩點、規劃中間多了頂點：精確值是 0（不是到最近頂點的 150 m），上界最多多一個取樣間距。"""
     straight = line((0.0, 0.0), (300.0, 0.0))
     dense = line((0.0, 0.0), (150.0, 0.0), (300.0, 0.0))
-    assert hausdorff_m(straight, dense) <= 0.5 + 1e-9
+    assert hausdorff_m(straight, dense) <= 1.0 + 1e-9
 
 
 def test_hausdorff_of_a_parallel_offset_is_the_offset() -> None:
@@ -71,6 +73,63 @@ def test_hausdorff_sees_a_detour_away_from_the_plan() -> None:
 def test_hausdorff_sees_a_truncated_result() -> None:
     """結果只走了規劃的前一半（規劃 → 結果的方向才量得到）。"""
     assert hausdorff_m(line((0.0, 0.0), (150.0, 0.0)), line((0.0, 0.0), (300.0, 0.0))) == pytest.approx(150.0, abs=0.6)
+
+
+def exact_hausdorff(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> float:
+    """暴力法（對照用）：每條折線密密取樣（0.05 m），量到另一條折線「線段」的精確距離，取雙向最大。"""
+    xa, xb = (np.array(to_meters_local(a, a[0])), np.array(to_meters_local(b, a[0])))
+
+    def directed(p: np.ndarray, q: np.ndarray) -> float:
+        samples = [p[0]]
+        for u, v in zip(p[:-1], p[1:]):
+            k = max(1, math.ceil(math.dist(u, v) / 0.05))
+            samples.extend(u + (v - u) * j / k for j in range(1, k + 1))
+        s = np.array(samples)
+        a0, d = q[:-1], q[1:] - q[:-1]
+        rel = s[:, None, :] - a0[None]
+        t = np.clip(np.einsum("nij,ij->ni", rel, d) / np.maximum(np.einsum("ij,ij->i", d, d), 1e-12), 0, 1)
+        return float(np.hypot(*(rel - d[None] * t[..., None]).transpose(2, 0, 1)).min(axis=1).max())
+
+    return max(directed(xa, xb), directed(xb, xa))
+
+
+def to_meters_local(points, origin):
+    kx = 6_371_008.8 * math.pi / 180 * math.cos(math.radians(origin[1]))
+    ky = 6_371_008.8 * math.pi / 180
+    return [((lon - origin[0]) * kx, (lat - origin[1]) * ky) for lon, lat in points]
+
+
+def wiggle(n: int, step: float, dx: float = 0.0, dy: float = 0.0, seed: int = 0) -> list[tuple[float, float]]:
+    rng = np.random.default_rng(seed)
+    return line(*((k * step * 0.7 + dx + rng.uniform(-0.3, 0.3), 300 * math.sin(k * step / 500) + dy) for k in range(n)))
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_hausdorff_never_underestimates_and_overshoots_by_at_most_one_step(seed: int) -> None:
+    """上界的關係：精確值 ≤ 結果 ≤ 精確值 + 取樣間距（兩條各多半個間距）。"""
+    rng = np.random.default_rng(seed)
+    a = wiggle(int(rng.integers(3, 12)), float(rng.uniform(3, 30)), seed=seed)
+    b = wiggle(int(rng.integers(3, 12)), float(rng.uniform(3, 30)), dx=float(rng.uniform(-8, 8)),
+               dy=float(rng.uniform(-8, 8)), seed=seed + 100)
+    exact = exact_hausdorff(a, b)
+    measured = hausdorff_m(a, b)
+    assert exact - 1e-6 <= measured <= exact + 1.0 + 1e-6
+
+
+def test_hausdorff_of_long_lines_with_tens_of_thousands_of_samples_is_fast() -> None:
+    """20 km、各 2000 個頂點（每條取樣兩萬多點）：寬鬆的時間上限（舊的點到線段暴力法要好幾秒）。"""
+    a, b = wiggle(2000, 14.3), wiggle(2000, 14.3, dx=1.0, dy=2.0, seed=1)
+    started = time.perf_counter()
+    measured = hausdorff_m(a, b)
+    elapsed = time.perf_counter() - started
+    assert measured == pytest.approx(math.hypot(1.0, 2.0), abs=1.5)
+    assert elapsed < 2.0
+
+
+def test_hausdorff_checks_the_deadline_between_batches() -> None:
+    a, b = wiggle(200, 14.3), wiggle(200, 14.3, dy=2.0, seed=1)
+    with pytest.raises(MatchTimeout):
+        hausdorff_m(a, b, deadline=Deadline(-1))
 
 
 # ---- follow ----
