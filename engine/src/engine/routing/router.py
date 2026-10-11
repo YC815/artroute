@@ -42,13 +42,18 @@ class RoutingError(Exception):
     pass
 
 
-def load_config(build_dir: Path) -> dict:
-    """讀 build 目錄的設定，並在載入時覆寫與部署位置有關的值，改這些值不必重建 tiles。"""
+def load_config(build_dir: Path, *, sigma_z: float | None = None) -> dict:
+    """讀 build 目錄的設定，並在載入時覆寫與部署位置有關的值，改這些值不必重建 tiles。
+
+    sigma_z：meili 量測誤差的標準差（m），有值才覆寫 `meili.default.sigma_z`，None 用建圖時的設定（Valhalla 預設 4.07）。
+    """
     path = config_path(build_dir)
     try:
         config = json.loads(path.read_text())
         config["mjolnir"]["tile_dir"] = str((build_dir / "tiles").resolve())
         config["mjolnir"]["max_cache_size"] = CACHE_SIZE_BYTES
+        if sigma_z is not None:
+            config["meili"]["default"]["sigma_z"] = sigma_z
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RoutingError(f"讀不到路網設定 {path}：{error}") from error
     return config
@@ -100,18 +105,24 @@ class Router:
     Actor 不是 thread-safe：binding 會釋放 GIL，多個 thread 同時呼叫同一個 Actor 會 segfault。
     所以同一個 Router 上的呼叫由鎖序列化，同時間只有一個在跑。
     要平行就開多個 Router 實例（每個各自載入 Actor）或多個行程。
+
+    turn_penalty_factor：吸附（trace）的轉彎懲罰，有值才放進 trace_options；None 不帶，由 meili 設定決定。
+    只影響 trace，route 與 edges 的請求不變。
     """
 
-    def __init__(self, config: Path | dict) -> None:
+    def __init__(self, config: Path | dict, *, turn_penalty_factor: float | None = None) -> None:
         try:
             self._actor = Actor(config if isinstance(config, dict) else str(config))
         except (OSError, RuntimeError) as error:  # tiles 目錄不存在（FileNotFoundError 是 OSError）、設定不合法
             raise RoutingError(f"無法載入路網：{error}") from error
         self._lock = threading.Lock()
+        self._turn_penalty_factor = turn_penalty_factor
 
     @classmethod
-    def from_build(cls, build_dir: Path) -> "Router":
-        return cls(load_config(build_dir))
+    def from_build(
+        cls, build_dir: Path, *, sigma_z: float | None = None, turn_penalty_factor: float | None = None
+    ) -> "Router":
+        return cls(load_config(build_dir, sigma_z=sigma_z), turn_penalty_factor=turn_penalty_factor)
 
     def _call(self, method: str, request: dict) -> dict:
         try:
@@ -125,14 +136,12 @@ class Router:
             raise RoutingError("吸附至少需要 2 個點")
         if not 0 < search_radius_m <= MAX_SEARCH_RADIUS_M:
             raise RoutingError(f"search_radius_m 必須在 0–{MAX_SEARCH_RADIUS_M} m 之間")
+        trace_options: dict[str, float] = {"search_radius": search_radius_m}
+        if self._turn_penalty_factor is not None:
+            trace_options["turn_penalty_factor"] = self._turn_penalty_factor
         response = self._call(
             "trace_route",
-            {
-                "shape": _locations(points),
-                "costing": COSTING,
-                "shape_match": "map_snap",
-                "trace_options": {"search_radius": search_radius_m},
-            },
+            {"shape": _locations(points), "costing": COSTING, "shape_match": "map_snap", "trace_options": trace_options},
         )
         result = _route_result(response)
         _ensure_matched(result, points, search_radius_m)
