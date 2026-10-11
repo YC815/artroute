@@ -131,3 +131,51 @@ def test_graph_of_another_build_is_never_handed_out(tmp_path: Path) -> None:
     assert cache.get("20261010T000000Z") is None
     assert loader.loaded == []
     assert cache.get(current.name) == ("graph", current.name)
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class FlakyLoader(Loader):
+    """前 failures 次失敗（例如暫時開不了檔），之後成功。"""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def __call__(self, build_dir: Path):
+        self.loaded.append(build_dir)
+        if len(self.loaded) <= self.failures:
+            raise GraphDataMissing(f"{build_dir}：暫時讀不了")
+        return ("graph", build_dir.name)
+
+
+def test_unreadable_graph_files_are_retried_after_a_while(tmp_path: Path) -> None:
+    """檔案都在卻讀不了（可能是暫時的）：不記住到換 build，GRAPH_RETRY_S 之後再試；這段時間走 fast，不會每個請求都去讀。"""
+    from engine.app import GRAPH_RETRY_S
+
+    current = build(tmp_path, "20261010T000000Z")
+    for name in GRAPH_FILES:
+        (current / name).write_text("x")
+    loader, clock = FlakyLoader(failures=1), Clock()
+    cache = _CurrentGraph(DataLayout(tmp_path), loader, clock=clock)
+    assert cache.get(current.name) is None
+    clock.now += GRAPH_RETRY_S - 1
+    assert cache.get(current.name) is None and len(loader.loaded) == 1
+    clock.now += 2
+    assert cache.get(current.name) == ("graph", current.name) and len(loader.loaded) == 2
+
+
+def test_build_without_graph_files_is_never_retried(tmp_path: Path) -> None:
+    """舊 build 本來就沒有圖：記住 None 到換 build 為止。"""
+    current = build(tmp_path, "20261010T000000Z")
+    loader, clock = Loader(fail=True), Clock()
+    cache = _CurrentGraph(DataLayout(tmp_path), loader, clock=clock)
+    assert cache.get(current.name) is None
+    clock.now += 10_000
+    assert cache.get(current.name) is None and len(loader.loaded) == 1

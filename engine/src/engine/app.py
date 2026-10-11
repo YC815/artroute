@@ -94,6 +94,7 @@ SEARCH_ERRORS: dict[int | str, dict[str, Any]] = {
 SEARCH_TIMEOUT_MESSAGE = "搜尋超過時間上限，請縮小半徑或放寬條件"
 SEARCH_INTERNAL_MESSAGE = "搜尋發生內部錯誤"
 NO_SEARCH_DATA_MESSAGE = "目前的路網還沒有自動搜尋需要的道路資料，要等路網重建"
+GRAPH_RETRY_S = 60  # 路網圖的檔案都在卻讀不了時，多久之後再試（_CurrentGraph）
 MIN_SHAPE_EXTENT = 1e-3  # 正規化座標的外框長邊下限：更小代表所有點幾乎重合，量不出大小
 
 
@@ -263,17 +264,26 @@ class _CurrentRoads:
 
 
 class _CurrentGraph:
-    """每個 worker 一份：目前 build 的可騎路網圖（mmap），換版時重新載入；沒有圖（舊 build）就是 None，不報錯。
+    """每個 worker 一份：目前 build 的可騎路網圖（mmap），換版時重新載入；沒有圖就是 None（fine 走 fast），不報錯。
 
-    一個 build 只試載入一次（build 內容不會再變）：沒有圖的 build 也記住 None，fine 請求不會每次都去碰檔案系統。
+    載入失敗分兩種：
+    - build 本來就沒有圖的檔案（舊 build）：記住 None 到換 build 為止，fine 請求不會每次都去碰檔案系統。
+    - 檔案都在卻讀不了：可能是暫時的（開檔數用完、記憶體不足），也可能是建圖驗證漏掉的壞檔。記 ERROR，
+      GRAPH_RETRY_S 秒內走 fast、之後的請求再試一次（ERROR 每個 worker 最多每 GRAPH_RETRY_S 一則）。
+      不記到換 build：暫時性的錯誤會讓這個 worker 一直用 fast 直到下次重建路網；也不每個請求都重試：壞檔時每個
+      fine 請求都要多讀一次、多一則 ERROR。
     """
 
-    def __init__(self, layout: DataLayout, loader: Callable[[Path], Any]) -> None:
+    def __init__(
+        self, layout: DataLayout, loader: Callable[[Path], Any], *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self._layout = layout
         self._loader = loader
+        self._clock = clock
         self._lock = threading.Lock()
         self._build: Path | None = None
         self._graph: Any = None
+        self._retry_at: float | None = None  # 檔案在卻讀不了時，什麼時候再試（None：不再試）
 
     def get(self, version: str) -> Any:
         """version 是 Router 所屬 build 的名稱（CurrentRouter.get 回傳的）。current 已經換成別的 build 時回 None：
@@ -282,14 +292,15 @@ class _CurrentGraph:
             build = self._layout.current()
             if build is None or build.name != version:
                 return None
-            if build != self._build:
+            retry = self._retry_at is not None and self._clock() >= self._retry_at
+            if build != self._build or retry:
+                self._build, self._graph, self._retry_at = build, None, None
                 try:
                     self._graph = self._loader(build)
                 except GraphDataMissing as error:
-                    if has_graph_data(build):  # 檔案都在卻讀不了：建圖驗證漏掉的壞檔，要讓維運看到
-                        logger.error("可騎路網圖載入失敗，fine 退回 fast：%s", error)
-                    self._graph = None
-                self._build = build
+                    if has_graph_data(build):
+                        logger.error("可騎路網圖載入失敗，%d 秒內 fine 退回 fast：%s", GRAPH_RETRY_S, error)
+                        self._retry_at = self._clock() + GRAPH_RETRY_S
             return self._graph
 
 
